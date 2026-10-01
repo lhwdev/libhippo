@@ -49,11 +49,48 @@
   - `CuratorAgent` performs targeted scrapes against authoritative documentation for precise technical parameters and contracts.
   - It synthesizes these extracted facts with standard idiomatic programming practices, formatting the output into structured Hub-and-Leaf markdown diff proposals.
 
-### Q3. Why restrict disk write permissions exclusively to `VerifyAgent`? (4-Eyes Principle)
+### Q3. Why restrict disk write permissions exclusively to `VerifierAgent`? (4-Eyes Principle)
 - **The Dilemma**: Allowing `CuratorAgent` to write directly to disk leads to rapid documentation decay—duplicate notes, poorly formatted markdown files, and inconsistent metadata generated during unstructured "vibe-coding" sessions.
 - **Resolution: Maker-Checker Governance**:
   - `CuratorAgent` is strictly a **draftsman**: it can generate diff proposals but has no file write tools.
-  - `VerifyAgent` is the **exclusive gatekeeper**: it evaluates proposed diffs for correctness, deduplication, and adherence to naming conventions, and is the sole agent equipped with `modify_knowledge` to atomically commit changes to disk and the vector store.
+  - `CheckerAgent` and `VerifierAgent` act as the **dual-tier gatekeepers**: `CheckerAgent` validates structural properties and routine diffs; `VerifierAgent` is the sole authority to execute disk commits (`modify_knowledge`) and manage complex refactoring.
+
+### Q4. Why decouple CheckerAgent (TypeSafe Jev) from VerifierAgent (LLM) for normal reviews?
+- **The Trade-off**:
+  - Running a full flagship LLM (`gpt-4o` or `o3-mini`) to review every routine 2-line markdown addition incurs severe token latency ($1\sim 3\text{s}$) and financial overhead. Furthermore, general LLMs are prone to occasional subtle schema drift in frontmatter formatting.
+- **The Dual-Tier Resolution**:
+  - **Routine Review Gate (`CheckerAgent` powered by TypeSafe Jev)**: For normal edits, additions, and updates, `CheckerAgent` acts as the primary gatekeeper. It executes deterministic, high-throughput structural evaluation:
+    1. Schema conformance (valid YAML frontmatter types).
+    2. Hierarchy and naming fit (`common/web/...`).
+    3. Document sizing and hysteresis verification.
+    4. Importance scoring ($0.0 \sim 1.0$).
+    5. Sibling coalescence and Single Responsibility Principle (SRP) coherence.
+  - If CheckerAgent emits `PASS`, the edit is approved and committed directly: **0 LLM token burn, sub-100ms latency**.
+  - **LLM Escalation Gate (`VerifierAgent`)**: The heavy LLM is reserved exclusively for:
+    1. Code draft audits against project conventions.
+    2. Architectural refactoring when CheckerAgent flags an `OVERSIZED` document (designing the directory split and partition plan).
+    3. Semantic deprecation conflicts.
+
+### Q5. How does LibHippo handle knowledge hierarchy growth and fragmentation with Hysteresis (Split vs. Merge)?
+- **The Problem & Thrashing Risk**:
+  - Over time, popular files accumulate edge cases and grow into bloated monoliths that degrade vector chunking relevancy. Conversely, over-eager agents generate dozens of micro-files with a single bullet point each, resulting in directory sprawl.
+  - Furthermore, if split and merge thresholds are too close, documents hovering around that boundary will oscillate between splitting and merging upon minor edits (**thrashing**), causing heavy filesystem I/O, vector re-embedding, and link churn.
+- **The Hysteresis Resolution**:
+  - **Split Upper Bound ($\theta_{\text{split}} \ge 1,800$ tokens)**: Elevates `web.md` to a Hub document, creates directory `web/`, and partitions subtopics into child leaves (`web/a.md`, `web/b.md`, ...).
+  - **Merge Lower Bound ($\theta_{\text{merge}} \le 300$ tokens)**: Rejects isolated creation of micro-files (e.g. proposed `input.md` alongside `button.md, label.md, checkbox.md`) and coalesces them into composite leaves (`form_controls.md`) or parent Hub rules.
+  - **Stability Deadband ($[300, 1800]$ tokens)**: Documents in this neutral range are strictly immune to automatic split or merge actions. The wide 1,500-token gap guarantees stability against rapid oscillation without needing artificial cooldown timers.
+  - **Composite Sizing (Code Arithmetic + Jev Semantic Judgment)**:
+    - Pure token counting is an exact arithmetic operation handled deterministically by local code (<1ms via `tiktoken`). Jev is never asked to count tokens.
+    - Instead, Jev measures **semantic bloatiness** (sparse stub vs. lean density vs. discursive verbosity vs. monolithic over-packing).
+    - Code combines raw token count with Jev's bloatiness score into an **Effective Token Size**. This allows conceptually bloated, rambling documents to trigger an architectural split even at 1,400 raw tokens, while dense, compact reference tables at 1,700 tokens remain protected within the deadband.
+
+### Q6. Why score document importance, and how does it influence retrieval without overpowering relevance?
+- **The Problem**: Pure semantic cosine similarity can sometimes rank obscure, highly specific edge cases or transient tips higher than fundamental architectural standards simply because a user query happened to share idiosyncratic keywords.
+- **The Solution (Subtle Importance Boost)**:
+  - `CheckerAgent` computes `importance_score` ($0.0 \sim 1.0$) based on architectural permanence and criticality (foundational standard = 0.9, idiomatic rule = 0.6, transient tip = 0.2).
+  - `query_knowledge` applies an importance-weighted confidence blend:
+    $$\text{Confidence} = (1 - \alpha) \cdot \text{Sim}_{\text{cosine}} + \alpha \cdot \text{Score}_{\text{importance}} \quad (\alpha = 0.08)$$
+  - Because $\alpha$ is small ($0.08$), semantic relevance remains overwhelmingly dominant—an irrelevant doc will never be retrieved just because it has high importance. But between candidate documents of comparable relevance, foundational standards reliably win tie-breakers and clear retrieval thresholds ($\tau_{\text{low}}=0.70, \tau_{\text{med}}=0.82$).
 
 ---
 
