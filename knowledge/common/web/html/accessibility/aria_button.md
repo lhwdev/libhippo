@@ -12,6 +12,7 @@ tags: ["html", "a11y", "aria", "button"]
 access_count: 0
 last_accessed: "2026-09-28"
 nature: "critical_rule"
+importance: 0.85
 ---
 
 ## Summary (Coarse View)

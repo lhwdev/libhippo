@@ -20,5 +20,5 @@
 
 ```shell
 # uv가 깔려있다 가정하면
-uv sync
+uv sync --extra dev # 빌드만 할거면 `--extra dev`
 ```

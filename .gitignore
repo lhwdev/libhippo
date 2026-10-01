@@ -38,3 +38,6 @@ htmlcov/
 # Databases & local state
 *.db-journal
 *.db-wal
+
+# Local envs.
+/*.local*
