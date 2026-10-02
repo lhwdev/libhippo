@@ -1,8 +1,6 @@
 ---
 title: "Web Technology Standards"
 namespace: "common"
-level: "hub"
-coarseness: 1
 version: "1.0.0"
 status: "active"
 last_updated: "2026-10-01"

@@ -1,8 +1,6 @@
 ---
 title: "Project Architecture Hub"
 namespace: "project"
-level: "hub"
-coarseness: 0
 version: "1.0.0"
 status: "active"
 last_updated: "2026-10-01"

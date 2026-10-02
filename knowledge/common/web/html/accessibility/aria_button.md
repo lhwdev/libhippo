@@ -1,8 +1,6 @@
 ---
 title: "Button Accessibility with ARIA"
 namespace: "common"
-level: "leaf"
-coarseness: 3
 version: "WAI-ARIA 1.2"
 status: "active"
 last_updated: "2026-09-28"

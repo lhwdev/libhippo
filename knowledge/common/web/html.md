@@ -1,8 +1,6 @@
 ---
 title: "HTML5 Standards & Semantics"
 namespace: "common"
-level: "hub"
-coarseness: 2
 version: "1.0.0"
 status: "active"
 last_updated: "2026-10-01"

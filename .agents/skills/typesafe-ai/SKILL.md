@@ -120,6 +120,10 @@ Keep the needed answers available. Include a no-match outcome when nothing may f
 use a separate presence judgment when it is independently useful. For source-value
 selection, check candidate coverage: the model cannot choose an omitted value.
 
+[LHWDEV ADDED] Only ask Jev for questions that are related to semantic judging.
+Do NOT ask Jev for anything that can be deterministically calculated programatically:
+i.e. counting characters, comparing numbers.
+
 ## Compose and verify
 
 **Ask independent questions over the same state together**, including useful

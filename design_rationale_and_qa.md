@@ -1,6 +1,7 @@
 # LibHippo Architecture Design Rationale & Q&A Log
 
-> This document captures the **core engineering trade-offs, design dilemmas, architectural rationales, model evaluation benchmarks, and implementation decisions** discussed during the design of **LibHippo** (`libhippo`). For concrete system schemas and class contracts, refer to [architecture_proposal.md](file:///mnt/d/develop/ai/libhippo/architecture_proposal.md).
+> This document captures the **core engineering trade-offs, design dilemmas, architectural rationales, and evaluation benchmarks** discussed during the design of **LibHippo** (`libhippo`). For concrete system schemas and class contracts, refer to [architecture.md](architecture.md).
+> Previously discussed ideas may be present here, but they should be marked as obsolete.
 
 ---
 
@@ -8,89 +9,99 @@
 
 ### Q1. Isn't summarizing retrieved documents in a separate session already standard practice in RAG?
 - **Analysis**:
-  - The conventional pattern—"retrieve chunks, run an LLM summarizer, inject the summary into context"—suffers from two major inefficiencies:
-    1. **Redundant Runtime Latency & Token Burn**: The LLM reads and summarizes the same raw documents over and over again across different queries.
-    2. **Ephemeral Value**: Dynamically generated summaries evaporate once the conversational session terminates. Future queries on similar topics must rerun the entire RAG pipeline from scratch.
+  - The conventional pattern—"retrieve chunks, run an LLM summarizer, inject summary into context"—suffers from two major inefficiencies:
+    1. **Redundant Runtime Latency & Token Burn**: The LLM reads and summarizes the same raw documents repeatedly across queries.
+    2. **Ephemeral Value**: Dynamically generated summaries evaporate when the session terminates. Subsequent queries re-run the entire pipeline from scratch.
 - **LibHippo's Differentiator**:
-  - Instead of summarizing on-the-fly at query time, the repository itself is pre-structured into a persistent **Hub (coarse summary & navigation index)** and **Leaf (granular implementation rules and edge cases)** markdown hierarchy.
-  - The system directly extracts raw snippets from the appropriate coarseness tier without any runtime LLM summarization pass: **runtime summarization cost is exactly $0**.
+  - The repository itself is pre-structured into a persistent **Hub (coarse summary & navigation index)** and **Leaf (granular implementation rules and edge cases)** markdown hierarchy.
+  - The system directly extracts raw snippets from the appropriate coarseness tier without a runtime LLM summarization pass: **runtime summarization cost is exactly $0**.
 
 ### Q2. Why keep Markdown (`.md`) files instead of using a pure Vector Store?
 - **Analysis**:
-  - Storing embeddings exclusively in a vector database creates an opaque black box. Developers cannot easily inspect, edit, or audit why an agent holds a particular belief.
-  - Pure vector stores cannot leverage Git for version control, code reviews, branch merging, or rollbacks.
+  - Pure vector stores create an opaque black box. Developers cannot easily inspect, audit, or edit why an agent holds a particular belief.
+  - Vector databases cannot leverage Git for version control, code reviews, pull requests, or rollbacks.
 - **LibHippo's Hybrid Architecture**:
   - **Source of Truth**: Local, human-readable, Git-tracked **Markdown documents**.
   - **Index Accelerator**: A local **Vector Store (ChromaDB or SQLite-vec)** that indexes markdown metadata, tags, and section chunks for sub-millisecond semantic search.
 
 ### Q3. Why not fine-tune a small local language model (SLM) to act as the BookKeeper?
 - **Analysis**:
-  - Fine-tuning and self-hosting an SLM introduces high operational overhead (GPU dependencies, local server provisioning, deployment fragility across diverse developer setups).
-  - Every knowledge update would require either complex Continual Learning pipelines or LoRA retraining, risking catastrophic forgetting or stale weights.
+  - Fine-tuning and self-hosting an SLM introduces heavy operational overhead (GPU dependencies, local server provisioning, deployment fragility across developer setups).
+  - Every knowledge update requires complex Continual Learning pipelines or LoRA retraining, risking catastrophic forgetting or stale weights.
 - **Selected Pragmatic Alternative**:
-  - When markdown files change or get archived into `deprecated/`, LibHippo re-indexes the local vector store in $<1$ second. This maintains a 100% fresh, hallucination-resistant index without modifying model weights.
+  - When markdown files change or move to `deprecated/`, LibHippo re-indexes the local vector store in $<1$ second. This maintains a fresh, hallucination-resistant index without modifying model weights.
 
 ---
 
-## 2. Knowledge Criticality and Curation Cost Control
+## 2. Knowledge Governance and Curation Cost Control
 
 ### Q1. How do we prevent runaway web scraping and validation costs when knowledge is optional?
 - **The Dilemma**:
-  - Triggering web search on every knowledge miss causes explosive latency and API cost spikes.
-  - However, asking an LLM to rate importance as a continuous float ($0.0 \sim 1.0$) leads to numerical inconsistency and unpredictable routing.
+  - Triggering web searches on every knowledge miss causes explosive latency and API costs.
+  - Asking an LLM to score importance as a continuous float ($0.0 \sim 1.0$) leads to numerical inconsistency and unpredictable routing.
 - **Resolution: 3 Discrete Criticality Tiers**:
-  - `MANDATORY`: Strict organizational security standards or library API requirements $\rightarrow$ Web search and curation are obligatory upon retrieval miss (`CuratorAgent` is launched).
-  - `PREFERRED` (Default): Common idioms, component templates, or style guidelines $\rightarrow$ On miss, web search is avoided; the system falls back directly to `TaskSolverAgent`'s internal programming knowledge (**0 web search overhead**).
-  - `OPTIONAL`: Auxiliary utility functions or convenience helpers $\rightarrow$ On miss, skipped immediately (**0 overhead**).
+  - `MANDATORY`: Strict security standards or library API requirements $\rightarrow$ Web search and curation are obligatory upon retrieval miss (`CuratorAgent` is launched).
+  - `PREFERRED` (Default): Common idioms and conventions $\rightarrow$ Web search is skipped on miss; the system falls back directly to `TaskSolverAgent`'s internal programming knowledge (**0 web search overhead**).
+  - `OPTIONAL`: Auxiliary utility functions or convenience helpers $\rightarrow$ Skipped immediately on miss (**0 overhead**).
 
 ### Q2. Hybrid Synthesis: Merging Official Web Facts with LLM Reasoning
-- **The Dilemma**: Relying purely on internal LLM weights leads to hallucinations and deprecated API usage (e.g., outdated React APIs). Conversely, raw web scraping often produces fragmented or ill-structured text snippets unsuitable for coding context.
+- **The Dilemma**: Relying purely on internal LLM weights leads to hallucinations and deprecated API usage. Conversely, raw web scraping produces fragmented, noisy snippets unsuitable for coding context.
 - **Resolution**:
   - `CuratorAgent` performs targeted scrapes against authoritative documentation for precise technical parameters and contracts.
-  - It synthesizes these extracted facts with standard idiomatic programming practices, formatting the output into structured Hub-and-Leaf markdown diff proposals.
+  - It synthesizes these extracted facts with idiomatic programming practices, formatting the output into structured Hub-and-Leaf markdown diff proposals.
 
 ### Q3. Why restrict disk write permissions exclusively to `VerifierAgent`? (4-Eyes Principle)
 - **The Dilemma**: Allowing `CuratorAgent` to write directly to disk leads to rapid documentation decay—duplicate notes, poorly formatted markdown files, and inconsistent metadata generated during unstructured "vibe-coding" sessions.
 - **Resolution: Maker-Checker Governance**:
   - `CuratorAgent` is strictly a **draftsman**: it can generate diff proposals but has no file write tools.
-  - `CheckerAgent` and `VerifierAgent` act as the **dual-tier gatekeepers**: `CheckerAgent` validates structural properties and routine diffs; `VerifierAgent` is the sole authority to execute disk commits (`modify_knowledge`) and manage complex refactoring.
+  - `CheckerAgent` and `VerifierAgent` act as dual-tier gatekeepers: `CheckerAgent` validates structural properties and routine diffs; `VerifierAgent` is the sole authority to execute disk commits (`modify_knowledge`) and manage complex refactoring.
 
 ### Q4. Why decouple CheckerAgent (TypeSafe Jev) from VerifierAgent (LLM) for normal reviews?
 - **The Trade-off**:
-  - Running a full flagship LLM (`gpt-4o` or `o3-mini`) to review every routine 2-line markdown addition incurs severe token latency ($1\sim 3\text{s}$) and financial overhead. Furthermore, general LLMs are prone to occasional subtle schema drift in frontmatter formatting.
+  - Running a full flagship LLM (`gpt-4o` or `o3-mini`) to review every routine 2-line markdown addition incurs severe token latency ($1\sim 3\text{s}$) and financial overhead, alongside subtle schema drift risks.
 - **The Dual-Tier Resolution**:
-  - **Routine Review Gate (`CheckerAgent` powered by TypeSafe Jev)**: For normal edits, additions, and updates, `CheckerAgent` acts as the primary gatekeeper. It executes deterministic, high-throughput structural evaluation:
-    1. Schema conformance (valid YAML frontmatter types).
-    2. Hierarchy and naming fit (`common/web/...`).
-    3. Document sizing and hysteresis verification.
-    4. Importance scoring ($0.0 \sim 1.0$).
-    5. Sibling coalescence and Single Responsibility Principle (SRP) coherence.
-  - If CheckerAgent emits `PASS`, the edit is approved and committed directly: **0 LLM token burn, sub-100ms latency**.
-  - **LLM Escalation Gate (`VerifierAgent`)**: The heavy LLM is reserved exclusively for:
-    1. Code draft audits against project conventions.
-    2. Architectural refactoring when CheckerAgent flags an `OVERSIZED` document (designing the directory split and partition plan).
-    3. Semantic deprecation conflicts.
+  - **Routine Review Gate (`CheckerAgent` powered by TypeSafe Jev)**: Validates schema conformance, hierarchy fit, sizing bounds, importance scoring, and sibling coalescence. Approved diffs (`PASS`) commit directly: **0 LLM token burn, sub-100ms latency**.
+  - **LLM Escalation Gate (`VerifierAgent`)**: Heavy LLM reasoning is reserved strictly for high-order architectural decisions: code solution audits, hierarchy refactoring on `OVERSIZED` nodes, and semantic deprecation conflicts.
 
-### Q5. How does LibHippo handle knowledge hierarchy growth and fragmentation with Hysteresis (Split vs. Merge)?
-- **The Problem & Thrashing Risk**:
-  - Over time, popular files accumulate edge cases and grow into bloated monoliths that degrade vector chunking relevancy. Conversely, over-eager agents generate dozens of micro-files with a single bullet point each, resulting in directory sprawl.
-  - Furthermore, if split and merge thresholds are too close, documents hovering around that boundary will oscillate between splitting and merging upon minor edits (**thrashing**), causing heavy filesystem I/O, vector re-embedding, and link churn.
-- **The Hysteresis Resolution**:
-  - **Split Upper Bound ($\theta_{\text{split}} \ge 1,800$ tokens)**: Elevates `web.md` to a Hub document, creates directory `web/`, and partitions subtopics into child leaves (`web/a.md`, `web/b.md`, ...).
-  - **Merge Lower Bound ($\theta_{\text{merge}} \le 300$ tokens)**: Rejects isolated creation of micro-files (e.g. proposed `input.md` alongside `button.md, label.md, checkbox.md`) and coalesces them into composite leaves (`form_controls.md`) or parent Hub rules.
-  - **Stability Deadband ($[300, 1800]$ tokens)**: Documents in this neutral range are strictly immune to automatic split or merge actions. The wide 1,500-token gap guarantees stability against rapid oscillation without needing artificial cooldown timers.
-  - **Composite Sizing (Code Arithmetic + Jev Semantic Judgment)**:
-    - Pure token counting is an exact arithmetic operation handled deterministically by local code (<1ms via `tiktoken`). Jev is never asked to count tokens.
-    - Instead, Jev measures **semantic bloatiness** (sparse stub vs. lean density vs. discursive verbosity vs. monolithic over-packing).
-    - Code combines raw token count with Jev's bloatiness score into an **Effective Token Size**. This allows conceptually bloated, rambling documents to trigger an architectural split even at 1,400 raw tokens, while dense, compact reference tables at 1,700 tokens remain protected within the deadband.
+### Q5. Why use bidirectional hysteresis and asymmetric metrics for document length regulation?
+- **The Thrashing Risk**:
+  - Symmetrical thresholds cause thrashing (rapid splitting and merging upon minor edits; e.g., adding 5 tokens triggers a split, pruning 5 tokens triggers a merge).
+  - LibHippo introduces a calibrated hysteresis gap between triggers and targets:
+    $$\text{lower_bound_trigger} \,(300) < \text{lower_bound_target} \,(500) < \text{upper_bound_target} \,(1000) < \text{upper_bound_trigger} \,(1800)$$
+- **Rationale for Asymmetric Sizing Metrics**:
+  - **Upper Bound Split**: Uses composite $\text{EffectiveSize} = \text{TokenCount} \cdot (0.75 + 0.35 \cdot \text{Score}_{\text{bloatedness}})$. Semantic verbosity and topic stuffing indicate poor architectural separation and justify splitting even if raw tokens are moderate.
+  - **Lower Bound Merge**: Uses deterministic raw $\text{TokenCount}$. High informational density must not be penalized; a concise, high-signal 250-token primitive should not be falsely merged simply because it is brief.
+- **Dynamic Modulation & Post-Merge Edge Cases**:
+  - Cohesive single-responsibility documents receive higher split headroom (up to 2,200 tokens) via coherence modulation.
+  - Distinct primitives under diverse hubs receive lower merge thresholds (down to 150 tokens) to avoid unnatural combinations. If an undersized doc cannot be cleanly merged, it is either kept as an exception or pruned.
+  - *(See [architecture.md#45-knowledge-length-regulation-hysteresis-token-count](architecture.md#45-knowledge-length-regulation-hysteresis-token-count) for complete formulas and contracts).*
 
 ### Q6. Why score document importance, and how does it influence retrieval without overpowering relevance?
-- **The Problem**: Pure semantic cosine similarity can sometimes rank obscure, highly specific edge cases or transient tips higher than fundamental architectural standards simply because a user query happened to share idiosyncratic keywords.
+- **The Problem**: Pure semantic cosine similarity can rank obscure, keyword-heavy edge cases higher than foundational architectural standards.
 - **The Solution (Subtle Importance Boost)**:
-  - `CheckerAgent` computes `importance_score` ($0.0 \sim 1.0$) based on architectural permanence and criticality (foundational standard = 0.9, idiomatic rule = 0.6, transient tip = 0.2).
+  - `CheckerAgent` computes `importance_score` ($0.0 \sim 1.0$) based on architectural permanence and criticality.
   - `query_knowledge` applies an importance-weighted confidence blend:
     $$\text{Confidence} = (1 - \alpha) \cdot \text{Sim}_{\text{cosine}} + \alpha \cdot \text{Score}_{\text{importance}} \quad (\alpha = 0.08)$$
-  - Because $\alpha$ is small ($0.08$), semantic relevance remains overwhelmingly dominant—an irrelevant doc will never be retrieved just because it has high importance. But between candidate documents of comparable relevance, foundational standards reliably win tie-breakers and clear retrieval thresholds ($\tau_{\text{low}}=0.70, \tau_{\text{med}}=0.82$).
+  - Because $\alpha = 0.08$, semantic relevance remains overwhelmingly dominant—irrelevant docs are never retrieved. However, between candidate documents of comparable relevance, foundational standards reliably win tie-breakers and clear retrieval confidence gates ($\tau_{\text{low}}=0.70, \tau_{\text{med}}=0.82$).
+
+### Q7. Why separate Rule Effectiveness from Content Importance, and why use Damped Max-Blend?
+- **The Dilemma**:
+  - If importance only reflects content permanence and domain depth, cosmetic or local conventions (e.g., *"use single-quote instead of double-quote"*) receive a negligible score ($I_{\text{content}} \approx 0.10$). Consequently, they risk being pruned as low-importance stubs or losing retrieval tie-breakers, despite being non-negotiable project invariants that must always be enforced.
+- **The Dual-Dimension Resolution**:
+  - `CheckerAgent` decouples **Content Importance ($I_{\text{content}}$)** (architectural depth/permanence) from **Rule Effectiveness ($E_{\text{rule}}$)** (prescriptive authority/strictness).
+  - Both dimensions are combined into `final_importance` via **Damped Max-Blend**:
+    $$I_{\text{final}} = \max(I, E) + \lambda \cdot \min(I, E) \cdot (1 - \max(I, E)) \quad (\lambda = 0.20)$$
+  - **Boundary Invariance**: If either $I = 1.0$ or $E = 1.0$, $I_{\text{final}} = 1.0$ exactly. A strict lint/convention rule receives $I_{\text{final}} = 1.0$.
+  - **Controlled Moderate Synergy**: When both are moderate ($I=0.6, E=0.6$), $I_{\text{final}} \approx 0.65$—providing a gentle tie-breaker boost without the excessive inflation of raw Noisy-OR ($0.84$).
+
+### Q8. How does CheckerAgent verify content quality without penalizing non-actionable reference knowledge?
+- **The Dilemma**:
+  - Checking content quality is critical to prevent messy drafts, grammatical errors, and conversational LLM fluff from polluting the knowledge base.
+  - However, enforcing a naive "actionability" check would unfairly penalize declarative reference knowledge (e.g., syntax sheets, dictionaries, API tables) that contain no imperative commands.
+- **The Resolution: Dual-Spectrum Practical Utility & REVISE_CONTENT**:
+  - `practical_utility` evaluates **actionable directives** for prescriptive rules, and **precision/completeness** for declarative references. Syntax dictionaries score $1.0$ as readily as strict rules.
+  - Deterministic Python guards catch syntax errors (unmatched code fences, invalid YAML frontmatter) at 0 token cost.
+  - Content quality failures (grammar $< 0.40$, markdown formatting $< 0.40$, practical utility $< 0.30$, or unclosed code fences) emit `verdict = "REVISE_CONTENT"`, distinct from schema errors (`REVISE_SCHEMA`).
 
 ---
 
@@ -98,38 +109,21 @@
 
 ### Q1. Why can't `query_knowledge` just be a simple tool? Why involve an agent?
 - **The Dilemma**:
-  - In coding tasks, an agent often queries 3 to 4 related APIs concurrently via parallel tool calling. Launching a heavy LLM agent for every single lookup introduces severe latency ($1\sim 3\text{s}$) and token waste.
-  - However, pure deterministic string/vector matching fails when:
-    - Queries are ambiguous or symptom-based (e.g., *"why does my button blink on hover?"*).
-    - Queries require multi-hop reasoning across multiple leaf documents.
-    - Determining whether an index miss is truly absent or merely aliased requires semantic reasoning.
+  - In coding tasks, agents frequently execute 3 to 4 API queries concurrently via parallel tool calling. Launching an LLM agent for every single lookup creates unacceptable latency ($1\sim 3\text{s}$) and token waste.
+  - However, pure deterministic matching fails on symptom-based queries (e.g., *"why does my button blink on hover?"*), multi-hop reasoning across leaves, or subtle synonym aliasing.
 
-### Q2. The 3-Tier Effort Solution: Low vs. Medium vs. High
-LibHippo resolves this tension by providing three explicit effort levels in `query_knowledge`:
+### Q2. Why a 3-tier effort model instead of a single retrieval strategy?
+- **Resolution**:
+  - Rather than forcing a compromise between speed and depth, `query_knowledge` exposes three explicit effort levels:
+    - **`low` (Deterministic Fast-Path)**: Local Vector/FTS search ($<50\text{ms}$, 0 LLM cost). Fails fast if confidence $< \tau_{\text{low}}$ (no LLM fallback). Designed for high-volume parallel batch lookups.
+    - **`medium` (Optimistic Fast-Path with Gated Escalation — Default)**: Handles ~80% of queries directly via local search in $<50\text{ms}$. If confidence falls below $\tau_{\text{med}}$, automatically escalates to `BookKeeperAgent` (`gpt-4o-mini`) for query expansion and cross-checks.
+    - **`high` (Deep Agent Exploration with Initial Vector Match)**: Executes an initial single-vector search first and passes the candidate results to `BookKeeperAgent` (`gpt-4o-mini`) for deep multi-hop synthesis, query decomposition, and cross-domain triage.
+  - *(See [architecture.md#51-query_knowledge-adaptive-knowledge-retrieval-tool](architecture.md#51-query_knowledge-adaptive-knowledge-retrieval-tool) for parameters and thresholds).*
 
-```text
-query_knowledge(query, effort="low" | "medium" | "high", criticality="mandatory" | "preferred" | "optional")
-```
-
-1. **`low_effort` (Strict Deterministic — Zero LLM Overhead)**:
-   - Queries the local Vector Store and SQLite FTS5 index directly ($<50\text{ms}$, 0 token cost).
-   - **Confidence Gating**: Evaluates whether the top match confidence meets $\ge \tau_{\text{low}}$ (e.g., $0.70$).
-   - **Failure Policy**: If confidence is below $\tau_{\text{low}}$, it **fails immediately** (returns `[MISS:FALLBACK]` without invoking any LLM).
-   - **Ideal for**: Rapid, unambiguous keyword/syntax lookups and high-volume parallel batch queries.
-
-2. **`medium_effort` (Optimistic Fast-Path with Gated Escalation — Default)**:
-   - Executes local vector/FTS search first.
-   - **Confidence Gating**: Evaluates against a stricter confidence threshold $\tau_{\text{med}}$ (e.g., $0.82$).
-   - If confidence is high ($\ge \tau_{\text{med}}$), it returns the raw snippets immediately ($<50\text{ms}$, 0 LLM cost).
-   - If confidence falls below $\tau_{\text{med}}$ or top matches are ambiguous, it **automatically hands over to `BookKeeperAgent`** (`gpt-4o-mini`).
-   - The agent performs query expansion, synonym aliasing, and multi-leaf cross-checks before issuing a formal `[HIT]` or `[MISS]` determination.
-   - **Ideal for**: The vast majority of general programming tasks where a direct answer is likely available, but autonomous agent escalation is needed if direct matching falls short.
-
-3. **`high_effort` (Unconditional Deep Agent Exploration)**:
-   - Bypasses single-vector matching entirely.
-   - Directly spins up `BookKeeperAgent` in its zero-context sandbox.
-   - Performs query decomposition, sub-query routing, and multi-document correlation.
-   - **Ideal for**: Complex bug triage with obscure symptoms, cross-domain interactions, and architectural investigations.
+### Q3. Why seed `BookKeeperAgent` with initial vector results on `high` effort?
+- **Analysis**:
+  - Completely bypassing the local index forces `BookKeeperAgent` to start cold, requiring blind exploratory tool calls to locate relevant branches.
+  - Passing through the initial vector search results provides an immediate topological anchor and candidate snippets. `BookKeeperAgent` can then focus on multi-hop cross-referencing, synonym expansion, and disambiguation rather than initial discovery.
 
 ---
 
@@ -137,35 +131,32 @@ query_knowledge(query, effort="low" | "medium" | "high", criticality="mandatory"
 
 ### Q1. Is Zero-Context isolation outside `TaskSolverAgent` viable?
 - **Analysis**:
-  - Running subagents without the parent conversation history eliminates massive token transfer and keeps subagents focused.
-  - **Risk**: Pronoun and co-reference ambiguity (e.g., *"apply a11y to that button"* fails if the subagent does not know what "that button" refers to).
+  - Running subagents without parent conversational history eliminates massive token transfer and keeps subagents focused.
+  - **Risk**: Pronoun and co-reference ambiguity (e.g., *"apply a11y to that button"* fails in isolation).
 - **Resolution**:
-  - `TaskSolverAgent` is instructed to formulate **self-contained, disambiguated queries** before calling tools.
-  - Example: `query_knowledge(query="HTML custom button ARIA role keyboard accessibility", effort="medium")`.
-  - As a result, `BookKeeperAgent` operates flawlessly in a clean, stateless sandbox.
+  - `TaskSolverAgent` is instructed to formulate **self-contained, disambiguated queries** before calling tools (e.g., `query_knowledge(query="HTML custom button ARIA role keyboard accessibility", effort="medium")`).
+  - `BookKeeperAgent` operates in a stateless sandbox with zero historical baggage.
 
-### Q2. Sliding Windows vs. Prompt-Cache Friendly Linear Context + Lazy Compaction
-- **Flaw of Sliding Windows / "Head-Summary-Tail"**:
-  - Modern LLM inference engines (e.g., OpenAI Prompt Caching) rely on **static prefix matching** to achieve 50–80% cost discounts and near-instant time-to-first-token (TTFT).
-  - Summarizing or shifting conversational context in the middle of a session breaks the cache prefix on every single turn, dramatically increasing costs and latency.
-- **LibHippo's 3-Zone Architecture**:
-  1. **Zone 1: Immutable Prefix**: System prompt, static user preferences, project conventions, and knowledge catalog schema. (Never changes during the session $\rightarrow$ 100% cache hit rate).
-  2. **Zone 2: Append-Only Linear History**: User turns, reasoning traces, and retrieved raw snippets appended sequentially. (Reuses prior turn KV-cache).
-  3. **Zone 3: Lazy Compaction**:
-     - Triggered only when cumulative token count crosses a high-water mark (e.g., 8,000 tokens).
-     - Keeps the reasoning trace intact, but evicts bulky raw markdown tool outputs from older turns, replacing them with concise reference markers (`[Referenced: common/.../syntax.md]`).
+### Q2. Sliding Windows vs. Linear Context with Lazy Compaction
+- **Flaw of Sliding Windows / Mid-Session Summaries**:
+  - Modern LLM prompt caching (e.g., OpenAI Prompt Caching) relies on **static prefix matching** for 50–80% cost discounts and near-instant TTFT.
+  - Shifting windows or summarizing context mid-session alters the prefix on every turn, destroying the cache.
+- **LibHippo's 3-Zone Strategy**:
+  - **Zone 1 (Immutable Prefix)**: System prompt, static user preferences, and catalog spec remain constant (100% cache hit rate).
+  - **Zone 2 (Append-Only Linear History)**: Turns, reasoning traces, and retrieved snippets append sequentially, preserving previous KV-cache.
+  - **Zone 3 (Lazy Compaction)**: Triggered only at high token watermarks (e.g., 8,000 tokens). Evicts bulky past tool outputs by replacing raw snippets with concise markers (`[Referenced: common/.../syntax.md]`) while preserving reasoning traces.
+  - *(See [architecture_runner.md](architecture_runner.md) for complete runner lifecycle, zone definitions, and eviction data structures).*
 
 ---
 
-## 5. Model Mix & Agent Capability Benchmarks
+## 5. Model Selection Rationale & Verification Benchmarks
 
-### 5.1 Model Assignment Strategy
-| Agent | Model | Temperature / Effort | Allocation Rationale |
-| :--- | :--- | :--- | :--- |
-| **`TaskSolverAgent`** | `gpt-4o` | Temp 0.2~0.4 / Medium | Complex logic generation, high instruction-following fidelity. |
-| **`BookKeeperAgent`** | `gpt-4o-mini` | Temp 0.0 / Minimal | High-speed indexing, schema validation, 1/15th cost. |
-| **`CuratorAgent`** | `gpt-4o-mini` (or `gpt-4o`) | Temp 0.1 / Low | Synthesizing scraped technical facts with markdown templates. |
-| **`VerifyAgent`** | `gpt-4o` (or `o3-mini`) | Temp 0.0 / High | Uncompromising code auditing, security checks, and gatekeeping. |
+### 5.1 Model Tiering Philosophy
+LibHippo matches model tiers to task complexity and latency constraints:
+- **Flagship LLM (`gpt-4o` / `o3-mini`)**: Reserved for open-ended code generation (`TaskSolverAgent`) and high-stakes auditing/refactoring (`VerifierAgent`).
+- **Lightweight LLM (`gpt-4o-mini`)**: Deployed for structured, zero-context tasks (`BookKeeperAgent`, `CuratorAgent`) where speed and low cost (1/15th) dominate.
+- **Typed Evaluator (`TypeSafe Jev`)**: Used by `CheckerAgent` for deterministic, typed structural audits, eliminating LLM token costs on routine reviews.
+*(See [architecture.md#3-agent-specifications-models-and-context-isolation](architecture.md#3-agent-specifications-models-and-context-isolation) for full agent configuration matrix).*
 
 ---
 
@@ -191,9 +182,9 @@ Fact from Official Documentation:
 Task: Combine this fact with idiomatic React knowledge to draft a markdown node 
 (common/web/react/actions.md) containing a 2-line [Summary] and a 3-bullet [Detailed Rules] section.
 ```
-- **Evaluation Criteria**: Correctly documents the breaking change and return signatures, structuring the output strictly according to the Hub-Leaf markdown template.
+- **Evaluation Criteria**: Correctly documents breaking changes and return signatures, structuring the output strictly according to the Hub-Leaf markdown template.
 
-#### Benchmark 3: VerifyAgent Evaluation (Strict Deprecation Detection)
+#### Benchmark 3: VerifierAgent Evaluation (Strict Deprecation Detection)
 ```text
 Context: You are a strict code quality auditor. Project convention requires React 19 standard compliance.
 Inspect the following code draft submitted by TaskSolverAgent:
