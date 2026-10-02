@@ -31,13 +31,14 @@
 The system coordinates specialized agents via an AutoGen `GraphFlow`.
 - **Retrieval**: Governed by the `query_knowledge` 3-tier adaptive dispatcher (`low`, `medium`, `high` effort).
 - **Lifecycle Governance**: Structured as a tiered Maker-Checker pipeline:
-  - **Drafting (Maker)**: `CuratorAgent` drafts technical markdown nodes from conversations and authoritative web sources.
-  - **Structural Auditing (Checker)**: `CheckerAgent` (powered by `TypeSafe Jev`) provides structural and schema auditing (combining deterministic token/frontmatter validation with TypeSafe Jev semantic scoring). Escalations trigger `VerifierAgent`.
-  - **Deep Refactoring & Verification (Verifier)**: `VerifierAgent` (`gpt-4o`) executes structural hierarchy refactoring on `OVERSIZED` nodes, arbitrates deprecations, audits solution code, and holds exclusive reasoning authority to modify knowledge on disk.
+  - **Drafting (Maker)**: `CuratorAgent` (`gpt-6-luna`) drafts technical markdown nodes from conversations and authoritative web sources.
+  - **Structural Auditing (Checker)**: `CheckerAgent` (powered by `TypeSafe Jev`) provides structural and schema auditing (combining deterministic token/frontmatter/fence validation with TypeSafe Jev semantic scoring). Escalations trigger `VerifierAgent`.
+  - **Deep Refactoring (Verifier)**: `VerifierAgent` (`gpt-6.1-sol`) executes structural hierarchy refactoring on `OVERSIZED` nodes, arbitrates deprecations, and holds exclusive reasoning authority to modify knowledge on disk.
+  *(Note: Solution code auditing and final task termination by VerifierAgent are removed from the core library architecture and handled in `architecture_runner.md`).*
 
 ```mermaid
 graph TD
-    User([User Prompt / Task Request]) --> TaskSolver[TaskSolverAgent<br>Problem Solving & Code Generation<br><b>gpt-4o</b>]
+    User([User Prompt / Task Request]) --> TaskSolver[TaskSolverAgent<br>Problem Solving & Code Generation<br><b>User-Configurable</b>]
     
     subgraph Adaptive Retrieval: query_knowledge
         TaskSolver -->|1. query_knowledge call<br>Parallel Tool Calling Supported| Router{Effort Router}
@@ -47,10 +48,10 @@ graph TD
         
         Router -->|medium_effort<br>Optimistic Fast-Path| MedCheck{Confidence >= th_med?}
         MedCheck -->|Yes: conf met| FastPath
-        MedCheck -->|No: conf not met| BookKeeper[BookKeeperAgent<br>Librarian Subagent<br><b>gpt-4o-mini</b>]
+        MedCheck -->|No: conf not met| BookKeeper[BookKeeperAgent<br>Librarian Subagent<br><b>gpt-5-nano</b>]
         
         Router -->|high_effort<br>Initial Vector Match| FastPath
-        FastPath -.->|Seed vector matches (high)| BookKeeper
+        FastPath -.->|Seed vector matches| BookKeeper
         
         BookKeeper <-->|Tool: Query decomposition & cross-search| FastPath
         FastPath -->|Direct raw snippets| TaskSolver
@@ -59,7 +60,7 @@ graph TD
     end
 
     subgraph Knowledge Governance & Refactoring: CheckerAgent + VerifierAgent
-        TaskSolver -.->|2a. Missing mandatory knowledge<br>Request targeted scrape & draft| Curator[CuratorAgent<br>Draftsman: Web Scrape + Synthesis<br><b>gpt-4o-mini</b>]
+        TaskSolver -.->|2a. Missing mandatory knowledge<br>Request targeted scrape & draft| Curator[CuratorAgent<br>Draftsman: Web Scrape + Synthesis<br><b>gpt-6-luna</b>]
         Curator <-->|Tool: Web Fetch| Web([Official Documentation / Web])
         Curator -->|2b. Propose markdown diff / node draft| Checker[CheckerAgent<br>TypeSafe Jev Model<br>Structural & Schema Gatekeeper]
         
@@ -70,37 +71,30 @@ graph TD
         Checker -->|UNDERSIZED: Too tiny to isolate| SiblingMerge[Coalesce / Merge into Sibling Knowledge]
         SiblingMerge --> Curator
         
-        Checker -->|OVERSIZED: Hierarchy refactor required| Verifier[VerifierAgent<br>LLM Model: gpt-4o<br>Deep Refactoring & Code Auditor]
+        Checker -->|OVERSIZED: Hierarchy refactor required| Verifier[VerifierAgent<br>LLM Model: gpt-6.1-sol<br>Deep Refactoring Authority]
         Verifier -->|Split / Group Directive<br>Elevate leaf to hub directory| Curator
         Verifier -->|Atomic Split Commit| FastPath
     end
 
-    TaskSolver -->|3. Submit solution & code draft| Verifier
-
-    subgraph Evaluation & Feedback Loop
-        Verifier -->|4a. Reject: Outdated API / Standard violation| TaskSolver
-        Verifier -->|4b. Discover new rules or order deprecation| Curator
-    end
-
-    Verifier -->|5. Final Approval: APPROVE TERMINATE| Output([Final Solution & Knowledge Report])
+    TaskSolver -->|3. Generate solution & task completion| Output([Final Solution & Output])
 ```
 
 ---
 
 ## 3. Agent Specifications, Models, and Context Isolation
 
-| Agent / Model Name | Recommended Model | Reasoning Effort / Temp | Context Isolation Strategy | Core Responsibilities |
+| Agent / Model Name | Recommended Model | Reasoning Effort / Temp | Context Isolation & Caching Strategy | Core Responsibilities |
 | :--- | :--- | :--- | :--- | :--- |
-| **`TaskSolverAgent`** | `gpt-4o` | **Medium**<br>(Temp 0.2~0.4) | Main conversational thread | Business logic analysis, code generation, parallel `query_knowledge` calls |
-| **`BookKeeperAgent`** | `gpt-4o-mini` | **Minimal**<br>(Temp 0.0) | **Zero-Context Sandbox**<br>(Active on `medium` fallback or `high` effort) | Query decomposition, synonym expansion, multi-leaf cross-referencing, HIT/MISS determination |
-| **`CuratorAgent`** | `gpt-4o-mini`<br>(or `gpt-4o`) | **Low**<br>(Temp 0.1) | Conditional sub-workflow (Active on `MISS:MANDATORY` or deprecations) | Targeted web scraping, synthesis of external facts into markdown diff proposals |
-| **`CheckerAgent`** | `TypeSafe Jev` | **Deterministic**<br>(Temp 0.0 / $0 LLM tokens) | Stateless Evaluation Sandbox (Candidate diff, siblings, parent) | **Primary gatekeeper for routine reviews**: Typed structural audit (taxonomy fit, sizing, importance, sibling coalescence, schema) |
-| **`VerifierAgent`** | `gpt-4o`<br>(or `o3-mini`) | **High / Strict**<br>(Temp 0.0, max effort) | Independent evaluation session (Summoned on escalation or solution draft) | Code audit, **hierarchy refactoring (`split/group`) on `OVERSIZED` flags**, sole reasoning authority for `modify_knowledge` disk commits, termination control |
+| **`TaskSolverAgent`** | *User-Configurable*<br>(CLI / UI selection) | **Medium**<br>(Temp 0.2~0.4) | Main conversational thread<br>**Cache Write: ENABLED** | Business logic analysis, code generation, parallel `query_knowledge` calls |
+| **`BookKeeperAgent`** | **`gpt-5-nano`** | **Minimal**<br>(Temp 0.0) | **Zero-Context Sandbox**<br>**Cache Write: DISABLED** | Query decomposition, synonym expansion, multi-leaf cross-referencing, HIT/MISS determination |
+| **`CuratorAgent`** | **`gpt-6-luna`** | **Low**<br>(Temp 0.1) | Conditional sub-workflow<br>**Cache Write: DISABLED** (Enabled in Refactoring Loop) | Targeted web scraping, synthesis of external documentation into markdown diff proposals |
+| **`CheckerAgent`** | **`TypeSafe Jev`** | **Deterministic**<br>(Temp 0.0 / $0 LLM tokens) | Stateless Evaluation Sandbox (Candidate diff, siblings, parent) | **Primary gatekeeper for routine reviews**: Typed structural audit (taxonomy fit, sizing, importance/effectiveness, quality) |
+| **`VerifierAgent`** | **`gpt-6.1-sol`** | **High / Strict**<br>(Temp 0.0, max depth) | Escalation refactoring session<br>**Cache Write: ENABLED** | **Hierarchy refactoring (`split/group`) on `OVERSIZED` flags**, sole reasoning authority for `modify_knowledge` disk commits |
 
 ---
 
 ### 3.1 `TaskSolverAgent` (Task Executor)
-- **Model & Temp**: `gpt-4o` (`temperature: 0.2 ~ 0.4`).
+- **Model & Temp**: User-Configurable.
 - **Role & Interface**:
   - Issues `query_knowledge(query, effort, criticality)` calls with support for **Parallel Tool Calling**.
   - Formulates self-contained, disambiguated queries:
@@ -108,27 +102,29 @@ graph TD
     - Medium Effort (Default): `query_knowledge(query="HTML custom button ARIA role keyboard accessibility", effort="medium")`
     - High Effort: `query_knowledge(query="HTML button blinks when hovered CSS transform translate-x suspected", effort="high")`
   - Consumes raw snippets from the fast path or synthesized answers from `BookKeeperAgent`.
-- **Context**: Linear, Cache-friendly; only includes previous user prompt, part of reasoning, etc. plus non-exhaustive list of some previously used knowledge names.
-- **Input**: User prompt, retrieved knowledge snippets, `VerifierAgent` feedback.
+- **Context & Caching**: Linear, Cache-friendly; **Prompt Cache Write: ENABLED**.
+- **Input**: User prompt, retrieved knowledge snippets.
 - **Output**: Implementation code draft, technical summary.
 
 ### 3.2 `BookKeeperAgent` (Adaptive Librarian Subagent)
-- **Model & Temp**: `gpt-4o-mini` (`temperature: 0.0`, minimal reasoning).
+- **Model & Temp**: `gpt-5-nano` (`temperature: 0.0`, minimal reasoning).
 - **Operational Logic**:
-  - **Zero-Context Sandbox**: All agents except for `TaskSolverAgent` operate without session history.
+  - **Zero-Context Sandbox**: Operates without session history; every lookup is strictly independent.
+  - **Prompt Cache Write**: **DISABLED**: Stateless single-use queries avoid the cache write fee surcharge on prompts that are never re-read.
   - **Zero Re-summarization**: Extracts and returns **raw content** from knowledge tree.
   - **Query Expansion**: Decomposes natural language symptoms, checks synonyms, evaluates cross-references, and outputs tags (`[HIT]`, `[MISS:MANDATORY]`, `[MISS:FALLBACK]`).
 - **Input**: `query_knowledge(query, effort="medium"|"high", criticality)`, including initial vector search candidate snippets (for `high` effort or `medium` fallback).
 - **Output**: Target markdown file path, verbatim snippet blocks, hit/miss status tags.
 
 ### 3.3 `CuratorAgent` (Knowledge Draftsman)
-- **Model & Temp**: `gpt-4o-mini` / `gpt-4o` (`temperature: 0.1`).
+- **Model & Temp**: `gpt-6-luna` (`temperature: 0.1`, low reasoning).
 - **Role & Permissions**:
-  - Triggered exclusively on `MANDATORY` misses or deprecation instructions from `VerifierAgent`.
+  - Triggered exclusively on `MANDATORY` misses or refactoring directives from `VerifierAgent`.
   - Scrapes technical specifications via `search_web` and `fetch_web`.
+  - **Prompt Cache Write**: **ENABLED** during multi-turn Check → Verify refactoring loops; **DISABLED** on one-off external web scrapes.
   - Blends official external facts with idiomatic programming patterns into knowledge markdown diffs.
-  - **Write-Protected**: Has no disk write tools; submits drafts solely to `CheckerAgent` / `VerifierAgent`.
-- **Input**: Missing topic descriptor, target URLs, change requests.
+  - **Write-Protected**: Has no disk write tools; submits drafts solely to `CheckerAgent`.
+- **Input**: Missing topic descriptor, target URLs, change requests / split directives.
 - **Output**: Proposed markdown diff (addition, amendment, deprecation).
 
 ### 3.4 `CheckerAgent` (Primary Structural & Schema Gatekeeper)
@@ -200,25 +196,31 @@ If an undersized document cannot be merged into siblings or parent:
 1. **Ignore Lower Bound**: Retained as an isolated standalone leaf exception (e.g., an essential primitive rule).
 2. **Delete / Prune**: Deleted if **Importance Score** of content is low.
 
-### 3.5 `VerifierAgent` (Quality Auditor & Deep Refactorer)
-- **Model & Temp**: `gpt-4o` / `o3-mini` (`temperature: 0.0`, strict reasoning).
+### 3.5 `VerifierAgent` (Knowledge Refactoring Authority)
+- **Model & Temp**: `gpt-6.1-sol` (`temperature: 0.0`, strict reasoning).
+- **Prompt Cache Write**: **ENABLED**: In the multi-turn Check → Verify refactoring context loop, turns append linearly.
 - **Escalated Hierarchy Refactoring & Gatekeeping**:
-  - Invoked upon escalation from `CheckerAgent`.
+  - Invoked exclusively upon escalation from `CheckerAgent` (`ESCALATE_REFACTOR`).
   - When `CheckerAgent` flags `OVERSIZED`, plans and executes branch reorganization:
     - Promotes a knowledge to parent hub (`web.md` $\rightarrow$ hub `web.md` + directory `web/`), or
     - Partitions content into modular child leaves (`web/a.md`, `web/b.md`, ...).
-    - Applies splits atomically via `modify_knowledge` or delegates to `CuratorAgent`.
+    - Delegates split drafting to `CuratorAgent` (which loops back to `CheckerAgent` for child validation) or commits atomic splits via `modify_knowledge`.
   - Is the sole reasoning agent equipped with `modify_knowledge` to commit changes and synchronize vector indices (routine `PASS` reviews auto-commit directly).
-  - **Session Termination**: Emits `[APPROVE: TERMINATE]` once all quality gates pass.
-- **Input**: Solution code from TaskSolver, escalated reports from Checker/Curator.
-- **Output**: Termination approval, revision feedback (`REVISE`), or disk mutations.
+  - *(Note: Task solution code auditing and final task termination by VerifierAgent are removed from the core library architecture and handled in `architecture_runner.md`).*
+- **Input**: Escalated structural reports from Checker, candidate markdown diffs, repository catalog.
+- **Output**: Structural refactoring directives to Curator, or disk mutations via `modify_knowledge`.
 
 ### 3.6 Decoupled Review Workflow: Routine Review vs. Escalation
 - **Routine Reviews**: Diff proposals receiving `verdict: PASS` bypass LLM reasoning entirely, committing directly via `modify_knowledge`.
-- **Verifier Escalation**: `VerifierAgent` (LLM) is reserved exclusively for:
+- **Verifier Escalation**: `VerifierAgent` (`gpt-6.1-sol`) is reserved exclusively for:
   1. Splitting and reorganizing `OVERSIZED` hierarchy branches.
   2. Resolving semantic deprecation conflicts.
-  3. Auditing `TaskSolverAgent` code solutions against specifications.
+
+### 3.7 Context Stacking & Compaction in the Check-Verify Refactoring Loop
+During iterative refactoring cycles between `CheckerAgent`, `VerifierAgent`, and `CuratorAgent` (`Checker` $\rightarrow$ `Verifier` $\rightarrow$ `Curator` $\rightarrow$ `Checker` ...):
+- **Standard Linear Stacking**: Successive review rounds (Checker report $\rightarrow$ Verifier split directive $\rightarrow$ Curator child diffs $\rightarrow$ Checker re-audit) append linearly into the turn history for prompt caching across turns.
+- **Prompt Cache Write: ENABLED**: In contrast to purely stateless single-query lookups, the refactoring session maintains a multi-turn linear trajectory across iterative proposals.
+- **Compact-on-Exceed**: When accumulated turn tokens exceed the context threshold, older conversation is compacted by well-known head-compact-tail method.
 
 
 ---
@@ -336,7 +338,7 @@ async def query_knowledge(
 
 ## 6. Termination Conditions
 
-1. **Normal Termination**: `VerifierAgent` inspects code solution and approved knowledge updates, emitting `[APPROVE: TERMINATE]` to satisfy AutoGen's `TextMentionTermination`.
+1. **Normal Termination**: `TaskSolverAgent` completes task execution and returns the final code/solution response (solution verification harness and conversational session lifecycle are detailed in `architecture_runner.md`).
 2. **Safety Guardrail Termination**:
    - `MaxMessageTermination(max_messages=16)`: Halts runaway execution after 16 conversational rounds, returning partial artifacts.
    - Per-path retry limit: Maximum 2 consecutive retry attempts on identical knowledge paths.

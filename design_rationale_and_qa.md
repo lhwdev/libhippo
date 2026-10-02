@@ -58,10 +58,10 @@
 
 ### Q4. Why decouple CheckerAgent (TypeSafe Jev) from VerifierAgent (LLM) for normal reviews?
 - **The Trade-off**:
-  - Running a full flagship LLM (`gpt-4o` or `o3-mini`) to review every routine 2-line markdown addition incurs severe token latency ($1\sim 3\text{s}$) and financial overhead, alongside subtle schema drift risks.
+  - Running a full flagship LLM (`gpt-6.1-sol` or `gpt-6-astra`) to review every routine 2-line markdown addition incurs severe token latency ($1\sim 3\text{s}$) and financial overhead, alongside subtle schema drift risks.
 - **The Dual-Tier Resolution**:
-  - **Routine Review Gate (`CheckerAgent` powered by TypeSafe Jev)**: Validates schema conformance, hierarchy fit, sizing bounds, importance scoring, and sibling coalescence. Approved diffs (`PASS`) commit directly: **0 LLM token burn, sub-100ms latency**.
-  - **LLM Escalation Gate (`VerifierAgent`)**: Heavy LLM reasoning is reserved strictly for high-order architectural decisions: code solution audits, hierarchy refactoring on `OVERSIZED` nodes, and semantic deprecation conflicts.
+  - **Routine Review Gate (`CheckerAgent` powered by TypeSafe Jev)**: Validates schema conformance, hierarchy fit, sizing bounds, importance/effectiveness scoring, content quality, and sibling coalescence. Approved diffs (`PASS`) commit directly: **0 LLM token burn, sub-100ms latency**.
+  - **LLM Escalation Gate (`VerifierAgent` powered by `gpt-6.1-sol`)**: Heavy LLM reasoning is reserved strictly for high-order architectural decisions: hierarchy refactoring (`split/group`) on `OVERSIZED` nodes, and semantic deprecation conflicts. *(Task solution code auditing is decoupled to `architecture_runner.md`)*.
 
 ### Q5. Why use bidirectional hysteresis and asymmetric metrics for document length regulation?
 - **The Thrashing Risk**:
@@ -102,6 +102,14 @@
   - `practical_utility` evaluates **actionable directives** for prescriptive rules, and **precision/completeness** for declarative references. Syntax dictionaries score $1.0$ as readily as strict rules.
   - Deterministic Python guards catch syntax errors (unmatched code fences, invalid YAML frontmatter) at 0 token cost.
   - Content quality failures (grammar $< 0.40$, markdown formatting $< 0.40$, practical utility $< 0.30$, or unclosed code fences) emit `verdict = "REVISE_CONTENT"`, distinct from schema errors (`REVISE_SCHEMA`).
+
+### Q9. How is context managed in iterative Check-Verify-Curate refactoring loops?
+- **The Dilemma**:
+  - Complex hierarchy refactoring (`OVERSIZED` partitions) may require multiple cycles of `Checker` $\rightarrow$ `Verifier` $\rightarrow$ `Curator` $\rightarrow$ `Checker`. Blindly dumping full documents and diffs across rounds causes rapid context saturation and cache invalidation.
+- **Resolution (Linear Stacking + Compact Exceed Context + Cache Writing)**:
+  - **Linear Stacking**: Turns append sequentially, preserving prefix cache continuity during active refactoring discussion.
+  - **Prompt Cache Write: ENABLED**: Because multi-turn refactoring loops iteratively refine proposals across rounds, caching the linear prefix allows subsequent turns to read previous discussion at ~0.10x cached input rates, rapidly amortizing the initial 1.25x cache write fee.
+  - **Compact-on-Exceed**: When accumulated tokens cross the session watermark, older intermediate proposals are collapsed into compact pointers (`[Previous Round: path, verdict, summary]`), preserving the refactoring trajectory while keeping active working context lean.
 
 ---
 
@@ -147,15 +155,27 @@
   - **Zone 3 (Lazy Compaction)**: Triggered only at high token watermarks (e.g., 8,000 tokens). Evicts bulky past tool outputs by replacing raw snippets with concise markers (`[Referenced: common/.../syntax.md]`) while preserving reasoning traces.
   - *(See [architecture_runner.md](architecture_runner.md) for complete runner lifecycle, zone definitions, and eviction data structures).*
 
+### Q3. Why disable prompt cache writes on single-use lookups (BookKeeper) while enabling them for Check-Verify refactoring loops?
+- **The Financial Dilemma**:
+  - OpenAI applies a cache write surcharge (~1.25x the standard input rate) when populating the prompt cache, expecting savings on subsequent cache reads (~0.1x).
+  - A subagent operating on strictly one-off tasks (e.g. `BookKeeperAgent` in its **Zero-Context Sandbox** or one-shot web scraping) never re-reads its prompt; paying the 1.25x surcharge for single-use queries is strictly wasteful.
+- **The Resolution**:
+  - **Cache Write: DISABLED** on `BookKeeperAgent` (and one-off `CuratorAgent` scrapes): Single-use prompts are billed at the standard baseline input rate, avoiding the 1.25x write surcharge on prompts that will never be re-read.
+  - **Cache Write: ENABLED** on:
+    1. `TaskSolverAgent`: Repeated conversational turns and iterative problem solving.
+    2. **Check $\rightarrow$ Verify Refactoring Context Loop** (`VerifierAgent` and `CuratorAgent` during refactoring cycles): Sequential turns append linearly, allowing subsequent rounds of split planning, drafting, and re-auditing to read cached prefixes at ~0.10x cost, rapidly amortizing the initial write fee.
+
 ---
 
 ## 5. Model Selection Rationale & Verification Benchmarks
 
 ### 5.1 Model Tiering Philosophy
-LibHippo matches model tiers to task complexity and latency constraints:
-- **Flagship LLM (`gpt-4o` / `o3-mini`)**: Reserved for open-ended code generation (`TaskSolverAgent`) and high-stakes auditing/refactoring (`VerifierAgent`).
-- **Lightweight LLM (`gpt-4o-mini`)**: Deployed for structured, zero-context tasks (`BookKeeperAgent`, `CuratorAgent`) where speed and low cost (1/15th) dominate.
-- **Typed Evaluator (`TypeSafe Jev`)**: Used by `CheckerAgent` for deterministic, typed structural audits, eliminating LLM token costs on routine reviews.
+LibHippo matches model tiers to task complexity, latency constraints, and operational cost:
+- **User-Configurable Flagship (`TaskSolverAgent`)**: Selected by the user via UI/CLI according to task complexity and cost preference.
+- **High-Order Refactoring Authority (`gpt-6.1-sol` for `VerifierAgent`)**: Delivers near-Astra architectural reasoning for complex hierarchy partitioning and disk mutations at $2.00 / $10.00, completely bypassing the prohibitive cost of the `o1` series ($15.00 / $60.00).
+- **High-Efficiency Web Draftsman (`gpt-6-luna` for `CuratorAgent`)**: Leverages a 1.05M token context window at $0.10 / $0.50 to ingest whole API documentation pages without truncation.
+- **Ultra-Fast Sub-Second Librarian (`gpt-5-nano` for `BookKeeperAgent`)**: Optimized for high-throughput query expansion and snippet extraction at $0.05 / $0.40, maintaining sub-300ms interactive retrieval response times.
+- **Deterministic Typed Gatekeeper (`TypeSafe Jev` for `CheckerAgent`)**: Evaluates taxonomy, sizing hysteresis, importance/effectiveness, and content quality deterministically with $0 LLM token cost.
 *(See [architecture.md#3-agent-specifications-models-and-context-isolation](architecture.md#3-agent-specifications-models-and-context-isolation) for full agent configuration matrix).*
 
 ---

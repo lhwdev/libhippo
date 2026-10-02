@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import logging
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 import tiktoken
@@ -362,7 +362,7 @@ class CheckerAgent(BaseHippoAgent):
             details={
                 "is_coalescence_candidate_prob": is_coalescence_candidate,
                 "has_redundancy_prob": has_redundancy,
-                "token_count": token_count_bound,
+                "token_count_bound": token_count_bound,
             },
         )
 
