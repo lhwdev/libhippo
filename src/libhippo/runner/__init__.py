@@ -8,6 +8,7 @@ from libhippo.runner.config import (
     SkillDefinition,
 )
 from libhippo.runner.discovery import ResourceDiscovery
+from libhippo.runner.env import get_env_file_candidates, load_env_hierarchy
 from libhippo.runner.governor import WorkloadGovernor
 from libhippo.runner.harness import GeneralAgentHarness
 from libhippo.runner.memory import ContextMemory
@@ -57,6 +58,8 @@ __all__ = [
     "ProjectSecurityPolicy",
     "ResourceDiscovery",
     "SandboxRunner",
+    "get_env_file_candidates",
+    "load_env_hierarchy",
     "SidecarExecutor",
     "SecurityRuleList",
     "SkillDefinition",

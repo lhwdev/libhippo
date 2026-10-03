@@ -10,6 +10,7 @@ from typing import Any
 import yaml
 
 from libhippo.runner.config import GlobalMcpConfig, HarnessConfig, McpServerConfig, SkillDefinition
+from libhippo.runner.env import load_env_hierarchy
 
 
 class ResourceDiscovery:
@@ -106,3 +107,16 @@ class ResourceDiscovery:
             except Exception:
                 pass
         return GlobalMcpConfig()
+
+    def load_env(self, environment: str | None = None, override: bool = False) -> list[Path]:
+        """Load env from available combination of .env.local, .env.<env>.local, .env.<env>, .env.
+
+        Checks workspace_root as primary base directory, with user_config_dir as fallback.
+        """
+        extra_dirs = [self.config.user_config_dir]
+        return load_env_hierarchy(
+            base_dir=self.workspace_root,
+            environment=environment,
+            override=override,
+            extra_dirs=extra_dirs,
+        )

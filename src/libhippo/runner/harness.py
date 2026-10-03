@@ -63,6 +63,10 @@ class GeneralAgentHarness:
         self._is_paused: bool = False
         self._current_gen_task: asyncio.Task[Any] | None = None
 
+        # 0. Discovery & Environment loading
+        self.discovery = ResourceDiscovery(workspace_root=self.workspace_root, config=self.config)
+        self.discovery.load_env()
+
         # 1. Project & Sandbox
         self.project_manager = ProjectManager(workspace_root=self.workspace_root, config=self.config)
         self.sandbox = sandbox or BubblewrapSandboxRunner(
@@ -116,7 +120,6 @@ class GeneralAgentHarness:
         self.sidecar = SidecarExecutor(model_client=self.model_client)
 
         # 7. Resource Discovery & Extensibility
-        self.discovery = ResourceDiscovery(workspace_root=self.workspace_root, config=self.config)
         self.skills: dict[str, SkillDefinition] = {}
         self.auto_discover()
 

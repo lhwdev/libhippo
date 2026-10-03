@@ -52,6 +52,38 @@ def test_resource_discovery(tmp_path: Path):
     assert "Do test." in skills["my-skill"].system_prompt
 
 
+def test_env_hierarchy_loading(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Test loading env from available combination of .env.local, .env.<env>.local, etc."""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+
+    # Clear test env vars
+    monkeypatch.delenv("TEST_VAR_A", raising=False)
+    monkeypatch.delenv("TEST_VAR_B", raising=False)
+    monkeypatch.delenv("TEST_VAR_C", raising=False)
+    monkeypatch.delenv("TEST_VAR_D", raising=False)
+
+    # 1. Base .env
+    (ws / ".env").write_text("TEST_VAR_A=base_a\nTEST_VAR_B=base_b\nTEST_VAR_C=base_c\nTEST_VAR_D=base_d\n", encoding="utf-8")
+    # 2. Environment specific .env.development
+    (ws / ".env.development").write_text("TEST_VAR_B=dev_b\nTEST_VAR_C=dev_c\n", encoding="utf-8")
+    # 3. General local .env.local
+    (ws / ".env.local").write_text("TEST_VAR_C=local_c\n", encoding="utf-8")
+    # 4. Environment local .env.development.local
+    (ws / ".env.development.local").write_text("TEST_VAR_D=dev_local_d\n", encoding="utf-8")
+
+    cfg = HarnessConfig(workspace_root=ws)
+    disco = ResourceDiscovery(workspace_root=ws, config=cfg)
+    loaded_files = disco.load_env(environment="development")
+
+    assert len(loaded_files) == 4
+    import os
+    assert os.environ.get("TEST_VAR_A") == "base_a"
+    assert os.environ.get("TEST_VAR_B") == "dev_b"
+    assert os.environ.get("TEST_VAR_C") == "local_c"
+    assert os.environ.get("TEST_VAR_D") == "dev_local_d"
+
+
 @pytest.mark.asyncio
 async def test_conversation_persistence(tmp_path: Path):
     """Test ConversationSession persists messages, artifacts, and tasks."""
