@@ -152,7 +152,7 @@
 - **LibHippo's 3-Zone Strategy**:
   - **Zone 1 (Immutable Prefix)**: System prompt, static user preferences, and catalog spec remain constant (100% cache hit rate).
   - **Zone 2 (Append-Only Linear History)**: Turns, reasoning traces, and retrieved snippets append sequentially, preserving previous KV-cache.
-  - **Zone 3 (Lazy Compaction)**: Triggered only at high token watermarks (e.g., 8,000 tokens). Evicts bulky past tool outputs by replacing raw snippets with concise markers (`[Referenced: common/.../syntax.md]`) while preserving reasoning traces.
+  - **Zone 3 (Lazy Compaction)**: Triggered at calibrated model-adaptive watermarks. Evicts bulky past tool outputs by replacing raw snippets with concise markers (`[Referenced: common/.../syntax.md]`) while preserving reasoning traces.
   - *(See [architecture_runner.md](architecture_runner.md) for complete runner lifecycle, zone definitions, and eviction data structures).*
 
 ### Q3. Why disable prompt cache writes on single-use lookups (BookKeeper) and how can we cache ONLY system prompts?
@@ -218,6 +218,78 @@
   - Only the new 500 lines of error log are processed as new tokens.
   - Runtime parameters can be dynamically down-regulated (`reasoning_effort = "low"` or `"minimal"`, `temperature = 0.0`), yielding near-instant generation with low output tokens while maintaining maximum context fidelity.
 - **Stateless Exception**: If a lightweight model like `gpt-5-nano` is used, it should be kept **strictly stateless** (receiving only `[Initial Goal]` + `[Error Log]`, staying under 1,024 tokens to trigger the sub-1k stateless cache bypass).
+
+### Q7. How does the Harness maintain temporal awareness without invalidating the static KV-cache?
+- **The Dilemma**: Agents need temporal awareness to answer *"how long did this task take?"*, enforce *"halt after 1 hour"*, or order commits chronologically. However, embedding dynamic timestamps into the system prompt (Zone 1) changes the bitwise prefix on every turn, completely breaking prompt caching.
+- **The Turn-Level Tagging Resolution**:
+  - Zone 1 remains 100% static and cache-warm.
+  - The harness injects a micro-metadata tag directly into the tail user turn in Zone 2:
+    `<turn_metadata timestamp="2026-10-03T16:47:02+09:00" session_elapsed="14m 20s" branch="main"/>`
+  - Together with the programmatic `get_status()` tool, this gives the model exact real-time temporal grounding with 0 cache invalidation.
+
+### Q8. Why adopt a unified `write_file` and programmatic `search_file` over shell commands?
+- **Programmatic Ripgrep (`search_file`)**: Invoking ripgrep via raw shell commands (`run_command("rg ...")`) suffers from shell quoting hazards, argument escaping bugs, and risks bypassing `.gitignore` if flags are missed. Implementing `search_file` programmatically via native library bindings ensures `.gitignore` is unconditionally respected and output is returned structured without terminal ANSI noise.
+- **Unified `write_file` (Whole, Range, Patch)**:
+  - Different editing tasks require different ergonomics: creating new modules is best done via whole-file creation (`mode="whole"`); updating bounded function signatures is best done via line-ranges (`mode="range"`); fixing targeted variable references across large files is best done via exact string search-and-replace (`mode="patch"`).
+  - Unifying them into a single `write_file` tool eliminates tool proliferation while matching modern agent standards (Claude Code's `Edit`/`Write`, Antigravity's `replace_file_content`). Adding `delete_file` provides complete lifecycle symmetry.
+
+### Q9. How does `/btw` answer user questions mid-run without disrupting the primary agent or invalidating KV-cache?
+- **The Problem**: A user watching a long build or reasoning sequence wants to ask a side question (*"which file was that error in?"* or *"why did you choose approach B?"*). Injecting this question into the primary agent's linear queue either pauses the task or pollutes the primary context with conversational tangents that degrade task convergence.
+- **The Ephemeral Sidecar Resolution**:
+  - The harness intercepts `/btw <query>` and spawns an ephemeral read-only sidecar agent in parallel.
+  - **100% KV-Cache Read Hit**: The sidecar takes a snapshot of the primary agent's working context up to the latest completed turn. Because that context prefix is already warm in the provider's cache, the sidecar generates answers with zero TTFT and discounted cache-read rates ($0.10\times \sim 0.25\times$).
+  - **Zero State Pollution**: The sidecar outputs to a dedicated sidecar pane/stream. Its turns are completely omitted from the primary agent's Zone 2 history, allowing the primary agent to continue executing its task uninterrupted.
+
+### Q10. How does the Harness safely interrupt active streaming, subprocesses, and tool loops without corrupting state?
+- **The Problem**: Naively killing an agent mid-step causes corrupted half-written files, orphaned shell subprocesses in the background, or mangled message histories with missing tool response tags.
+- **The Defense-in-Depth Cancellation Pipeline**:
+  - **Async Event Signaled**: A cancellation trigger (`Ctrl+C`, Escape, or Web UI Stop button invoking `harness.interrupt()`) trips an active `asyncio.Event` cancellation token.
+  - **Subprocess SIGINT**: If a bash tool is executing, the harness sends `SIGINT` to the PTY process group (escalating to `SIGKILL` after 1,000ms), capturing whatever partial stdout was emitted.
+  - **Atomic File Guard**: File writes in progress complete atomically before the cancellation takes effect; pending queued file writes are cleanly evicted.
+  - **Context Clean-up**: The harness appends a structured `<interrupt_event>` marker to Zone 2, transitioning the session cleanly to a `PAUSED` state. This prevents broken tool call IDs and allows the developer to provide steering input or revert edits cleanly.
+
+### Q11. Can long-running reasoning (e.g. OpenAI o1/o3 10-minute thinking) be paused mid-stream, injected with prompts, and resumed?
+- **The Provider API Reality**:
+  - Frontier reasoning models (OpenAI o1, o3, GPT-6) do **not** support latent state pausing and resumption. An active forward-reasoning generation is an atomic autoregressive sampling process on provider inference hardware; there is no API primitive to freeze hidden attention states, inject intermediate user tokens into the latent thought vector, and resume.
+- **Mid-Turn Steering via OpenAI Responses WebSocket API (`response.steer`)**:
+  - On persistent WebSocket connections (`wss://api.openai.com/v1/responses`), the OpenAI API natively supports mid-turn steering without tearing down connections:
+    1. **Client Event**: Client sends `{"type": "response.steer", "previous_response_id": "...", "input": "..."}` while the model is in-flight.
+    2. **Acknowledgment**: Server immediately returns `response.steer.accepted`, confirming the input is queued.
+    3. **Safe Boundary Transition**: The model finishes its current output segment or tool execution at a safe boundary. The active response completes with `response.incomplete` (`reason: "steered"`).
+    4. **Successor Response**: The server automatically provisions a successor response (`response.created`) that seamlessly combines prior context, output generated up to the cut, and the new steering input, keeping server-side KV-cache warm.
+    5. **Tool Wait Boundary (`response.steer.pending`)**: If the model is awaiting tool execution or user approval, the server holds steering until tool results arrive.
+- **Mid-Reasoning Interruption on Stateless HTTP/SSE Streaming**:
+  - When operating over standard HTTP/SSE streaming (`aclose()`):
+    1. **Immediate Stream Abort**: Frontend triggers `harness.interrupt()`, which immediately executes `await response.aclose()`. The provider halts execution, terminating further output token billing.
+    2. **Partial Artifact Capture**: Any streamed thought summaries, delta tokens, or partial code emitted before minute 5 are preserved in Zone 2 wrapped in an `<interrupted_turn>` record.
+    3. **Steering Turn Construction**: The developer supplies new instructions (*"Halt that approach, use approach Y instead"*), appended as a new user message turn.
+    4. **KV-Cache Read Hit**: The new generation request hits the **already warm KV-cache for the entire conversation prefix** prior to the interrupted turn at 100% read discount.
+    5. **Fresh Reasoning Alignment**: The model launches a fresh reasoning burst directly informed by the new steering instructions. While it does not resume the old latent vector, it avoids wasting the remaining 5 minutes on the invalid path.
+- **Concurrent `/btw` During Extended Reasoning**:
+  - Sidecar queries do **not** pause or abort the primary agent's 10-minute thinking pass.
+  - The sidecar launches in a concurrent asynchronous task over a separate connection, reading the warm cached parent prefix and delivering sub-second answers without interrupting the primary reasoning pass.
+
+### Q12. How does LibHippo allocate WebSockets across agents, and how does HTTP fallback work?
+- **The Bandwidth Incentive & Invariant**:
+  - In multi-turn coding and refactoring loops, re-uploading cumulative conversation history over stateless HTTP requests wastes enormous uplink bandwidth (e.g. 50k tokens of JSON per turn).
+  - The OpenAI Responses WebSocket API solves this via `previous_response_id`: the client transmits only the new delta input item, cutting uplink payloads by up to ~90%.
+  - Because each WebSocket is strictly sequential (1 active in-flight response at a time, no multiplexing), agents requiring concurrent tool loops cannot share the exact same socket.
+- **The Targeted Multi-Socket Topology**:
+  1. **TaskSolver (Main & Subagents) $\rightarrow$ Dedicated WebSockets**:
+     - *Main TaskSolver*: Dedicated persistent WebSocket capturing ~90% bandwidth reduction across the main coding loop and enabling native `response.steer`.
+     - *TaskSolver Subagents*: Each parallel subagent (error triage workers, subproblem delegates) gets its own dedicated WebSocket. This allows concurrent tool execution without blocking the main agent or violating socket serialization.
+  2. **VerifierAgent $\rightarrow$ Dedicated WebSocket**:
+     - Operates the multi-turn **Checker-Verifier refactoring loop** (`Verifier` $\leftrightarrow$ `Checker`/`Curator`).
+     - A dedicated WebSocket allows iterative refactoring passes to chain deltas without re-uploading the entire refactoring trajectory on every round.
+  3. **Others $\rightarrow$ Stateless HTTP Request Pool**:
+     - `BookKeeperAgent` (sub-1k fast queries), `CuratorAgent` (one-off document fetches), and `/btw` sidecar queries use stateless HTTP requests (via AutoGen's `OpenAIChatCompletionClient`), eliminating idle socket overhead while benefiting from warm prompt cache reads.
+- **AutoGen Client Integration & `openai[realtime]`**:
+  - AutoGen 0.4 (`autogen-ext[openai]`) natively provides `OpenAIChatCompletionClient` over standard HTTP/REST with SSE streaming. It does not implement a built-in WebSocket client for OpenAI model inference (WebSockets in AutoGen are used for UI/FastAPI streaming and MCP tool servers).
+  - LibHippo adds the official `openai[realtime]` dependency, which brings in the verified `websockets` runtime and connection primitives.
+  - LibHippo leverages AutoGen's built-in client directly for all HTTP agents and the automatic fallback layer. For targeted WebSockets (`TaskSolverAgent`, `VerifierAgent`), LibHippo provides a custom `OpenAIResponsesWebSocketClient` adapter (powered by `openai[realtime]` and implementing AutoGen's `ChatCompletionClient` interface) to connect to `wss://api.openai.com/v1/responses`.
+- **Resilient Auto-Failover to HTTP**:
+  - If any active WebSocket connection drops, encounters proxy firewalls, or hits OpenAI's 60-minute connection lifetime limit, the harness transparently fails over to HTTP streaming.
+  - Because Zone 1 and Zone 2 contexts are preserved in memory, the fallback HTTP request hits the OpenAI prompt-cache at 100% read discount, resulting in zero session degradation.
 
 ---
 

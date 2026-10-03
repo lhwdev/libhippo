@@ -10,12 +10,14 @@ In most time, read `architecture.md` first.
 
 - Use `rg` (ripgrep) rather than `grep`.
 - Be conscise, try to reduce:
+  * rarely used English words,
   * unnecessary explaination,
   * comments that can be figured out right from code.
 - When adding code/text to file, follow style of the file.
 - Preserve previous file if unnecessary.
 - When refactoring internal codes, less consider backward compatibility;
   try to refactor use cases.
+- Search for web when dealing with latest things, i.e. OpenAI models, API.
 
 ## Planning Rules
 

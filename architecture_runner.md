@@ -26,6 +26,148 @@ LibHippo cleanly decouples into two distinct architectural pillars:
    - Phased workflow harness: Task Alignment $\rightarrow$ Planning $\rightarrow$ Implementation $\rightarrow$ Review & Verification $\rightarrow$ Post-Task Maintenance.
    - The LibHippo knowledge management system integrates seamlessly into this harness as a first-class pluggable toolset.
 
+### 1.2 Modular Engine & Client Decoupling (Backend vs. Frontend)
+The harness is engineered as a headless, event-driven engine separated from user-facing clients:
+- **Headless Backend Core (`libhippo.runner.GeneralAgentHarness`)**:
+  - Implemented as a programmatic Python API with asynchronous event streaming.
+  - Emits granular event streams: token chunks, tool call execution events, approval requests for review modes, interactive modal questions, and background process notifications.
+  - **Web API Ready**: The Python async API translates directly into REST/FastAPI endpoints, WebSockets, or Server-Sent Events (SSE) as-is for remote or browser workspaces.
+- **Frontend Clients (CLI & Web UI)**:
+  - *Deferred Implementation*: Terminal CLI (similar to `claude` / `agy` CLI) and Web UI will consume the backend's event stream.
+  - The core harness maintains zero dependencies on presentation layers, UI frameworks, or terminal formatting.
+
+### 1.3 User Command & Control Pipeline: Frontend-Driven Dispatch, `/btw`, and Interrupts
+Command parsing is decoupled from the backend core and owned entirely by the **Frontend Layer** (CLI, Web UI, IDE Extension):
+
+```mermaid
+flowchart TD
+    UserInput([User Action in Frontend: CLI or Web UI]) --> ActionCheck{Action Type}
+    
+    ActionCheck -->|Sidecar Inquiry: /btw or UI Drawer| SidecarDispatch[Frontend calls: harness.ask_sidecar<br>Snapshots warm parent KV-cache<br>Runs in parallel; primary agent unaffected]
+    ActionCheck -->|Interrupt: Ctrl+C, Escape, or Stop Button| InterruptHandler[Frontend calls: harness.interrupt<br>Signals cancellation token<br>Aborts in-flight stream or PTY subprocess]
+    ActionCheck -->|Skill Invocation: /custom-skill or UI Modal| SkillRouter[Frontend calls: harness.invoke_skill<br>Routes to custom skill handler]
+    ActionCheck -->|Standard Prompt / Steering| NormalTurn[Frontend calls: harness.step<br>Appends to Zone 2 linear history]
+```
+
+- **Frontend Owns Command Ergonomics**:
+  - The CLI or Web UI intercepts user keystrokes, input text, or UI triggers.
+  - Slash command syntax (e.g. `/btw <query>`) is parsed in the presentation layer before reaching the backend engine. A Web UI may use a dedicated sidecar drawer or quick-action buttons rather than slash commands.
+  - The backend engine (`GeneralAgentHarness`) remains headless and exposes programmatic asynchronous methods: `step()`, `ask_sidecar()`, `interrupt()`, and `invoke_skill()`.
+  - Commands like `/status` and `/interrupt` are intentionally **omitted** from backend slash command parsers: ambient temporal and system status is already injected via turn metadata and programmatic `get_status()`, while interruption is a first-class cancellation event triggered by UI buttons or terminal signals.
+
+#### 1.3.1 Ephemeral Sidecar Agent for Mid-Run Queries (`/btw`)
+- **Use Case**: While the primary agent is running tests, writing files, or executing multi-step reasoning, the user enters `/btw <question>` (e.g. `"/btw why did we choose SQLite over Postgres here?"` or `"/btw which file caused that compiler error?"`).
+- **How It Works**:
+  1. **Zero Primary Interference**: Does NOT pause, queue behind, or alter the primary agent's active execution plan.
+  2. **Read-Only Context Snapshot**: Takes a snapshot of the primary agent's current working context (Zone 1 static prefix + Zone 2 history up to the latest completed turn).
+  3. **100% KV-Cache Read Hit**: Because the parent context is **already warm in the model provider's cache**, the sidecar agent executes against the exact same model with a 100% prompt-cache read discount ($0.10\times \sim 0.25\times$), delivering sub-second answers.
+  4. **Zero State Pollution**: The sidecar's Q&A stream is rendered to a separate UI pane or side channel. It is not appended to the primary agent's linear history unless the user explicitly promotes it.
+
+#### 1.3.2 Safe Interruption & Cancellation Architecture
+When the user triggers an interrupt (via `Ctrl+C`, Escape, or a Web UI Stop button):
+1. **Cancellation Event**: An `asyncio.Event` / cancellation token (`interrupt_event`) is signaled across the active runner.
+2. **3-State Cancellation Handling**:
+   - *During Streaming Generation*: Immediately aborts the HTTP streaming connection (`aclose()`). Partial tokens and reasoning generated up to the interrupt are safely recorded.
+   - *During Tool Execution (Subprocess)*: If executing bash inside `run_command`, sends `SIGINT` to the PTY process group (escalating to `SIGKILL` if unresponsive after 1,000ms), flushing captured output to `tasks/<task_id>.log`.
+   - *During File Operations*: In-flight atomic writes (`overwrite_file`, `write_file`) complete atomically to prevent file corruption; pending writes in the queue are cancelled.
+3. **Context Preservation & Safe Recovery**:
+   - The harness appends a clean `<interrupt_event>` tag to Zone 2 preserving what succeeded and what was aborted.
+   - The agent transitions to `PAUSED` state. The developer can now steer the agent (*"Stop that approach, try approach Y"*), resume, or revert uncommitted file edits.
+
+#### 1.3.3 Interrupt, Steering (`response.steer`), and Sidecar (`/btw`) Dynamics During Extended Reasoning
+Modern reasoning models (such as OpenAI o1, o3, and frontier thinking models) perform extended reasoning bursts that can span several minutes for complex architectural synthesis. The harness supports two distinct steering and cancellation transport modes:
+
+##### Mode A: Native Mid-Turn Steering via WebSocket API (`response.steer`)
+On persistent **OpenAI Responses WebSocket connections** (`wss://api.openai.com/v1/responses`), the harness leverages native mid-turn steering without tearing down connections:
+1. **Queueing Steering Input**: While generation/reasoning is in-flight, the frontend triggers steering input:
+   ```json
+   {
+     "type": "response.steer",
+     "previous_response_id": "resp_active_id",
+     "input": "Halt this implementation path; switch to approach Y using SQLite."
+   }
+   ```
+2. **Server Acknowledgment (`response.steer.accepted`)**: The OpenAI server queues the input.
+3. **Safe Boundary Transition**:
+   - The model finishes its current atomic output segment or tool invocation at a safe boundary.
+   - The active response completes with a `response.incomplete` event (`incomplete_details.reason = "steered"`).
+4. **Automatic Successor Response (`response.created`)**:
+   - The server automatically provisions a **successor response** incorporating the prior context, whatever output/thought trace was generated before the steering cut, and the new steering input.
+   - **Zero Reconnection Overhead**: Eliminates client-side context stitching and HTTP reconnect latency; server-side KV-cache stays warm.
+5. **Tool Wait Boundary (`response.steer.pending`)**: If the model is awaiting a tool execution or approval, the server holds steering until the tool completes or aborts.
+
+##### Mode B: Standard HTTP/SSE Streaming Mode (`aclose()` Abort + Steering Turn)
+When operating over standard stateless HTTP/SSE streaming endpoints:
+1. *Immediate Stream Termination*: Calling `harness.interrupt()` closes the underlying HTTP connection (`await response.aclose()`). The provider halts generation, immediately cutting off output token billing.
+2. *Partial Trace Capture*: Streamed output chunks and thought summaries received before minute 5 are recorded in Zone 2 inside an `<interrupted_turn duration="5m 02s" status="aborted_by_user">` block.
+3. *Prompt Caching on the Steering Turn*: When the user submits steering guidance, the harness sends a fresh request.
+4. *KV-Cache Read Hit*: The entire conversation prefix prior to the interrupted turn is **already warm in the provider's prompt cache** (50% discount, near-zero TTFT). The model starts a fresh reasoning burst on the new trajectory.
+
+##### Ephemeral Sidecar Queries (`/btw`) During Extended Reasoning
+- While the primary agent is in the middle of a 10-minute thinking run (over either WebSocket or HTTP), `/btw` queries **never block or steer the primary agent**.
+- The frontend calls `harness.ask_sidecar(query)`.
+- The sidecar launches in a concurrent asynchronous task over a separate channel.
+- Reading the snapshot of the parent context (Zone 1 + Zone 2 up to turn start), the sidecar hits the provider's warm prompt cache and returns answers in ~1 second without touching or disturbing the primary agent's deep reasoning.
+
+### 1.4 Tiered Network Transport Architecture: Targeted WebSockets with HTTP Fallback
+
+To minimize client-to-server payload overhead while maintaining complete concurrency isolation, the harness implements a targeted multi-transport topology:
+
+```mermaid
+flowchart TD
+    subgraph AgentLayer["LibHippo Agent Architecture"]
+        TSMain[TaskSolverAgent<br>Main Coding Loop]
+        TSSub[TaskSolver Subagents<br>Parallel Triage & Subproblems]
+        Verifier[VerifierAgent<br>Checker-Verifier Loop]
+        Others[Other Agents & Tools<br>BookKeeper / Curator / /btw Sidecar]
+    end
+
+    subgraph TransportLayer["Transport Layer (libhippo.runner)"]
+        WS_Main[Persistent WebSocket #1<br>TaskSolver Main: Delta chaining & response.steer]
+        WS_Subs[Dedicated WebSockets #2..N<br>Per-Subagent: Concurrent delta loops]
+        WS_Verif[Dedicated WebSocket #V<br>Verifier: Multi-turn Checker-Verifier loop]
+        HTTP_Pool[Stateless HTTP Request Pool<br>autogen-ext OpenAIChatCompletionClient]
+        Failover{WS Drop / Error / 60m?}
+    end
+
+    TSMain --> WS_Main
+    TSSub --> WS_Subs
+    Verifier --> WS_Verif
+    Others --> HTTP_Pool
+
+    WS_Main -.-> Failover
+    WS_Subs -.-> Failover
+    WS_Verif -.-> Failover
+    Failover -- Automatic Failover --> HTTP_Pool
+```
+
+#### 1.4.1 Targeted WebSocket Allocation
+1. **TaskSolver (Main & Subagents) $\rightarrow$ Dedicated WebSockets**:
+   - **Main TaskSolver Loop**: Anchors a dedicated persistent WebSocket (`wss://api.openai.com/v1/responses`). Turns are linked via `previous_response_id`, transmitting **only the incremental delta** (tool returns / user guidance). This cuts uplink payload sizes by up to ~90% and enables native mid-turn steering (`response.steer`).
+   - **TaskSolver Subagents**: Each spawned subagent (e.g. parallel triage workers, subproblem delegates) provisions its **own dedicated WebSocket connection**. This preserves concurrent execution without violating OpenAI's 1-in-flight-response WebSocket invariant, giving every subagent its own delta-chained tool loop.
+2. **VerifierAgent $\rightarrow$ Dedicated WebSocket**:
+   - `VerifierAgent` governs multi-turn **Checker-Verifier refactoring loops** (collaborative review cycles with `CheckerAgent` and `CuratorAgent` during hierarchy partitioning and AST-level lint auditing).
+   - A dedicated persistent WebSocket drastically reduces token re-upload payload across iterative check/verify cycles.
+3. **Other Agents & Queries $\rightarrow$ Stateless HTTP**:
+   - **`BookKeeperAgent`**: Operates on sub-1k stateless queries (`query_knowledge` fast/medium fallbacks) with Zero-Context isolation; benefits from 0 socket maintenance overhead.
+   - **`CuratorAgent`**: Performs one-off web fetches/drafting passes.
+   - **`/btw` Sidecar Queries**: Lightweight ephemeral questions execute over HTTP in parallel without blocking or contending with active WebSocket streams.
+   - All HTTP clients leverage OpenAI prompt-cache breakpoints for discounted read rates.
+
+#### 1.4.2 AutoGen Built-in Integration & Resilient HTTP Fallback
+- **AutoGen Model Client Capabilities**:
+  - AutoGen 0.4 (`autogen-ext[openai]`) natively provides `OpenAIChatCompletionClient`, which communicates over **standard HTTP/REST** with SSE streaming. AutoGen does **not** have a built-in WebSocket client for OpenAI LLM inference (WebSockets in AutoGen are used for UI/frontend streaming and MCP tool servers).
+  - Therefore, AutoGen's native `OpenAIChatCompletionClient` directly powers:
+    1. **All HTTP-based agents**: `BookKeeperAgent`, `CuratorAgent`, `/btw` sidecars, and one-off tool queries.
+    2. **Automatic HTTP Fallback**: The resilient fallback path whenever a WebSocket disconnects.
+- **Custom Responses WebSocket Adapter (`OpenAIResponsesWebSocketClient`) Powered by `openai[realtime]`**:
+  - LibHippo includes the official `openai[realtime]` dependency, providing the OpenAI-verified `websockets` runtime (`websockets >= 13, < 16`) and async connection primitives.
+  - For targeted WebSockets (`TaskSolverAgent` and `VerifierAgent`), LibHippo implements a lightweight adapter subclassing AutoGen's standard `autogen_core.models.ChatCompletionClient` interface.
+  - This adapter connects to `wss://api.openai.com/v1/responses`, manages `previous_response_id` delta chaining and `response.steer`, and seamlessly slots into any AutoGen `AssistantAgent`.
+- **Failover Triggers & Zero State Loss**:
+  - If any active WebSocket connection drops, encounters network resets, or hits OpenAI's 60-minute connection lifetime ceiling, the adapter automatically fails over to the built-in AutoGen `OpenAIChatCompletionClient`.
+  - The fallback HTTP request submits the cached Zone 1/2 prefix, hitting the OpenAI server prompt-cache at **100% read discount** with zero developer disruption.
+
 ---
 
 ## 2. Workload & Token Governor
@@ -34,26 +176,30 @@ Autonomous coding agents can easily enter runaway loops or saturate model contex
 
 ```mermaid
 flowchart TD
-    TurnStart([Agent Turn Initiated]) --> CheckTurns{Turns >= max_turns (16)?}
+    TurnStart([Agent Turn Initiated]) --> CheckTurns{Turns >= max_turns?}
     CheckTurns -- Yes --> TerminateTurnLimit([Terminate: Max Turns Reached<br>Return Partial Artifacts])
     CheckTurns -- No --> CountTokens[Count Total Active Context Tokens]
     
-    CountTokens --> CheckSoft{Tokens >= soft_watermark (6,000)?}
+    CountTokens --> CheckSoft{Tokens >= soft_watermark?}
     CheckSoft -- No --> NormalExecution[Proceed to Agent Generation]
-    CheckSoft -- Yes --> CheckHard{Tokens >= hard_limit (8,000)?}
+    CheckSoft -- Yes --> CheckHard{Tokens >= hard_limit}
     CheckHard -- No --> WarnTelemetry[Emit Telemetry Warning & Proceed]
     CheckHard -- Yes --> TriggerCompaction[Trigger Zone 3 Lazy Compaction]
-    TriggerCompaction --> EvictPayloads[Evict Bulky Past Tool Outputs<br>Replace with [Referenced: path]]
-    EvictPayloads --> VerifyReduction{Tokens < compaction_target (4,000)?}
+    TriggerCompaction --> EvictPayloads[Evict Bulky Past Tool Outputs=]
+    EvictPayloads --> VerifyReduction{Tokens < compaction_target}
     VerifyReduction -- Yes --> NormalExecution
     VerifyReduction -- No --> PruneDrafts[Prune Oldest Intermediate Code Drafts]
     PruneDrafts --> NormalExecution
 ```
 
-### 2.1 Context Token Watermarks
-- **Soft Watermark ($6{,}000$ tokens)**: Telemetry warning; flags that context growth requires upcoming eviction.
-- **Hard Compaction Limit ($8{,}000$ tokens)**: Halts linear expansion; triggers deterministic Zone 3 payload compaction.
-- **Compaction Target ($4{,}000$ tokens)**: Reclaims context space so the agent retains at least 50% headroom for code generation.
+### 2.1 Model-Adaptive Context Budgeting
+Modern coding models offer 128k–200k (or larger) context windows. Rather than using legacy hardcoded thresholds, the harness calculates dynamic watermarks relative to the active model's window (`max_context_tokens`):
+
+| Threshold Level | Default Ratio (% of Context Window) | 128k / 200k Typical Value | Operational Action |
+| :--- | :--- | :--- | :--- |
+| **Soft Watermark** | **40% ~ 50%** | $\approx 60{,}000$ tokens | Emits telemetry warning; flags that context growth requires upcoming compaction. |
+| **Hard Trigger** | **60% ~ 70%** | $\approx 80{,}000 \sim 100{,}000$ tokens | Halts linear expansion; triggers deterministic Zone 3 tool payload eviction. |
+| **Compaction Target** | **25% ~ 30%** | $\approx 30{,}000 \sim 40{,}000$ tokens | Reclaims headroom, reducing active context back down to preserve reasoning sharpness and prevent "Lost in the Middle" degradation. |
 
 ### 2.2 Turn & Loop Circuit Breakers
 - **Maximum Conversational Turns**: Hard ceiling at 16 turns per task session.
@@ -94,13 +240,21 @@ To maximize provider KV-cache reuse (OpenAI, Anthropic, Gemini) and eliminate re
 - **Monotonic Extension**: New turns, tool arguments, and results append strictly to the tail. Existing turns are never modified or re-ordered during normal execution.
 
 ### 3.3 Zone 3: Deterministic Compaction
-When context crosses the $8{,}000$-token threshold, the harness scans historical tool outputs in Zone 2 from oldest to newest:
+When context crosses the hard compaction threshold ($\approx 80{,}000 \sim 100{,}000$ tokens), the harness scans historical tool outputs in Zone 2 from oldest to newest:
 - Replaces raw file contents or knowledge leaves with reference pointers:
   ```text
   [Referenced: src/libhippo/storage/store.py (lines 1-120)]
   [Referenced: common/web/html/syntax.md (relevance: 0.92)]
   ```
 - Retains full tool call signatures and model reasoning chains. If the agent needs to re-inspect code, it issues a targeted `view_file` slice.
+
+### 3.4 Turn-Level Metadata Injection (Temporal Awareness without Cache Busting)
+- **The Problem with Prefix Timestamps**: Injecting dynamic wall-clock timestamps or user session counters into the system prompt (Zone 1) changes the bitwise prefix on every turn, completely destroying prompt caching.
+- **The Solution**: Zone 1 remains 100% invariant. Instead, the harness automatically prefixes incoming user turns in Zone 2 with a lightweight metadata tag:
+  ```xml
+  <turn_metadata timestamp="2026-10-03T16:47:02+09:00" session_elapsed="14m 20s" branch="main"/>
+  ```
+- **Capability**: Enables the agent to evaluate temporal instructions (*"how long did this task take?"*, *"halt after 1 hour"*, *"revert changes from the last 10 minutes"*) with microsecond accuracy while preserving full KV-cache reuse.
 
 ---
 
@@ -110,19 +264,23 @@ The harness provides a complete, production-grade tool registry for software eng
 
 | Category | Tool Name | Arguments | Description & Operational Contract |
 | :--- | :--- | :--- | :--- |
-| **Filesystem** | **`view_file`** | `AbsolutePath`, `StartLine`, `EndLine`, `ContentOffset` | Reads line-addressed file slices (max 800 lines/call). Never loads unbounded files into context. |
-| | **`write_to_file`** | `TargetFile`, `CodeContent`, `Overwrite`, `Append` | Creates or atomically overwrites complete files, auto-creating parent directories. |
-| | **`replace_file_content`** | `TargetFile`, `TargetContent`, `ReplacementContent`, `StartLine`, `EndLine` | Replaces an exact contiguous block of code within a bounded line range. Enforces exact character matching. |
-| **Exploration** | **`search_code`** | `pattern`, `path`, `glob`, `flags` | High-speed code search utilizing `rg` (ripgrep). Returns file paths, line numbers, and matching lines. |
-| | **`list_dir`** | `path`, `depth`, `show_hidden` | Inspects directory structure and hierarchy up to a specified depth. |
-| **Execution** | **`run_command`** | `CommandLine`, `Cwd`, `WaitMsBeforeAsync`, `BypassSandbox` | Executes shell commands in bash. Synchronous wait up to `WaitMsBeforeAsync`; transitions to background task if long-running. |
-| | **`manage_task`** | `Action` ("status"\|"kill"\|"send_input"), `TaskId`, `Input` | Manages long-running or background processes (dev servers, test watchers, builds). |
+| **Filesystem** | **`view_file`** | `path`, `start_line`, `end_line`, `offset` | Reads line-addressed file slices (max 800 lines/call). Never loads unbounded files into context. |
+| | **`overwrite_file`** | `path`, `content` | Creates a new file or completely overwrites an existing file. Parent directories are auto-created. |
+| | **`write_file`** | `path`, `content`, `start_line`, `end_line`, `target` | Targeted file modification: either replaces line range (`start_line` to `end_line`) or exact string match (`target`). |
+| | **`delete_file`** | `path` | Safely removes a file, verified against workspace containment and review mode policies. |
+| **Exploration** | **`search_file`** | `pattern`, `path`, `glob`, `no_ignore`, `hidden`, `flags` | Programmatic ripgrep search that automatically respects `.gitignore` by default. Optional `no_ignore=True` flag searches gitignored files. |
+| | **`list_dir`** | `path`, `depth`, `show_hidden` | Programmatic directory tree traversal up to a specified depth. |
+| **Execution** | **`run_command`** | `cmd`, `cwd`, `wait_ms`, `bypass_sandbox` | Executes bash commands with standard output piped to `tasks/<task_id>.log`. Synchronously returns if finished within `wait_ms`; otherwise detaches to background with a reactive completion notification. |
+| | **`manage_task`** | `action` ("status"\|"wait"\|"kill"\|"send_input"), `task_id`, `input` | Inspects status, blocks until finished, terminates, or sends stdin to running background processes. |
+| **Environment** | **`get_status`** | *None* | Programmatically retrieves current system time, timezone, date, user info, active git branch, and elapsed session duration. |
 | **Interaction** | **`ask_question`** | `questions: list[Question]` | Renders an interactive modal with selectable options and custom write-in for clarifying ambiguous user intent. |
-| **Subagents** | **`invoke_subagent`** | `TypeName`, `Role`, `Prompt`, `Model`, `Workspace` | Spawns specialized child agents (`research`, `reviewer`) with isolated context and workspace branching. |
-| | **`send_message`** | `Recipient`, `Message` | Inter-agent communication channel between parent harness and running subagents. |
+| **Subagents** | **`invoke_subagent`** | `type`, `prompt`, `role`, `context_mode`, `model` | Spawns child agents. `context_mode="inherit"` reuses the parent's warmed KV prefix; `context_mode="isolated"` runs clean-slate sub-1k tasks. |
+| | **`manage_subagents`**| `action` ("status"\|"wait"\|"kill"), `subagent_id` | Manages child subagent lifecycles and polls completion status. |
+| | **`send_message`** | `recipient`, `message` | Inter-agent communication channel between parent harness and running subagents. |
 | **Web Research**| **`search_web`** | `query`, `domain` | Searches web engines (DuckDuckGo default, Tavily/Brave pluggable) for external documentation and solutions. |
 | | **`fetch_web`** | `url` | Scrapes and converts web pages to clean markdown text. |
-| **Knowledge** | **`query_knowledge`** | `query`, `effort`, `criticality` | Plugs in LibHippo's 3-tier adaptive knowledge retrieval system ([`architecture.md`](architecture.md)). |
+| **Knowledge** | **`query_knowledge`** | `query`, `effort`, `criticality` | Plugs in LibHippo's 3-tier adaptive knowledge retriever ([`architecture.md`](architecture.md)). |
+| | **`modify_knowledge`**| `action`, `path`, `content`, `metadata` | Dynamically discovered tool provider for updating project and common rules, guarded by mount permissions and Maker-Checker validation. |
 
 ### 4.1 Output-Aware Tool Execution & Subagent Fan-Out (Tool Virtualization)
 
@@ -218,18 +376,29 @@ flowchart LR
 - **Working Directory (`Cwd`) Enforcement**: `Cwd` must always resolve within `<workspace root>`. Commands attempting to run in `/tmp`, `/home`, or system root are blocked.
 - **Path Sanitization**: Absolute paths are verified to reside inside the workspace or the designated session scratch directory (`<appDataDir>/brain/<conversation_id>/scratch/`).
 
-### 5.2 Dual Sandbox Execution Modes
-1. **Standard Sandbox Mode (`BypassSandbox: false`)**:
-   - Default mode.
-   - Full read/write access strictly to the project workspace and session scratch directory.
-   - Network access is disabled.
-   - Commands are auto-approved without manual user prompts.
-2. **Bypass Sandbox Mode (`BypassSandbox: true`)**:
-   - Disables filesystem and network isolation.
-   - **Requires explicit user approval** via UI prompt.
-   - Reserved strictly for operations needing external network or system binaries.
+### 5.2 Operational Modes: Turbo, Default, and Request Review
+The harness configures user oversight via three operational modes:
 
-### 5.3 Prefix-Matchable Command Shaping
+| Mode | Autonomy Level | Approval Gates & Safety Policy |
+| :--- | :--- | :--- |
+| **`turbo`** | **Full Autonomy** | All workspace file writes, deletions, and commands execute without user confirmation modals. Auto-approves commands within workspace bounds; minimizes interruptions. |
+| **`default`** | **Balanced Safety** | Auto-approves safe workspace file reads/writes and standard sandboxed commands. Displays user approval modals for commands attempting to escape `<workspace root>`, operations requesting network (`BypassSandbox=True`), or destructive bulk actions. |
+| **`request_review`** | **Strict Oversight** | High paranoia mode. Requires explicit user confirmation / interactive diff preview before any file write, file deletion, or terminal execution is executed. |
+
+### 5.3 Asynchronous Command Execution Architecture
+For long-running tasks (e.g. `npm install`, test suites, dev servers):
+1. **Process Launch**: Commands execute in bash within a pseudo-terminal (PTY), with standard output and error multiplexed and streamed into a dedicated task log (`tasks/<task_id>.log`).
+2. **Synchronous Wait Ceiling (`wait_ms`)**:
+   - If the process completes within `wait_ms` (e.g., 2,000ms), the harness returns output synchronously (`status: "completed", output: "...", exit_code: 0`).
+   - If the process is still running after `wait_ms`, execution detaches to a tracked background task, returning `status: "running", task_id: "task-xyz", log_path: "..."` immediately.
+3. **Reactive Wakeup (Zero Polling)**:
+   - When a detached background process finishes, the harness automatically injects a high-priority system notification into the agent's turn context (`[System Message] Task task-xyz completed with exit code 0. Log output: ...`).
+   - The agent never needs to sleep or loop on `manage_task(action="status")`.
+4. **Daemon & Interactive Support**:
+   - Long-running servers or watchers set `is_daemon=True`.
+   - The agent can send input via `manage_task(action="send_input", task_id="...", input="...")` or kill processes via `manage_task(action="kill")`.
+
+### 5.4 Prefix-Matchable Command Shaping
 To prevent repetitive user approval prompts, commands must be structured for deterministic prefix-matching:
 - Avoid command substitutions (`$(...)` or backticks); run sub-steps as discrete calls.
 - Avoid wrapper chaining (`env`, `sudo`, `sh -c "..."`).
@@ -344,8 +513,9 @@ from pydantic import BaseModel, Field
 
 
 class ExecutionMode(str, Enum):
-    SANDBOXED = "sandboxed"
-    BYPASS = "bypass"
+    TURBO = "turbo"
+    DEFAULT = "default"
+    REQUEST_REVIEW = "request_review"
 
 
 class HarnessConfig(BaseModel):
@@ -354,12 +524,15 @@ class HarnessConfig(BaseModel):
     model: str = "gpt-6-luna"
     temperature: float = Field(default=0.2, ge=0.0, le=1.0)
     workspace_root: Path = Field(default_factory=Path.cwd)
-    soft_token_watermark: int = 6000
-    hard_token_limit: int = 8000
-    compaction_target_tokens: int = 4000
+    mode: ExecutionMode = ExecutionMode.DEFAULT
+    soft_token_watermark: int = 60000
+    hard_token_limit: int = 100000
+    compaction_target_tokens: int = 40000
     max_turns: int = 16
     command_timeout_ms: int = 30000
     allow_sandbox_bypass: bool = False
+    transport_mode: Literal["websocket", "http"] = "websocket"
+    enable_http_fallback: bool = True
 
 
 @dataclass
@@ -431,6 +604,18 @@ class GeneralAgentHarness:
 
     async def step(self, user_input: str) -> str:
         """Execute one conversational round through the 5-phase harness."""
+        ...
+
+    async def invoke_skill(self, name: str, args: dict[str, Any]) -> Any:
+        """Execute a specialized or custom skill invoked via the frontend."""
+        ...
+
+    async def ask_sidecar(self, query: str) -> Any:
+        """Execute mid-run /btw question using a snapshot of warm KV-cache context without blocking primary agent."""
+        ...
+
+    def interrupt(self) -> None:
+        """Signal cancellation token to abort streaming, kill active PTY subprocesses, and pause execution."""
         ...
 
     def compact_context(self) -> int:
