@@ -124,8 +124,8 @@
 - **Resolution**:
   - Rather than forcing a compromise between speed and depth, `query_knowledge` exposes three explicit effort levels:
     - **`low` (Deterministic Fast-Path)**: Local Vector/FTS search ($<50\text{ms}$, 0 LLM cost). Fails fast if confidence $< \tau_{\text{low}}$ (no LLM fallback). Designed for high-volume parallel batch lookups.
-    - **`medium` (Optimistic Fast-Path with Gated Escalation — Default)**: Handles ~80% of queries directly via local search in $<50\text{ms}$. If confidence falls below $\tau_{\text{med}}$, automatically escalates to `BookKeeperAgent` (`gpt-4o-mini`) for query expansion and cross-checks.
-    - **`high` (Deep Agent Exploration with Initial Vector Match)**: Executes an initial single-vector search first and passes the candidate results to `BookKeeperAgent` (`gpt-4o-mini`) for deep multi-hop synthesis, query decomposition, and cross-domain triage.
+    - **`medium` (Optimistic Fast-Path with Gated Escalation — Default)**: Handles ~80% of queries directly via local search in $<50\text{ms}$. If confidence falls below $\tau_{\text{med}}$, automatically escalates to `BookKeeperAgent` for query expansion and cross-checks.
+    - **`high` (Deep Agent Exploration with Initial Vector Match)**: Executes an initial single-vector search first and passes the candidate results to `BookKeeperAgent`for deep multi-hop synthesis, query decomposition, and cross-domain triage.
   - *(See [architecture.md#51-query_knowledge-adaptive-knowledge-retrieval-tool](architecture.md#51-query_knowledge-adaptive-knowledge-retrieval-tool) for parameters and thresholds).*
 
 ### Q3. Why seed `BookKeeperAgent` with initial vector results on `high` effort?

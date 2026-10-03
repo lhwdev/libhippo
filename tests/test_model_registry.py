@@ -45,11 +45,11 @@ def test_default_model_configs():
 
 def test_fallback_model_resolution(monkeypatch):
     """Verify fallback model resolution when LIBHIPPO_USE_FALLBACK_MODELS=1."""
-    cfg = ModelConfig(model="gpt-5-nano", fallback_model="gpt-4o-mini")
+    cfg = ModelConfig(model="gpt-5-nano", fallback_model="gpt-6-luna")
     assert cfg.resolve_model_name() == "gpt-5-nano"
 
     monkeypatch.setenv("LIBHIPPO_USE_FALLBACK_MODELS", "1")
-    assert cfg.resolve_model_name() == "gpt-4o-mini"
+    assert cfg.resolve_model_name() == "gpt-6-luna"
 
 
 def test_environment_override(monkeypatch):

@@ -351,7 +351,7 @@ class ExecutionMode(str, Enum):
 class HarnessConfig(BaseModel):
     """Runtime configuration for the General Coding Agent Harness."""
 
-    model: str = "gpt-4o"
+    model: str = "gpt-6-luna"
     temperature: float = Field(default=0.2, ge=0.0, le=1.0)
     workspace_root: Path = Field(default_factory=Path.cwd)
     soft_token_watermark: int = 6000
