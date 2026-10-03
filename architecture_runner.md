@@ -31,10 +31,13 @@ The harness is engineered as a headless, event-driven engine separated from user
 - **Headless Backend Core (`libhippo.runner.GeneralAgentHarness`)**:
   - Implemented as a programmatic Python API with asynchronous event streaming.
   - Emits granular event streams: token chunks, tool call execution events, approval requests for review modes, interactive modal questions, and background process notifications.
-  - **Web API Ready**: The Python async API translates directly into REST/FastAPI endpoints, WebSockets, or Server-Sent Events (SSE) as-is for remote or browser workspaces.
-- **Frontend Clients (CLI & Web UI)**:
-  - *Deferred Implementation*: Terminal CLI (similar to `claude` / `agy` CLI) and Web UI will consume the backend's event stream.
-  - The core harness maintains zero dependencies on presentation layers, UI frameworks, or terminal formatting.
+- **Frontend Clients (Web UI & CLI)**:
+  - **React Web Frontend (`frontend/web`) & Server (`src/libhippo/web`)**:
+    - Modern React 19 + TypeScript + Vite SPA backed by `aiohttp.web` async WebSocket (`/ws/events`) and REST server.
+    - Full bidirectional streaming: real-time token chunks, expandable tool execution cards, interactive approval gates (`ApprovalRequestEvent`), modal clarification questions (`ask_question`), ephemeral sidecar queries (`/btw`), mid-turn steering (`response.steer`), and interrupts.
+    - Complete settings management interface: visual editor for `ProjectSecurityPolicy` (allow/deny/ask rules across read/write/command, network toggle, domain whitelist), tabbed `AGENTS.md` editor (project & global), global MCP configuration (`mcp.json`), and discovered skills catalog.
+    - Interactive autocomplete engine with popovers for slash commands (`/btw`, `/steer`, `/stop`, `/<skill>`) and workspace file mentions (`@<path>`).
+    - Integrated sandbox task monitor (live PTY stdout/stderr streaming and stdin input), subagent tracker, and knowledge retrieval testbench.
 
 ### 1.3 User Command & Control Pipeline: Frontend-Driven Dispatch, `/btw`, and Interrupts
 Command parsing is decoupled from the backend core and owned entirely by the **Frontend Layer** (CLI, Web UI, IDE Extension):

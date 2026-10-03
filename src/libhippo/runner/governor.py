@@ -34,6 +34,12 @@ class WorkloadGovernor:
                 f"Maximum conversational turns ({self.config.max_turns}) exceeded."
             )
 
+    def reset(self) -> None:
+        """Reset turn counter and failure state."""
+        self.current_turns = 0
+        self._consecutive_failures.clear()
+        self.last_warning = None
+
     def check_context_and_compact(self) -> dict[str, Any]:
         """Evaluate token watermarks and trigger lazy compaction if quota crossed."""
         total_tokens = self.memory.get_total_tokens()

@@ -44,3 +44,7 @@ knowledge/knowledge_catalog.db*
 
 # Local envs.
 /*.local*
+
+# Node / Frontend
+node_modules/
+frontend/web/dist/

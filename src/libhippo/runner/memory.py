@@ -152,3 +152,8 @@ class ContextMemory:
     def get_all_messages(self) -> list[ContextMessage]:
         """Return composite message sequence (Zone 1 prefix + Zone 2 history)."""
         return list(self.zone1_prefix) + list(self.zone2_history)
+
+    def clear(self) -> None:
+        """Reset memory by clearing Zone 1 prefix and Zone 2 history."""
+        self.zone1_prefix.clear()
+        self.zone2_history.clear()
