@@ -1,6 +1,12 @@
 """LibHippo knowledge storage and indexing subsystem."""
 
 from libhippo.storage.catalog import KnowledgeCatalog
+from libhippo.storage.mount import (
+    MountConfig,
+    MountManager,
+    ReadOnlyMountError,
+    create_default_mounts,
+)
 from libhippo.storage.store import (
     KnowledgeAction,
     KnowledgeQueryResult,
@@ -15,8 +21,12 @@ __all__ = [
     "KnowledgeCatalog",
     "KnowledgeQueryResult",
     "KnowledgeStore",
+    "MountConfig",
+    "MountManager",
+    "ReadOnlyMountError",
     "SectionType",
     "VectorKnowledgeStore",
     "VectorSearchResult",
+    "create_default_mounts",
     "extract_sections",
 ]

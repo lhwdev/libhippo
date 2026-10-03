@@ -4,6 +4,7 @@ import pytest
 
 from libhippo.models.knowledge import KnowledgeCandidate
 from libhippo.storage.catalog import KnowledgeCatalog
+from libhippo.storage.mount import MountConfig, MountManager, ReadOnlyMountError
 from libhippo.storage.store import KnowledgeStore, extract_sections
 from libhippo.storage.vector import VectorKnowledgeStore
 
@@ -289,5 +290,156 @@ Rules text.
         assert res2["rebuilt"] is True
         assert res2["mutation_count"] == 0
         assert store.vector_store.mutation_count == 0
+
+
+def test_mount_manager_resolution(tmp_path):
+    """Verify virtual path resolution, physical reverse resolution, and writable checks."""
+    proj_dir = tmp_path / "project_root"
+    comm_dir = tmp_path / "common_root"
+
+    manager = MountManager([
+        MountConfig(namespace_prefix="project", physical_path=proj_dir, read_only=False),
+        MountConfig(namespace_prefix="common", physical_path=comm_dir, read_only=True),
+    ])
+
+    # Virtual to physical
+    phys, mount = manager.resolve_virtual_path("project/web/api.md")
+    assert phys == proj_dir / "web" / "api.md"
+    assert mount.read_only is False
+
+    phys_ro, mount_ro = manager.resolve_virtual_path("common/python/guidelines.md")
+    assert phys_ro == comm_dir / "python" / "guidelines.md"
+    assert mount_ro.read_only is True
+
+    # Writable check
+    assert manager.check_writable("project/web/api.md") is mount
+    with pytest.raises(ReadOnlyMountError):
+        manager.check_writable("common/python/guidelines.md")
+
+    # Physical to virtual
+    assert manager.resolve_physical_path(comm_dir / "python" / "guidelines.md") == "common/python/guidelines.md"
+
+
+@pytest.mark.asyncio
+async def test_knowledge_store_read_only_mount(tmp_path):
+    """Verify that read-only mounts reject mutations while writable mounts accept them."""
+    proj_dir = tmp_path / "project"
+    comm_dir = tmp_path / "common"
+    comm_dir.mkdir(parents=True, exist_ok=True)
+
+    # Pre-populate a common rule on disk
+    ro_file = comm_dir / "base_rules.md"
+    ro_file.write_text(
+        """---
+title: "Base Rules"
+namespace: "common"
+---
+## Summary
+Common base rules.
+## Detailed Rules
+Immutable shared rules.
+""",
+        encoding="utf-8",
+    )
+
+    mounts = [
+        MountConfig(namespace_prefix="project", physical_path=proj_dir, read_only=False),
+        MountConfig(namespace_prefix="common", physical_path=comm_dir, read_only=True),
+    ]
+
+    async with KnowledgeStore(mounts=mounts, cache_dir=tmp_path / "cache") as store:
+        # Writable mount should succeed
+        node = await store.save_node(
+            "project/app.md",
+            """---
+title: "App Rules"
+namespace: "project"
+---
+## Summary
+App summary.
+## Detailed Rules
+App rules.
+""",
+        )
+        assert node.path == "project/app.md"
+
+        # Direct mutation on read-only mount should raise ReadOnlyMountError
+        with pytest.raises(ReadOnlyMountError):
+            await store.save_node("common/new_rule.md", "content")
+
+        with pytest.raises(ReadOnlyMountError):
+            await store.delete_node("common/base_rules.md", force=True)
+
+        with pytest.raises(ReadOnlyMountError):
+            await store.deprecate_node("common/base_rules.md", force=True)
+
+        # modify_knowledge tool actions on read-only mount should fail
+        with pytest.raises(ReadOnlyMountError):
+            await store.modify_knowledge(action="create", path="common/new.md", content="new")
+
+        with pytest.raises(ReadOnlyMountError):
+            await store.modify_knowledge(action="update", path="common/base_rules.md", content="updated")
+
+        with pytest.raises(ReadOnlyMountError):
+            await store.modify_knowledge(
+                action="merge",
+                path="project/app.md",
+                extra_paths=["common/base_rules.md"],
+            )
+
+        with pytest.raises(ReadOnlyMountError):
+            await store.modify_knowledge(action="purge", path="common/base_rules.md", force=True)
+
+
+@pytest.mark.asyncio
+async def test_knowledge_store_multi_mount_sync_and_search(tmp_path):
+    """Verify that multi-mount stores index and search documents across all mounts."""
+    proj_dir = tmp_path / "proj"
+    comm_dir = tmp_path / "comm"
+    cache_dir = tmp_path / "cache"
+
+    comm_dir.mkdir(parents=True, exist_ok=True)
+    (comm_dir / "react_base.md").write_text(
+        """---
+title: "React Common Rules"
+namespace: "common"
+importance: 0.8
+---
+## Summary
+Always use functional components in React.
+## Detailed Rules
+Do not use class components.
+""",
+        encoding="utf-8",
+    )
+
+    proj_dir.mkdir(parents=True, exist_ok=True)
+    (proj_dir / "react_override.md").write_text(
+        """---
+title: "React Project Override"
+namespace: "project"
+importance: 0.95
+---
+## Summary
+Use custom hook useData for React fetching in this project.
+## Detailed Rules
+Wrap data fetches in useData.
+""",
+        encoding="utf-8",
+    )
+
+    mounts = [
+        MountConfig(namespace_prefix="project", physical_path=proj_dir, read_only=False),
+        MountConfig(namespace_prefix="common", physical_path=comm_dir, read_only=True),
+    ]
+
+    async with KnowledgeStore(mounts=mounts, cache_dir=cache_dir) as store:
+        results = await store.search("React components", top_k=5)
+        paths = [r.path for r in results]
+        namespaces = {r.namespace for r in results}
+
+        assert "common/react_base.md" in paths
+        assert "project/react_override.md" in paths
+        assert namespaces == {"common", "project"}
 
 

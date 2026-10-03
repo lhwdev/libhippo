@@ -180,6 +180,9 @@ class ModelRegistry:
         kwargs.update(config.extra_kwargs)
         kwargs.update(override_kwargs)
 
+        if "model_info" not in kwargs:
+            raise Exception("no model_info provided")
+
         return OpenAIChatCompletionClient(**kwargs)
 
     def create_typesafe_client(

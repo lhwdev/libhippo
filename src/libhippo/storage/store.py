@@ -11,6 +11,11 @@ from typing import Any, Literal, Self
 
 from libhippo.models.knowledge import KnowledgeCandidate
 from libhippo.storage.catalog import KnowledgeCatalog
+from libhippo.storage.mount import (
+    MountConfig,
+    MountManager,
+    create_default_mounts,
+)
 from libhippo.storage.vector import VectorKnowledgeStore
 
 SectionType = Literal["summary", "rules", "full"]
@@ -59,25 +64,58 @@ class KnowledgeQueryResult:
 
 
 class KnowledgeStore:
-    """Unified coordinator for LibHippo knowledge persistence, search, and indexing."""
+    """Unified coordinator for LibHippo dynamic namespace mounts, search, and indexing."""
 
     def __init__(
         self,
-        root_dir: Path | str,
+        root_dir: Path | str | None = None,
+        mounts: list[MountConfig] | MountManager | None = None,
         catalog: KnowledgeCatalog | None = None,
         vector_store: VectorKnowledgeStore | None = None,
+        cache_dir: Path | str | None = None,
     ) -> None:
-        self.root_dir = Path(root_dir)
-        self.catalog = catalog or KnowledgeCatalog(self.root_dir / "knowledge_catalog.db")
+        if isinstance(mounts, MountManager):
+            self.mount_manager = mounts
+        elif mounts:
+            self.mount_manager = MountManager(mounts)
+        elif root_dir is not None:
+            r = Path(root_dir)
+            self.mount_manager = MountManager(
+                mounts=[
+                    MountConfig(namespace_prefix="project", physical_path=r / "project", read_only=False),
+                    MountConfig(namespace_prefix="common", physical_path=r / "common", read_only=False),
+                    MountConfig(namespace_prefix="user", physical_path=r / "user", read_only=False),
+                    MountConfig(namespace_prefix="plugins", physical_path=r / "plugins", read_only=False),
+                ],
+                fallback_root=r,
+            )
+        else:
+            self.mount_manager = create_default_mounts()
+
+        if cache_dir:
+            self.cache_dir = Path(cache_dir)
+        elif root_dir:
+            self.cache_dir = Path(root_dir)
+        else:
+            proj_mount = self.mount_manager.get_mount("project")
+            self.cache_dir = (
+                (proj_mount.physical_path / ".cache")
+                if proj_mount
+                else (Path.cwd() / ".libhippo" / "cache")
+            )
+
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.root_dir = Path(root_dir) if root_dir else self.cache_dir
+
+        self.catalog = catalog or KnowledgeCatalog(self.cache_dir / "knowledge_catalog.db")
         self.vector_store = vector_store or VectorKnowledgeStore(
-            persist_dir=self.root_dir / ".chromadb"
+            persist_dir=self.cache_dir / ".chromadb"
         )
 
     async def initialize(self) -> None:
         """Initialize storage directories, SQLite catalog, and perform incremental sync."""
-        self.root_dir.mkdir(parents=True, exist_ok=True)
-        for ns in ["common", "user", "project", "plugins", "deprecated"]:
-            (self.root_dir / ns).mkdir(parents=True, exist_ok=True)
+        for mount in self.mount_manager.get_all_mounts():
+            mount.physical_path.mkdir(parents=True, exist_ok=True)
 
         await self.catalog.initialize()
         await self.sync_incremental()
@@ -98,15 +136,17 @@ class KnowledgeStore:
     ) -> None:
         await self.close()
 
-    def _resolve_fs_path(self, rel_path: str) -> Path:
-        """Resolve a logical knowledge path to an absolute filesystem Path."""
-        clean_path = rel_path.lstrip("/").replace("\\", "/")
-        if not clean_path.endswith(".md"):
-            clean_path = f"{clean_path}.md"
-        return self.root_dir / clean_path
+    def resolve_fs_path(self, virtual_path: str) -> tuple[Path, MountConfig]:
+        """Resolve a logical virtual path to an absolute physical filesystem Path and MountConfig."""
+        return self.mount_manager.resolve_virtual_path(virtual_path)
 
-    async def sync_incremental(self) -> dict[str, int]:
-        """Synchronize catalog and vector store incrementally with markdown files on disk.
+    def _resolve_fs_path(self, rel_path: str) -> Path:
+        """Resolve a logical knowledge path to physical filesystem Path (backward compatibility)."""
+        path, _ = self.mount_manager.resolve_virtual_path(rel_path)
+        return path
+
+    async def sync_incremental(self) -> dict[str, Any]:
+        """Synchronize catalog and vector store incrementally with markdown files across mounts.
 
         Applies 3-tier check:
         1. Filesystem mtime (skips unchanged files)
@@ -126,45 +166,59 @@ class KnowledgeStore:
             "details": {"upserted": [], "deleted": []},
         }
 
-        for md_file in self.root_dir.rglob("*.md"):
-            rel_path = md_file.relative_to(self.root_dir).as_posix()
-            if "deprecated" in rel_path or md_file.name.startswith("."):
+        seen_physical_paths: set[Path] = set()
+
+        for mount in self.mount_manager.get_all_mounts():
+            if not mount.physical_path.exists():
                 continue
-            disk_paths.add(rel_path)
-            stats["scanned"] += 1
-
-            try:
-                st = md_file.stat()
-                cached = manifest.get(rel_path)
-                if cached and cached["mtime"] == st.st_mtime:
-                    stats["skipped"] += 1
+            for md_file in mount.physical_path.rglob("*.md"):
+                if "deprecated" in md_file.as_posix() or md_file.name.startswith("."):
                     continue
-
-                content = md_file.read_text(encoding="utf-8")
-                sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
-
-                if cached and cached["sha256"] == sha:
-                    # Content identical, refresh mtime in DB
-                    await self.catalog.update_mtime(rel_path, st.st_mtime)
-                    stats["skipped"] += 1
-                    stats["mtime_only_updated"] += 1
+                resolved_file = md_file.resolve()
+                if resolved_file in seen_physical_paths:
                     continue
+                seen_physical_paths.add(resolved_file)
 
-                candidate = KnowledgeCandidate.from_markdown(rel_path, content)
-                summary, rules = extract_sections(candidate.body)
-                await self.catalog.upsert(
-                    candidate,
-                    summary=summary,
-                    rules=rules,
-                    file_mtime=st.st_mtime,
-                    content_sha256=sha,
-                )
-                self.vector_store.upsert(candidate, summary=summary, rules=rules)
-                stats["updated"] += 1
-                stats["upserted"] += 1
-                stats["details"]["upserted"].append(rel_path)
-            except Exception:  # noqa: BLE001, S112
-                continue
+                rel_path = self.mount_manager.resolve_physical_path(md_file)
+                if not rel_path:
+                    continue
+                disk_paths.add(rel_path)
+                stats["scanned"] += 1
+
+                try:
+                    st = md_file.stat()
+                    cached = manifest.get(rel_path)
+                    if cached and cached["mtime"] == st.st_mtime:
+                        stats["skipped"] += 1
+                        continue
+
+                    content = md_file.read_text(encoding="utf-8")
+                    sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+                    if cached and cached["sha256"] == sha:
+                        # Content identical, refresh mtime in DB
+                        await self.catalog.update_mtime(rel_path, st.st_mtime)
+                        manifest[rel_path] = {"mtime": st.st_mtime, "sha256": sha}
+                        stats["skipped"] += 1
+                        stats["mtime_only_updated"] += 1
+                        continue
+
+                    candidate = KnowledgeCandidate.from_markdown(rel_path, content)
+                    summary, rules = extract_sections(candidate.body)
+                    await self.catalog.upsert(
+                        candidate,
+                        summary=summary,
+                        rules=rules,
+                        file_mtime=st.st_mtime,
+                        content_sha256=sha,
+                    )
+                    manifest[rel_path] = {"mtime": st.st_mtime, "sha256": sha}
+                    self.vector_store.upsert(candidate, summary=summary, rules=rules)
+                    stats["updated"] += 1
+                    stats["upserted"] += 1
+                    stats["details"]["upserted"].append(rel_path)
+                except Exception:  # noqa: BLE001, S112
+                    continue
 
         # Orphan pruning: remove paths in catalog that no longer exist on disk
         for cat_path in manifest:
@@ -176,6 +230,7 @@ class KnowledgeStore:
                 stats["details"]["deleted"].append(cat_path)
 
         return stats
+
 
     async def maybe_rebuild_index(self) -> bool:
         """Check if mutation churn threshold is met and rebuild index if needed."""
@@ -199,44 +254,57 @@ class KnowledgeStore:
         return await self.sync_incremental()
 
     async def rebuild_index(self) -> None:
-
-
         """Full clean rebuild of derived SQLite catalog and ChromaDB vector store."""
         self.vector_store.reset()
         await self.catalog.clear()
 
-        for md_file in self.root_dir.rglob("*.md"):
-            rel_path = md_file.relative_to(self.root_dir).as_posix()
-            if "deprecated" in rel_path or md_file.name.startswith("."):
+        seen_physical_paths: set[Path] = set()
+
+        for mount in self.mount_manager.get_all_mounts():
+            if not mount.physical_path.exists():
                 continue
-            try:
-                content = md_file.read_text(encoding="utf-8")
-                st = md_file.stat()
-                sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
-                candidate = KnowledgeCandidate.from_markdown(rel_path, content)
-                summary, rules = extract_sections(candidate.body)
-                await self.catalog.upsert(
-                    candidate,
-                    summary=summary,
-                    rules=rules,
-                    file_mtime=st.st_mtime,
-                    content_sha256=sha,
-                )
-                self.vector_store.upsert(candidate, summary=summary, rules=rules)
-            except Exception:  # noqa: BLE001, S112
-                continue
+            for md_file in mount.physical_path.rglob("*.md"):
+                if "deprecated" in md_file.as_posix() or md_file.name.startswith("."):
+                    continue
+                resolved_file = md_file.resolve()
+                if resolved_file in seen_physical_paths:
+                    continue
+                seen_physical_paths.add(resolved_file)
+
+                rel_path = self.mount_manager.resolve_physical_path(md_file)
+                if not rel_path:
+                    continue
+                try:
+                    content = md_file.read_text(encoding="utf-8")
+                    st = md_file.stat()
+                    sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                    candidate = KnowledgeCandidate.from_markdown(rel_path, content)
+                    summary, rules = extract_sections(candidate.body)
+                    await self.catalog.upsert(
+                        candidate,
+                        summary=summary,
+                        rules=rules,
+                        file_mtime=st.st_mtime,
+                        content_sha256=sha,
+                    )
+                    self.vector_store.upsert(candidate, summary=summary, rules=rules)
+                except Exception:  # noqa: BLE001, S112
+                    continue
 
         self.vector_store.mutation_count = 0
 
     async def get_node(self, path: str) -> KnowledgeCandidate | None:
-
         """Retrieve a knowledge document from disk as a KnowledgeCandidate."""
-        fs_path = self._resolve_fs_path(path)
+        try:
+            fs_path, _ = self.mount_manager.resolve_virtual_path(path)
+        except KeyError:
+            return None
+
         if not fs_path.exists():
             return None
         content = fs_path.read_text(encoding="utf-8")
-        clean_path = fs_path.relative_to(self.root_dir).as_posix()
-        return KnowledgeCandidate.from_markdown(clean_path, content)
+        virtual_path = self.mount_manager.resolve_physical_path(fs_path) or path
+        return KnowledgeCandidate.from_markdown(virtual_path, content)
 
     async def read_section(
         self,
@@ -267,15 +335,16 @@ class KnowledgeStore:
         sync_index: bool = True,
     ) -> KnowledgeCandidate:
         """Save a knowledge document to disk and synchronize catalog and vector index."""
-        fs_path = self._resolve_fs_path(path)
+        self.mount_manager.check_writable(path)
+        fs_path, _ = self.mount_manager.resolve_virtual_path(path)
         fs_path.parent.mkdir(parents=True, exist_ok=True)
         fs_path.write_text(content, encoding="utf-8")
 
         st = fs_path.stat()
         sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
 
-        clean_path = fs_path.relative_to(self.root_dir).as_posix()
-        candidate = KnowledgeCandidate.from_markdown(clean_path, content)
+        virtual_path = self.mount_manager.resolve_physical_path(fs_path) or path
+        candidate = KnowledgeCandidate.from_markdown(virtual_path, content)
 
         if sync_index and candidate.frontmatter:
             summary, rules = extract_sections(candidate.body)
@@ -292,42 +361,45 @@ class KnowledgeStore:
 
     async def delete_node(self, path: str, force: bool = False) -> bool:
         """Delete a node from disk, catalog, and vector index."""
+        self.mount_manager.check_writable(path)
         candidate = await self.get_node(path)
         if candidate and candidate.frontmatter and candidate.frontmatter.force_keep and not force:
             raise ValueError(f"Cannot delete node '{path}' with force_keep=True unless force=True")
 
-        fs_path = self._resolve_fs_path(path)
-        clean_path = fs_path.relative_to(self.root_dir).as_posix()
+        fs_path, _ = self.mount_manager.resolve_virtual_path(path)
+        virtual_path = self.mount_manager.resolve_physical_path(fs_path) or path
 
         deleted = False
         if fs_path.exists():
             fs_path.unlink()
             deleted = True
 
-        await self.catalog.delete(clean_path)
-        self.vector_store.delete(clean_path)
+        await self.catalog.delete(virtual_path)
+        self.vector_store.delete(virtual_path)
         return deleted
 
     async def deprecate_node(self, path: str, reason: str = "", force: bool = False) -> str:
         """Quarantine a knowledge file by moving it into the deprecated/ scope."""
+        self.mount_manager.check_writable(path)
         candidate = await self.get_node(path)
         if candidate and candidate.frontmatter and candidate.frontmatter.force_keep and not force:
             raise ValueError(f"Cannot deprecate node '{path}' with force_keep=True unless force=True")
 
-        fs_path = self._resolve_fs_path(path)
-        clean_path = fs_path.relative_to(self.root_dir).as_posix()
+        fs_path, mount = self.mount_manager.resolve_virtual_path(path)
+        virtual_path = self.mount_manager.resolve_physical_path(fs_path) or path
 
         if not fs_path.exists():
             raise FileNotFoundError(f"Knowledge node not found: {path}")
 
-        deprecated_fs_path = self.root_dir / "deprecated" / clean_path
+        deprecated_fs_path = mount.physical_path / "deprecated" / fs_path.name
         deprecated_fs_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(fs_path), str(deprecated_fs_path))
 
-        await self.catalog.delete(clean_path)
-        self.vector_store.delete(clean_path)
+        await self.catalog.delete(virtual_path)
+        self.vector_store.delete(virtual_path)
 
-        return deprecated_fs_path.relative_to(self.root_dir).as_posix()
+        return deprecated_fs_path.as_posix()
+
 
     async def search(
         self,
@@ -389,6 +461,10 @@ class KnowledgeStore:
         """Atomic disk mutation tool with automatic index re-synchronization."""
         metadata = metadata or {}
         extra_paths = extra_paths or []
+
+        self.mount_manager.check_writable(path)
+        for ep in extra_paths:
+            self.mount_manager.check_writable(ep)
 
         if action in ("create", "update"):
             candidate = await self.save_node(path, content, sync_index=True)
