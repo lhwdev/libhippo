@@ -91,6 +91,19 @@ graph TD
 | **`CheckerAgent`** | **`TypeSafe Jev`** | **Deterministic**<br>(Temp 0.0 / $0 LLM tokens) | Stateless Evaluation Sandbox (Candidate diff, siblings, parent) | **Primary gatekeeper for routine reviews**: Typed structural audit (taxonomy fit, sizing, importance/effectiveness, quality) |
 | **`VerifierAgent`** | **`gpt-6.1-sol`** | **High / Strict**<br>(Temp 0.0, max depth) | Escalation refactoring session<br>**Cache Write: ENABLED** | **Hierarchy refactoring (`split/group`) on `OVERSIZED` flags**, sole reasoning authority for `modify_knowledge` disk commits |
 
+[AGENT] Note that these models are already released; not 'future model'. Search for web if you are not sure.
+
+---
+
+### 3.0 Centralized Model Registry & Client Factory (`libhippo.models.llm`)
+All model instantiations across AutoGen Chat Completion clients (OpenAI) and TypeSafe System One (Jev) are centralized in `libhippo.models.llm`:
+- **`ModelConfig` Schema**: Standardizes `provider` (`openai` | `typesafe`), `model`, `fallback_model`, `temperature`, `reasoning_effort`, `cache_write`, and authentication headers.
+- **Factory Functions**:
+  - `create_chat_client(role_or_config, ...)`: Instantiates `OpenAIChatCompletionClient` with role-specific defaults and prompt caching flags.
+  - `create_typesafe_client(role_or_config, ...)`: Instantiates `AsyncTypeSafeClient` for TypeSafe Jev semantic judgments.
+  - `get_model_config(role_or_name)`: Reads default agent profile and applies environment overrides (`LIBHIPPO_<ROLE>_MODEL`).
+- **Model Specification**: Supports runtime overrides via environment variables (`LIBHIPPO_<ROLE>_MODEL`).
+
 ---
 
 ### 3.1 `TaskSolverAgent` (Task Executor)
@@ -191,10 +204,11 @@ Trigger boundary values change dynamically:
 - **Coherence Modulation of `upper_bound_trigger`**: By default `1800` tokens, high coherence (clean Summary vs. Rules separation, laser-focused single responsibility) raises `upper_bound_trigger` (up to 2200), preventing artificial fragmentation of cohesive guides.
 - **Sibling Diversity Modulation of `lower_bound_trigger`**: By default `300`, high diversity (low topical overlap among siblings) lowers `lower_bound_trigger` (down to 150–200), allowing concise, distinct primitives to stand alone.
 
-#### 3.4.2 Post-Merge Undersized Documents
-If an undersized document cannot be merged into siblings or parent:
-1. **Ignore Lower Bound**: Retained as an isolated standalone leaf exception (e.g., an essential primitive rule).
-2. **Delete / Prune**: Deleted if **Importance Score** of content is low.
+#### 3.4.2 Post-Merge Undersized Documents & force_keep Protection
+1. **`force_keep` Override**: If `force_keep: true` is set in frontmatter (e.g. for subtrees symlinked to GitHub or externally referenced docs), the document is unconditionally preserved as an immutable standalone knowledge (`verdict: PASS`), exempt from automated merging, splitting, or renaming.
+2. **Unmergeable Stubs**: If an undersized document cannot be merged into siblings or parent:
+   - **Ignore Lower Bound**: Retained as an isolated standalone leaf exception if importance is moderate/high.
+   - **Delete / Prune**: Deleted if **Importance Score** of content is low.
 
 ### 3.5 `VerifierAgent` (Knowledge Refactoring Authority)
 - **Model & Temp**: `gpt-6.1-sol` (`temperature: 0.0`, strict reasoning).
@@ -259,10 +273,14 @@ libhippo/knowledge/
 └── deprecated/                       <-- Quarantined, superseded knowledge records (not an active)
 ```
 
-### 4.2 Local Vector Store Indexing & Atomic Synchronization
+### 4.2 Markdown as Pure Source of Truth & Incremental Cache Sync
 - **Source of Truth**: Local human-readable, Git-tracked **Markdown files (`.md`)**.
-- **Index Accelerator**: Local **Vector Store (ChromaDB or SQLite-vec)** storing chunk embeddings and metadata for fast similarity lookup.
-- **Atomic Synchronization**: When `VerifierAgent` commits a change or archives a node to `deprecated/`, active entries are immediately re-indexed, maintaining search freshness.
+- **Disposable Caches**: Both the SQLite catalog (`knowledge_catalog.db`) and ChromaDB vector store (`.chromadb/`) are strictly derived, disposable caches (git-ignored). They can be deleted and regenerated at any time without data loss.
+- **3-Tier Incremental Synchronization**:
+  1. *Filesystem `mtime`*: Unchanged files are skipped in sub-milliseconds without disk I/O.
+  2. *Content SHA-256*: Detects git branch checkouts or file touches where timestamp changed but content is identical, avoiding redundant vector re-embedding.
+- **Compaction & Rebuild (`rebuild_index`)**: Periodic rebuild to eliminate tombstone fragmentation in the HNSW vector index when mutation churn crosses a threshold (default 200 mutations). Compaction is executed **asynchronously in the background after a task run completes**, ensuring interactive task solving and user response times are never blocked by HNSW index recreation.
+
 
 ### 4.3 Markdown Node Schema Example (`common/web/html/accessibility/aria_button.md`)
 ```markdown
@@ -271,6 +289,7 @@ title: "Button Accessibility with ARIA"
 namespace: "common" # common | user | project | plugins
 version: "WAI-ARIA 1.2"
 status: "active" # active | deprecated | needs_review
+force_keep: false # optional: true prevents automated renaming, splitting, or merging (e.g. symlinked subtrees)
 last_updated: "2026-09-28"
 related:
   - "common/web/html/syntax.md"

@@ -7,11 +7,16 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 import tiktoken
-from typesafe_sdk import AsyncTypeSafeClient, Choice, Noul, Score
+from typesafe_sdk import Choice, Noul, Score
 
 from libhippo.agents.base import BaseHippoAgent
 from libhippo.models.audit import AuditVerdict, JevAuditReport, SizeStatus, TaxonomyFit
 from libhippo.models.knowledge import KnowledgeCandidate, KnowledgeContext
+from libhippo.models.llm import (
+    create_typesafe_client,
+    default_model_registry,
+    get_model_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,12 +52,13 @@ class CheckerAgent(BaseHippoAgent):
         name: str = "CheckerAgent",
         description: str = "Determines if given knowledge document is good to go.",
         client: TypeSafeClientProtocol | None = None,
-        model: str = "jev",
+        model: str | None = None,
         token_count_bound: TokenCountBoundary | None = None,
     ) -> None:
         super().__init__(name=name, description=description)
+        cfg = get_model_config("checker")
         self.client = client
-        self.model = model
+        self.model = model or cfg.resolve_model_name()
         self.token_count_bound = token_count_bound or TokenCountBoundary()
 
         try:
@@ -231,11 +237,12 @@ class CheckerAgent(BaseHippoAgent):
         # Step 3: Call TypeSafe Jev for semantic judgments
         questions = self._build_questions()
 
-        if self.client:
-            response = await self.client.system_one(state=state, questions=questions, model=self.model)
+        client = self.client or default_model_registry.get_mock_client("checker")
+        if client:
+            response = await client.system_one(state=state, questions=questions, model=self.model)
         else:
-            async with AsyncTypeSafeClient() as client:
-                response = await client.system_one(state=state, questions=questions, model=self.model)
+            async with create_typesafe_client("checker", model=self.model) as typesafe_client:
+                response = await typesafe_client.system_one(state=state, questions=questions, model=self.model)
 
         # Step 4: Extract typed answers
         taxonomy_choice: TaxonomyFit = getattr(response.choices["taxonomy_fit"], "choice", "optimal")  # type: ignore
@@ -290,10 +297,18 @@ class CheckerAgent(BaseHippoAgent):
         merge_recommendation = "none"
         merge_candidate_siblings: list[str] = []
 
+        force_keep = bool(candidate.frontmatter and candidate.frontmatter.force_keep)
+
         if schema_errors:
             verdict = "REVISE_SCHEMA"
         elif content_errors:
             verdict = "REVISE_CONTENT"
+        elif force_keep:
+            # force_keep pins path and preserves document as standalone leaf exception
+            if size_status == "oversized" or coherence_score < 0.40:
+                verdict = "ESCALATE_REFACTOR"
+            else:
+                verdict = "PASS"
         elif size_status == "oversized" or coherence_score < 0.40:
             verdict = "ESCALATE_REFACTOR"
         elif size_status == "undersized":
@@ -336,7 +351,7 @@ class CheckerAgent(BaseHippoAgent):
 
         return JevAuditReport(
             taxonomy_fit=taxonomy_choice,
-            suggested_path=None if taxonomy_choice == "optimal" else "suggested_review",
+            suggested_path=None if (force_keep or taxonomy_choice == "optimal") else "suggested_review",
             token_count=raw_tokens,
             bloatedness_score=bloat_score,
             effective_token_count=effective_size,

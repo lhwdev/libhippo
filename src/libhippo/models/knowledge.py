@@ -22,6 +22,7 @@ class KnowledgeFrontmatter(BaseModel):
     status: NodeStatus = "active"
     nature: NodeNature = "foundation"
     importance: float = Field(default=0.5, ge=0.0, le=1.0)
+    force_keep: bool = False
     last_updated: str | None = None
     last_accessed: str | None = None
     access_count: int = 0

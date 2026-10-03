@@ -178,6 +178,14 @@ LibHippo matches model tiers to task complexity, latency constraints, and operat
 - **Deterministic Typed Gatekeeper (`TypeSafe Jev` for `CheckerAgent`)**: Evaluates taxonomy, sizing hysteresis, importance/effectiveness, and content quality deterministically with $0 LLM token cost.
 *(See [architecture.md#3-agent-specifications-models-and-context-isolation](architecture.md#3-agent-specifications-models-and-context-isolation) for full agent configuration matrix).*
 
+### Q1. Why centralize model configuration across AutoGen OpenAI models and TypeSafe Jev in `libhippo.models.llm`?
+- **The Problem**:
+  - AutoGen 0.4 uses `OpenAIChatCompletionClient` with specific parameters (model, temperature, reasoning_effort, default headers for prompt caching), while `CheckerAgent` relies on `typesafe_sdk.AsyncTypeSafeClient` with different credentials and execution options.
+  - Scattering model configurations across individual agent modules leads to configuration divergence, complicates mock injection during testing, and hinders centralized tuning of temperature and caching flags for the architectural models (`gpt-6.1-sol`, `gpt-6-luna`, `gpt-5-nano`, `jev`).
+- **The Resolution**:
+  - `ModelConfig` provides a unified declarative schema specifying model name, temperature, and cache flags for each agent role.
+  - `ModelRegistry` acts as a single point of configuration and mock injection, allowing unit tests and offline environments to swap implementations seamlessly while preserving identical agent logic.
+
 ---
 
 ### 5.2 Real-World Agent Verification Benchmarks
@@ -216,3 +224,33 @@ const [state, formAction] = useFormState(action, null);
 Task: Decide whether to APPROVE or REVISE. Provide actionable technical justification.
 ```
 - **Evaluation Criteria**: Immediately flags `useFormState` as deprecated in React 19, instructs replacement with `useActionState`, and outputs `REVISE` with clear technical rationale.
+
+---
+
+## 6. Storage Durability, Cache Synchronization, and Web Search Rationale
+
+### Q1. Why introduce an optional `force_keep` flag?
+- **The Dilemma**: Automated Maker-Checker refactoring aggressively merges undersized stubs (`MERGE_REQUIRED`) or elevates oversized nodes. When a subtree (e.g., `knowledge/common/web`) is symlinked to an external repository published on GitHub, or when a file has fixed external URL anchors, automated renaming or merging breaks symlinks and Git history.
+- **The Resolution**: Setting `force_keep: true` in the frontmatter marks the document as an immutable anchor. `CheckerAgent` unconditionally preserves it (`verdict: PASS`), suppressing automated rename, split, and merge directives, while `modify_knowledge` rejects deletions and coalescing unless an explicit `force=True` flag is supplied.
+
+### Q2. Why treat SQLite and ChromaDB strictly as disposable caches with 3-tier incremental sync?
+- **The Dilemma**: Developers frequently edit markdown documents directly in editors, switch branches, or pull updates via Git. If the database is treated as the primary state, discrepancies between disk files and the DB lead to stale search results and ghost nodes.
+- **The Resolution**:
+  - Markdown files are the **sole source of truth**. Both `knowledge_catalog.db` and `.chromadb/` are git-ignored derived caches that can be deleted and regenerated at any time.
+  - **3-Tier Incremental Sync**:
+    1. *`mtime` check*: Sub-millisecond skip for untouched files without opening file handles.
+    2. *SHA-256 hash check*: Distinguishes actual content edits from git checkouts or file touches, avoiding redundant, CPU-intensive vector re-embedding.
+    3. *Selective update & orphan pruning*: Synchronizes only dirty files and deletes DB entries for files removed from disk.
+
+### Q3. How does LibHippo mitigate HNSW vector index degradation under heavy mutation churn?
+- **The Problem**: In HNSW vector indexes (like ChromaDB's underlying `hnswlib`), deleting or updating vectors leaves "tombstone" entries in the graph. Over extended sessions with numerous edits, tombstoned vertices degrade graph connectivity and inflate memory/disk footprint.
+- **The Resolution**: Because markdown files are the authoritative source of truth, rebuilding the entire index is cheap (~1–2 seconds for thousands of chunks). LibHippo provides a clean `rebuild_index()` mechanism that resets the collection and re-indexes active documents, clearing all tombstone fragmentation without risking data loss.
+
+### Q4. Why provide a pluggable `search_web` architecture with DuckDuckGo as default?
+- **The Dilemma**: Forcing a paid or gated API key (such as Tavily or Serper) creates friction for new developers running LibHippo out of the box. Conversely, a naive scraper without search indexing cannot discover relevant URLs for arbitrary queries.
+- **The Resolution**: LibHippo uses DuckDuckGo (`duckduckgo_search` / `DDGS`) as a zero-key default, while offering a pluggable interface that auto-promotes to high-precision agent search engines (such as Tavily or Brave Search) when corresponding environment variables (`TAVILY_API_KEY`, `BRAVE_API_KEY`) are present.
+
+### Q5. Why execute Vector Store compaction (`rebuild_index`) asynchronously after a task ends rather than inline during mutations?
+- **The Problem**: Rebuilding the HNSW vector index (wiping the collection and re-embedding/re-indexing all knowledge documents) takes several seconds for sizeable repositories. Triggering compaction inline inside `modify_knowledge` or during an active query would stall the agent's turn, creating disruptive latency spikes in interactive problem-solving sessions.
+- **The Resolution**: `VectorKnowledgeStore` monitors mutation churn via `mutation_count` and flags when `should_rebuild()` is met (default $\ge 200$ mutations). The actual compaction is dispatched **asynchronously as a background post-task maintenance operation** once `TaskSolverRunner` completes its user response. This preserves low interactive latency while ensuring the HNSW graph remains defragmented and performant.
+

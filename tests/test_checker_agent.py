@@ -467,3 +467,36 @@ def foo():
     assert report.verdict == "REVISE_CONTENT"
     assert "Unmatched code fence (odd count of '```')" in report.content_errors
 
+
+@pytest.mark.asyncio
+async def test_checker_force_keep_preserves_stub():
+    """Test Case 14: force_keep=True preserves undersized node and keeps suggested_path pinned."""
+    raw_md = """---
+title: "Pinned External Stub"
+namespace: "common"
+status: "active"
+nature: "transient_tip"
+force_keep: true
+---
+Tiny stub that is symlinked to another repository.
+"""
+    candidate = KnowledgeCandidate.from_markdown("common/web/pinned_stub.md", raw_md)
+    context = KnowledgeContext(
+        parent=HubReference(path="common/web.md"),
+        siblings=[SiblingReference(path="common/web/sibling.md")],
+    )
+
+    # Even with bloat 0.0, coalescence 0.95 (normally MERGE_REQUIRED), low importance (normally REVISE_SCHEMA)
+    # and misplaced taxonomy (normally suggests relocation)
+    mock_client = MockTypeSafeClient(taxonomy="misplaced", bloat=0.0, importance=0.2, coalescence=0.95)
+    agent = CheckerAgent(client=mock_client)
+
+
+    report = await agent.check(candidate, context)
+
+    # With force_keep, verdict must be PASS and suggested_path must be None (pinned in place)
+    assert report.verdict == "PASS"
+    assert report.suggested_path is None
+
+
+

@@ -36,8 +36,11 @@ htmlcov/
 .mypy_cache/
 
 # Databases & local state
-*.db-journal
-*.db-wal
+*.db
+*.db-*
+.chromadb/
+knowledge/.chromadb/
+knowledge/knowledge_catalog.db*
 
 # Local envs.
 /*.local*

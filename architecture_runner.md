@@ -222,4 +222,9 @@ class TaskSolverRunner:
     def get_prompt_payload(self) -> list[dict[str, str]]:
         """Construct the prompt payload ensuring static prefix alignment."""
         ...
+
+    async def post_task_maintenance(self) -> None:
+        """Execute asynchronous background maintenance (e.g. vector store rebuild) after task finishes."""
+        ...
 ```
+

@@ -18,8 +18,19 @@ from libhippo.models.knowledge import (
     NodeStatus,
     SiblingReference,
 )
+from libhippo.models.llm import (
+    AgentRole,
+    ModelConfig,
+    ModelProvider,
+    ModelRegistry,
+    create_chat_client,
+    create_typesafe_client,
+    default_model_registry,
+    get_model_config,
+)
 
 __all__ = [
+    "AgentRole",
     "AuditVerdict",
     "HubReference",
     "JevAuditReport",
@@ -27,6 +38,9 @@ __all__ = [
     "KnowledgeContext",
     "KnowledgeFrontmatter",
     "MergeRecommendation",
+    "ModelConfig",
+    "ModelProvider",
+    "ModelRegistry",
     "Namespace",
     "NodeNature",
     "NodeStatus",
@@ -34,4 +48,8 @@ __all__ = [
     "SiblingReference",
     "SizeStatus",
     "TaxonomyFit",
+    "create_chat_client",
+    "create_typesafe_client",
+    "default_model_registry",
+    "get_model_config",
 ]
