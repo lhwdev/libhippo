@@ -18,7 +18,7 @@ from libhippo.runner.sandbox import BackgroundTaskInfo, BubblewrapSandboxRunner,
 from libhippo.runner.sidecar import SidecarExecutor
 from libhippo.runner.subagents import SubagentManager
 from libhippo.runner.tools import CodingToolSuite
-from libhippo.runner.transport import OpenAIResponsesWebSocketClient
+from libhippo.runner.transport import OpenAIResponsesClient, OpenAIResponsesWebSocketClient
 from libhippo.runner.triage import OutputTriage
 from libhippo.runner.types import (
     ApprovalRequestEvent,
@@ -51,6 +51,7 @@ __all__ = [
     "HarnessEvent",
     "InterruptEvent",
     "ModalQuestionEvent",
+    "OpenAIResponsesClient",
     "OpenAIResponsesWebSocketClient",
     "OutputTriage",
     "PhaseTransitionEvent",

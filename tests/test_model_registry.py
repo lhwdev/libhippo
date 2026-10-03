@@ -84,8 +84,11 @@ def test_create_chat_client_instantiation():
         model="gpt-5-nano",
     )
     from autogen_ext.models.openai import OpenAIChatCompletionClient
+    from libhippo.models.logging_client import LoggingChatCompletionClient
 
-    assert isinstance(client, OpenAIChatCompletionClient)
+    assert isinstance(client, (OpenAIChatCompletionClient, LoggingChatCompletionClient))
+    if isinstance(client, LoggingChatCompletionClient):
+        assert isinstance(client._inner, OpenAIChatCompletionClient)
 
 
 def test_create_typesafe_client_instantiation():

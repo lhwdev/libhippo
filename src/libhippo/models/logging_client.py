@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import sys
@@ -60,6 +61,11 @@ def _format_message(msg: Any) -> tuple[str, str]:
         for part in content:
             if isinstance(part, dict):
                 parts.append(str(part.get("text") or part.get("content") or part))
+            elif hasattr(part, "name") and hasattr(part, "arguments"):
+                parts.append(f"{part.name}({part.arguments})")
+            elif hasattr(part, "call_id") and hasattr(part, "content"):
+                part_name = getattr(part, "name", "tool")
+                parts.append(f"[{part_name}:{part.call_id}] {part.content}")
             elif hasattr(part, "content"):
                 parts.append(str(part.content))
             else:
@@ -82,30 +88,71 @@ def _log_request(
     model_name = getattr(client, "model", None) or getattr(client, "_model", None) or "openai"
     total_messages = len(messages)
 
+    # Track system prompts logged for this client so they are only displayed on first send
+    logged_system_prompts: set[str] = getattr(client, "_logged_system_prompts", None)  # type: ignore
+    if logged_system_prompts is None:
+        logged_system_prompts = set()
+        try:
+            client._logged_system_prompts = logged_system_prompts
+        except Exception:
+            pass
+
+    # Extract all system messages from the request
+    sys_msgs: list[tuple[Any, str]] = []
+    for m in messages:
+        role, text = _format_message(m)
+        if "system" in role.lower():
+            sys_msgs.append((m, text))
+
+    shown_sys_msgs: list[tuple[Any, str]] = []
+    for sm, text in sys_msgs:
+        h = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+        if h not in logged_system_prompts:
+            shown_sys_msgs.append((sm, text))
+            logged_system_prompts.add(h)
+
     stream_tag = " (stream)" if stream else ""
     lines: list[str] = [
         f"{'=' * 38} [OpenAI Request{stream_tag}] {'=' * 38}",
         f"Model: {model_name}",
     ]
 
+    # Show system prompt(s) on first send
+    for _, text in shown_sys_msgs:
+        lines.append("--- System Prompt (First Send) ---")
+        lines.append(text)
+
     if total_messages == 0:
         lines.append("Context: 0 messages")
     elif total_messages == 1:
-        role, text = _format_message(messages[0])
-        lines.append("Context: 1 message (0 previous hidden)")
-        lines.append(f"--- Latest Message [{role}] ---")
-        lines.append(text)
+        if not shown_sys_msgs:
+            role, text = _format_message(messages[0])
+            lines.append("Context: 1 message (0 previous hidden)")
+            lines.append(f"--- Latest Message [{role}] ---")
+            lines.append(text)
+        else:
+            lines.append("Context: 1 message (system prompt shown above)")
     else:
         prev_messages = messages[:-1]
         latest_msg = messages[-1]
 
+        shown_sys_ids = {id(sm) for sm, _ in shown_sys_msgs}
+        hidden_messages = [m for m in prev_messages if id(m) not in shown_sys_ids]
+
         role_counts: dict[str, int] = {}
-        for m in prev_messages:
+        for m in hidden_messages:
             r, _ = _format_message(m)
             role_counts[r] = role_counts.get(r, 0) + 1
         breakdown = ", ".join(f"{cnt} {r}" for r, cnt in role_counts.items())
 
-        lines.append(f"Context: {total_messages} messages ({len(prev_messages)} previous hidden: {breakdown})")
+        if shown_sys_msgs:
+            if hidden_messages:
+                lines.append("-" * 96)
+                lines.append(f"Context: {total_messages} messages ({len(shown_sys_msgs)} system prompt shown, {len(hidden_messages)} previous hidden: {breakdown})")
+            else:
+                lines.append(f"Context: {total_messages} messages ({len(shown_sys_msgs)} system prompt shown, 0 previous hidden)")
+        else:
+            lines.append(f"Context: {total_messages} messages ({len(prev_messages)} previous hidden: {breakdown})")
 
         if tools:
             tool_names = []
@@ -120,9 +167,10 @@ def _log_request(
                     tool_names.append(str(t))
             lines.append(f"Tools: {len(tools)} tools ({', '.join(tool_names[:10])}{'...' if len(tool_names) > 10 else ''})")
 
-        role, text = _format_message(latest_msg)
-        lines.append(f"--- Latest Message [{role}] ---")
-        lines.append(text)
+        if id(latest_msg) not in shown_sys_ids:
+            role, text = _format_message(latest_msg)
+            lines.append(f"--- Latest Message [{role}] ---")
+            lines.append(text)
 
     lines.append("=" * 96)
     logger.info("\n".join(lines))

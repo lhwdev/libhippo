@@ -223,8 +223,7 @@
 - **The Dilemma**: Agents need temporal awareness to answer *"how long did this task take?"*, enforce *"halt after 1 hour"*, or order commits chronologically. However, embedding dynamic timestamps into the system prompt (Zone 1) changes the bitwise prefix on every turn, completely breaking prompt caching.
 - **The Turn-Level Tagging Resolution**:
   - Zone 1 remains 100% static and cache-warm.
-  - The harness injects a micro-metadata tag directly into the tail user turn in Zone 2:
-    `<turn_metadata timestamp="2026-10-03T16:47:02+09:00" session_elapsed="14m 20s" branch="main"/>`
+  - The harness injects a micro-metadata tag directly into the tail user turn in Zone 2.
   - Together with the programmatic `get_status()` tool, this gives the model exact real-time temporal grounding with 0 cache invalidation.
 
 ### Q8. Why adopt unified file tools (`read_file`, `write_file`) and pure Python `search_file` over shell commands?

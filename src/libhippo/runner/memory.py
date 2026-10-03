@@ -67,9 +67,9 @@ class ContextMemory:
         ts = timestamp or datetime.datetime.now(datetime.timezone.utc).isoformat()
         elapsed = session_elapsed or "0s"
         br = branch or "main"
-
-        meta_tag = f'<turn_metadata timestamp="{ts}" session_elapsed="{elapsed}" branch="{br}"/>'
-        full_content = f"{meta_tag}\n{user_content}"
+        full_content = (f'<USER_PROMPT timestamp="{ts}" session_elapsed="{elapsed}" branch="{br}">\n' 
+                        f'{user_content}\n'
+                        '</USER_PROMPT>')
         msg = ContextMessage(
             role="user",
             content=full_content,
@@ -81,14 +81,26 @@ class ContextMemory:
         self.zone2_history.append(msg)
         return msg
 
-    def append_assistant_turn(self, content: str) -> ContextMessage:
-        """Append model assistant response (reasoning trace and text)."""
+    def append_assistant_turn(
+        self,
+        content: str,
+        tool_calls: list[dict[str, Any]] | None = None,
+        thought: str | None = None,
+    ) -> ContextMessage:
+        """Append model assistant response (reasoning trace, text, or tool calls)."""
+        metadata: dict[str, Any] = {}
+        if tool_calls:
+            metadata["tool_calls"] = tool_calls
+        if thought:
+            metadata["thought"] = thought
+
         msg = ContextMessage(
             role="assistant",
             content=content,
             zone="zone2_linear",
             raw_token_count=self.count_tokens(content),
             is_evictable=False,
+            metadata=metadata,
         )
         self.zone2_history.append(msg)
         return msg
@@ -100,6 +112,7 @@ class ContextMemory:
         tool_call_id: str | None = None,
         file_path_reference: str | None = None,
         is_evictable: bool = True,
+        is_error: bool = False,
     ) -> ContextMessage:
         """Append tool output into Zone 2 with evictability flag for Zone 3 compaction."""
         msg = ContextMessage(
@@ -110,7 +123,7 @@ class ContextMemory:
             file_path_reference=file_path_reference or tool_name,
             raw_token_count=self.count_tokens(content),
             is_evictable=is_evictable,
-            metadata={"tool_name": tool_name},
+            metadata={"tool_name": tool_name, "is_error": is_error},
         )
         self.zone2_history.append(msg)
         return msg

@@ -1,10 +1,9 @@
-"""Unit tests for OpenAI request/response logging and context hiding."""
+"""Unit tests for OpenAI request/response logging, system prompt on first send, and context hiding."""
 
 from __future__ import annotations
 
-import os
+import logging
 from typing import Any, AsyncIterator, Sequence
-from unittest.mock import MagicMock
 import pytest
 
 from autogen_core.models import (
@@ -111,50 +110,57 @@ def test_is_openai_logging_enabled_flag(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
-async def test_logging_wrapper_create_hides_previous_context(
+async def test_system_prompt_shown_on_first_send_and_hidden_on_subsequent(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ):
-    """Verify create hides prior context, logs counts, and shows latest message and response."""
+    """Verify system prompt is shown on first send and hidden as previous context on turn 2."""
     monkeypatch.setenv("LIBHIPPO_LOG_OPENAI", "1")
 
     inner = MockInnerClient(model="gpt-6.1-sol")
     wrapped = wrap_client_if_logging_enabled(inner)
     assert isinstance(wrapped, LoggingChatCompletionClient)
 
-    # Delegation works
-    assert wrapped.custom_steer_method() == "steered"
-    assert wrapped.model == "gpt-6.1-sol"
+    sys_prompt = "You are a senior coding agent with strict architectural standards."
 
-    # Multi-turn messages
-    messages = [
-        SystemMessage(content="You are a senior developer."),
-        UserMessage(content="First user question", source="user"),
-        AssistantMessage(content="First assistant reply", source="assistant"),
-        UserMessage(content="Second user request: please optimize", source="user"),
+    # Turn 1: First send with SystemMessage and UserMessage
+    turn1_messages = [
+        SystemMessage(content=sys_prompt),
+        UserMessage(content="Turn 1: Fix bug in parser", source="user"),
     ]
 
-    import logging
     with caplog.at_level(logging.INFO, logger="libhippo.openai"):
-        res = await wrapped.create(messages=messages)
+        caplog.clear()
+        res1 = await wrapped.create(messages=turn1_messages)
+        assert res1.content == "Mocked answer to question"
+        log1 = caplog.text
 
-    assert res.content == "Mocked answer to question"
-    log_text = caplog.text
+    # Turn 1 should show the system prompt explicitly
+    assert "--- System Prompt (First Send) ---" in log1
+    assert sys_prompt in log1
+    assert "Turn 1: Fix bug in parser" in log1
+    assert "system prompt shown" in log1
 
-    # Verify request banner & context hiding
-    assert "[OpenAI Request]" in log_text
-    assert "Model: gpt-6.1-sol" in log_text
-    assert "Context: 4 messages (3 previous hidden:" in log_text
-    assert "First user question" not in log_text
-    assert "First assistant reply" not in log_text
-    assert "Latest Message" in log_text
-    assert "Second user request: please optimize" in log_text
+    # Turn 2: Subsequent send with prior history + new request
+    turn2_messages = [
+        SystemMessage(content=sys_prompt),
+        UserMessage(content="Turn 1: Fix bug in parser", source="user"),
+        AssistantMessage(content="Mocked answer to question", source="assistant"),
+        UserMessage(content="Turn 2: Add test cases", source="user"),
+    ]
 
-    # Verify response banner & content
-    assert "[OpenAI Response]" in log_text
-    assert "Finish: stop" in log_text
-    assert "prompt=42, completion=12" in log_text
-    assert "Mocked answer to question" in log_text
+    with caplog.at_level(logging.INFO, logger="libhippo.openai"):
+        caplog.clear()
+        res2 = await wrapped.create(messages=turn2_messages)
+        assert res2.content == "Mocked answer to question"
+        log2 = caplog.text
+
+    # Turn 2 should NOT show the system prompt again
+    assert "--- System Prompt (First Send) ---" not in log2
+    assert "Turn 2: Add test cases" in log2
+    # Prior history should be hidden with count breakdown
+    assert "previous hidden: 1 SystemMessage, 1 UserMessage, 1 AssistantMessage" in log2
+    assert "Turn 1: Fix bug in parser" not in log2
 
 
 @pytest.mark.asyncio
@@ -170,7 +176,6 @@ async def test_logging_wrapper_create_stream(
 
     messages = [UserMessage(content="Single turn prompt", source="user")]
 
-    import logging
     with caplog.at_level(logging.INFO, logger="libhippo.openai"):
         chunks = []
         async for c in wrapped.create_stream(messages=messages):

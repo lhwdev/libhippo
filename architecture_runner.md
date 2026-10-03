@@ -163,13 +163,13 @@ flowchart TD
   - Therefore, AutoGen's native `OpenAIChatCompletionClient` directly powers:
     1. **All HTTP-based agents**: `BookKeeperAgent`, `CuratorAgent`, `/btw` sidecars, and one-off tool queries.
     2. **Automatic HTTP Fallback**: The resilient fallback path whenever a WebSocket disconnects.
-- **Custom Responses WebSocket Adapter (`OpenAIResponsesWebSocketClient`) Powered by `openai[realtime]`**:
-  - LibHippo includes the official `openai[realtime]` dependency, providing the OpenAI-verified `websockets` runtime (`websockets >= 13, < 16`) and async connection primitives.
-  - For targeted WebSockets (`TaskSolverAgent` and `VerifierAgent`), LibHippo implements a lightweight adapter subclassing AutoGen's standard `autogen_core.models.ChatCompletionClient` interface.
-  - This adapter connects to `wss://api.openai.com/v1/responses`, manages `previous_response_id` delta chaining and `response.steer`, and seamlessly slots into any AutoGen `AssistantAgent`.
+- **Custom Responses Client & WebSocket Adapter (`OpenAIResponsesClient` & `OpenAIResponsesWebSocketClient`)**:
+  - Frontier reasoning models require the **OpenAI Responses API (`/v1/responses`)** when combining deep reasoning (`reasoning_effort="medium"` / `"high"`) with function calling tools.
+  - LibHippo implements `OpenAIResponsesClient` subclassing AutoGen's `ChatCompletionClient`, which communicates with `POST /v1/responses` preserving full reasoning effort and native function calling.
+  - For targeted WebSockets, `OpenAIResponsesWebSocketClient` connects to the Responses WebSocket connection manager, with resilient HTTP failover to `OpenAIResponsesClient`.
 - **Failover Triggers & Zero State Loss**:
-  - If any active WebSocket connection drops, encounters network resets, or hits OpenAI's 60-minute connection lifetime ceiling, the adapter automatically fails over to the built-in AutoGen `OpenAIChatCompletionClient`.
-  - The fallback HTTP request submits the cached Zone 1/2 prefix, hitting the OpenAI server prompt-cache at **100% read discount** with zero developer disruption.
+  - If any active WebSocket connection drops, encounters network resets, or hits OpenAI's connection ceiling, the adapter automatically fails over to `OpenAIResponsesClient` over HTTP.
+  - The fallback request submits the cached prefix and delta items to `/v1/responses`, hitting the OpenAI prompt cache with zero developer disruption.
 
 ---
 
@@ -254,8 +254,8 @@ When context crosses the hard compaction threshold ($\approx 80{,}000 \sim 100{,
 ### 3.4 Turn-Level Metadata Injection (Temporal Awareness without Cache Busting)
 - **The Problem with Prefix Timestamps**: Injecting dynamic wall-clock timestamps or user session counters into the system prompt (Zone 1) changes the bitwise prefix on every turn, completely destroying prompt caching.
 - **The Solution**: Zone 1 remains 100% invariant. Instead, the harness automatically prefixes incoming user turns in Zone 2 with a lightweight metadata tag:
-  ```xml
-  <turn_metadata timestamp="2026-10-03T16:47:02+09:00" session_elapsed="14m 20s" branch="main"/>
+  ```
+  <USER_PROMPT timestamp="2026-10-03T16:47:02+09:00" session_elapsed="14m 20s" branch="main">
   ```
 - **Capability**: Enables the agent to evaluate temporal instructions (*"how long did this task take?"*, *"halt after 1 hour"*, *"revert changes from the last 10 minutes"*) with microsecond accuracy while preserving full KV-cache reuse.
 

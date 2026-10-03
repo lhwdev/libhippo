@@ -7,6 +7,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from libhippo.runner.transport import OpenAIResponsesClient
+from libhippo.models.logging_client import wrap_client_if_logging_enabled
+
 AgentRole = Literal["task_solver", "book_keeper", "curator", "checker", "verifier"]
 ModelProvider = Literal["openai", "typesafe"]
 
@@ -18,7 +21,7 @@ class ModelConfig(BaseModel):
     model: str
     fallback_model: str | None = None
     temperature: float | None = None
-    reasoning_effort: Literal["minimal", "low", "medium", "high"] | None = None
+    reasoning_effort: Literal["none", "minimal", "low", "medium", "high"] | None = None
     cache_write: bool = False
     cache_mode: Literal["auto", "explicit", "off"] = "auto"
     cache_system_prompt_only: bool = False
@@ -76,7 +79,8 @@ DEFAULT_AGENT_MODELS: dict[AgentRole, ModelConfig] = {
     "task_solver": ModelConfig(
         provider="openai",
         model="gpt-6.1-sol",
-        temperature=0.3,
+        temperature=None,
+        reasoning_effort="medium",
         cache_write=True,
         cache_mode="auto",
         cache_system_prompt_only=False,
@@ -173,8 +177,6 @@ class ModelRegistry:
             else self.get_config(str(role_or_config))
         )
 
-        from autogen_ext.models.openai import OpenAIChatCompletionClient
-
         model_name = config.resolve_model_name()
         api_key = config.api_key or os.getenv("OPENAI_API_KEY") or "mock-key"
         base_url = config.base_url or os.getenv("OPENAI_BASE_URL")
@@ -206,9 +208,8 @@ class ModelRegistry:
 
         # Filter out None values
         filtered_kwargs = {k: v for k, v in kwargs.items() if v is not None}
-        client = OpenAIChatCompletionClient(**filtered_kwargs)
-        from libhippo.models.logging_client import wrap_client_if_logging_enabled
-
+        
+        client = OpenAIResponsesClient(**filtered_kwargs)
         return wrap_client_if_logging_enabled(client)
 
     def create_typesafe_client(

@@ -19,8 +19,13 @@ In most time, read `architecture.md` first.
   try to refactor use cases.
 - Search for web when dealing with latest things, i.e. OpenAI models, API.
   * Do not mention legacy OpenAI models like o1, o4.
+  * Do not spam python commands testing library APIs; search docs or read source.
 
-## Planning Rules
+### Rules for Python
+
+- Put import on top, unless dynamic import is needed.
+
+### Planning Rules
 
 - Do not overuse code blocks for what will be written on each file.
 - Maintain proper abstraction level to code.

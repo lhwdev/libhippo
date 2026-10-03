@@ -61,19 +61,32 @@ def setup_knowledge_routes(app: web.Application, harness: GeneralAgentHarness) -
             handler = harness.registered_tools["query_knowledge"].handler
             result = await handler(query=query, effort=effort, criticality=criticality)
         elif harness.dispatcher:
-            res = await harness.dispatcher.query(query=query, effort=effort, criticality=criticality)
+            res = await harness.dispatcher.query_knowledge(query=query, effort=effort, criticality=criticality)
             result = {
                 "status": res.status,
-                "snippets": [s.model_dump(mode="json") for s in res.snippets],
+                "path": res.path,
+                "title": res.title,
+                "snippet": res.snippet,
                 "confidence": res.confidence,
-                "synthesized_answer": res.synthesized_answer,
+                "effort_tier": res.effort_tier,
+                "criticality": res.criticality,
+                "source": res.source,
+            }
+        elif harness.store:
+            nodes = await harness.store.search(query=query, top_k=3)
+            result = {
+                "status": "HIT" if nodes else "MISS",
+                "retrieved_nodes": [
+                    {"path": n.path, "snippet": n.snippet, "confidence": n.confidence}
+                    for n in nodes
+                ],
             }
         else:
             result = {
-                "status": "mock_miss",
+                "status": "MISS",
                 "snippets": [],
                 "confidence": 0.0,
-                "message": "Knowledge dispatcher is not attached to this harness instance",
+                "message": "Knowledge repository contains no matching documents",
             }
 
         elapsed = time.monotonic() - start_time

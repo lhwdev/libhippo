@@ -111,14 +111,21 @@ class KnowledgeStore:
         self.vector_store = vector_store or VectorKnowledgeStore(
             persist_dir=self.cache_dir / ".chromadb"
         )
+        self._initialized = False
 
     async def initialize(self) -> None:
         """Initialize storage directories, SQLite catalog, and perform incremental sync."""
+        if self._initialized:
+            return
         for mount in self.mount_manager.get_all_mounts():
-            mount.physical_path.mkdir(parents=True, exist_ok=True)
+            try:
+                mount.physical_path.mkdir(parents=True, exist_ok=True)
+            except (OSError, PermissionError):
+                pass
 
         await self.catalog.initialize()
         await self.sync_incremental()
+        self._initialized = True
 
     async def close(self) -> None:
         """Close storage catalog and release database connections."""
@@ -411,6 +418,9 @@ class KnowledgeStore:
         alpha: float = 0.08,
     ) -> list[KnowledgeQueryResult]:
         """Search knowledge using vector similarity boosted by importance confidence."""
+        if not self._initialized:
+            await self.initialize()
+
         vector_results = self.vector_store.search(
             query=query,
             namespace=namespace,
@@ -461,6 +471,9 @@ class KnowledgeStore:
         force: bool = False,
     ) -> dict[str, Any]:
         """Atomic disk mutation tool with automatic index re-synchronization."""
+        if not self._initialized:
+            await self.initialize()
+
         metadata = metadata or {}
         extra_paths = extra_paths or []
 

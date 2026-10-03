@@ -43,7 +43,10 @@ class MountManager:
         """Register a mount point for a namespace prefix."""
         prefix = mount.namespace_prefix.strip("/").lower()
         self._mounts[prefix] = mount
-        mount.physical_path.mkdir(parents=True, exist_ok=True)
+        try:
+            mount.physical_path.mkdir(parents=True, exist_ok=True)
+        except (OSError, PermissionError):
+            pass
 
     def get_mount(self, namespace_prefix: str) -> MountConfig | None:
         """Retrieve MountConfig for a given prefix."""
