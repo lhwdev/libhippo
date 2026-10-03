@@ -22,7 +22,7 @@ LibHippo cleanly decouples into two distinct architectural pillars:
    - Comprehensive execution environment for coding agents.
    - Token & workload governors with deterministic compaction.
    - Multi-zone prompt-cache memory architecture.
-   - Complete toolset: file operations, ripgrep code search, sandboxed terminal execution, web fetch/search, subagent delegation, and interactive user clarification.
+   - Complete toolset: file operations, pure Python code search, sandboxed terminal execution, web fetch/search, subagent delegation, and interactive user clarification.
    - Phased workflow harness: Task Alignment $\rightarrow$ Planning $\rightarrow$ Implementation $\rightarrow$ Review & Verification $\rightarrow$ Post-Task Maintenance.
    - The LibHippo knowledge management system integrates seamlessly into this harness as a first-class pluggable toolset.
 
@@ -222,7 +222,7 @@ To maximize provider KV-cache reuse (OpenAI, Anthropic, Gemini) and eliminate re
 ├────────────────────────────────────────────────────────────────────────┤
 │ Zone 2: Append-Only Linear History (KV-Cache Extension Zone)           │
 │  - User prompt + Agent reasoning trace (CoT)                           │
-│  - Tool calls & raw outputs (file contents, ripgrep matches, bash out) │
+│  - Tool calls & raw outputs (file contents, search matches, bash out)  │
 │  👉 Strictly monotonic append preserves previous turns' KV-cache       │
 ├────────────────────────────────────────────────────────────────────────┤
 │ Zone 3: Deterministic Snippet Compaction (On Quota Crossing)           │
@@ -246,7 +246,7 @@ When context crosses the hard compaction threshold ($\approx 80{,}000 \sim 100{,
   [Referenced: src/libhippo/storage/store.py (lines 1-120)]
   [Referenced: common/web/html/syntax.md (relevance: 0.92)]
   ```
-- Retains full tool call signatures and model reasoning chains. If the agent needs to re-inspect code, it issues a targeted `view_file` slice.
+- Retains full tool call signatures and model reasoning chains. If the agent needs to re-inspect code, it issues a targeted `read_file` slice.
 
 ### 3.4 Turn-Level Metadata Injection (Temporal Awareness without Cache Busting)
 - **The Problem with Prefix Timestamps**: Injecting dynamic wall-clock timestamps or user session counters into the system prompt (Zone 1) changes the bitwise prefix on every turn, completely destroying prompt caching.
@@ -264,11 +264,11 @@ The harness provides a complete, production-grade tool registry for software eng
 
 | Category | Tool Name | Arguments | Description & Operational Contract |
 | :--- | :--- | :--- | :--- |
-| **Filesystem** | **`view_file`** | `path`, `start_line`, `end_line`, `offset` | Reads line-addressed file slices (max 800 lines/call). Never loads unbounded files into context. |
+| **Filesystem** | **`read_file`** | `path`, `start_line`, `end_line` | Reads line-addressed file slices (max 800 lines/call). Never loads unbounded files into context. |
 | | **`overwrite_file`** | `path`, `content` | Creates a new file or completely overwrites an existing file. Parent directories are auto-created. |
 | | **`write_file`** | `path`, `content`, `start_line`, `end_line`, `target` | Targeted file modification: either replaces line range (`start_line` to `end_line`) or exact string match (`target`). |
 | | **`delete_file`** | `path` | Safely removes a file, verified against workspace containment and review mode policies. |
-| **Exploration** | **`search_file`** | `pattern`, `path`, `glob`, `no_ignore`, `hidden`, `flags` | Programmatic ripgrep search that automatically respects `.gitignore` by default. Optional `no_ignore=True` flag searches gitignored files. |
+| **Exploration** | **`search_file`** | `pattern`, `path`, `glob`, `no_ignore`, `hidden` | Pure Python search respecting `.gitignore` rules, hidden files, and glob filters (no external `rg` binary dependency). |
 | | **`list_dir`** | `path`, `depth`, `show_hidden` | Programmatic directory tree traversal up to a specified depth. |
 | **Execution** | **`run_command`** | `cmd`, `cwd`, `wait_ms`, `bypass_sandbox` | Executes bash commands with standard output piped to `tasks/<task_id>.log`. Synchronously returns if finished within `wait_ms`; otherwise detaches to background with a reactive completion notification. |
 | | **`manage_task`** | `action` ("status"\|"wait"\|"kill"\|"send_input"), `task_id`, `input` | Inspects status, blocks until finished, terminates, or sends stdin to running background processes. |
@@ -280,7 +280,7 @@ The harness provides a complete, production-grade tool registry for software eng
 | **Web Research**| **`search_web`** | `query`, `domain` | Searches web engines (DuckDuckGo default, Tavily/Brave pluggable) for external documentation and solutions. |
 | | **`fetch_web`** | `url` | Scrapes and converts web pages to clean markdown text. |
 | **Knowledge** | **`query_knowledge`** | `query`, `effort`, `criticality` | Plugs in LibHippo's 3-tier adaptive knowledge retriever ([`architecture.md`](architecture.md)). |
-| | **`modify_knowledge`**| `action`, `path`, `content`, `metadata` | Dynamically discovered tool provider for updating project and common rules, guarded by mount permissions and Maker-Checker validation. |
+| | **`modify_knowledge`**| `action`, `path`, `content`, `metadata`, `extra_paths` | Atomically commits markdown modifications, splits, merges, or deprecations to knowledge mounts, guarded by mount permissions and Maker-Checker validation. |
 
 ### 4.1 Output-Aware Tool Execution & Subagent Fan-Out (Tool Virtualization)
 
@@ -358,38 +358,98 @@ Does the triage router need previous conversation context?
 
 ## 5. Sandbox & Security Execution Model
 
-The harness implements defense-in-depth isolation for all filesystem and command operations:
+The harness implements defense-in-depth isolation for all filesystem and command operations, combining OS-level namespace sandboxing with user-configured security policies:
 
 ```mermaid
-flowchart LR
-    Agent[Agent Command / File Request] --> BoundaryCheck{Path / Cwd inside<br>Workspace Root?}
-    BoundaryCheck -- No: Outside Workspace --> RejectBoundary([Access Denied: Path escapes workspace root])
-    BoundaryCheck -- Yes: Inside Workspace --> ModeCheck{Requires Network or<br>Privileged System Access?}
-    ModeCheck -- No: Standard Command --> StandardSandbox[Standard Sandbox Mode<br>Auto-Approved<br>Read/Write Workspace Only]
-    ModeCheck -- Yes: Elevated Access --> BypassPrompt[Bypass Sandbox Request<br>User Approval Modal Required]
-    BypassPrompt --> UserDecision{User Approves?}
-    UserDecision -- Approved --> ElevatedRun[Run with Host Privileges]
-    UserDecision -- Denied --> CancelRun([Command Execution Blocked])
+flowchart TD
+    Agent[Agent Command / File Request] --> PolicyCheck{Check Project Security Policy<br>allow / deny / ask}
+    
+    PolicyCheck -->|deny| Blocked([Access Denied: Matched deny list])
+    PolicyCheck -->|ask| PromptUser[User Approval Modal Required]
+    PolicyCheck -->|allow| ExecEngine
+    PromptUser -->|User Approved| ExecEngine
+    PromptUser -->|User Rejected| Blocked
+    
+    subgraph ExecEngine["Sandboxed Execution Engine (bubblewrap)"]
+        BoundaryCheck{Path / Cwd inside<br>Workspace Root?}
+        BoundaryCheck -- No: Outside Workspace --> RejectBoundary([Access Denied: Path escapes workspace root])
+        BoundaryCheck -- Yes: Inside Workspace --> ModeCheck{Requires Network or<br>Privileged System Access?}
+        ModeCheck -- No: Standard Command --> BwrapSandbox[Bubblewrap Linux Sandbox<br>ro-bind /, bind workspace, --unshare-net<br>PTY Process Isolation]
+        ModeCheck -- Yes: Elevated Access --> BypassCheck{allow_sandbox_bypass<br>enabled?}
+        BypassCheck -- Yes --> HostExec[Host PTY Process<br>Full System Privileges]
+        BypassCheck -- No --> BypassPrompt[User Bypass Approval Modal]
+        BypassPrompt -->|Approved| HostExec
+        BypassPrompt -->|Denied| CancelRun([Execution Blocked])
+    end
 ```
 
-### 5.1 Workspace Boundary Containment
-- **Working Directory (`Cwd`) Enforcement**: `Cwd` must always resolve within `<workspace root>`. Commands attempting to run in `/tmp`, `/home`, or system root are blocked.
-- **Path Sanitization**: Absolute paths are verified to reside inside the workspace or the designated session scratch directory (`<appDataDir>/brain/<conversation_id>/scratch/`).
+### 5.1 Sandboxing Engine: Bubblewrap (`bwrap`) on Linux
+For command execution, the harness leverages **Bubblewrap (`bwrap`)**, the industry-standard unprivileged, rootless sandboxing technology on Linux:
+- **Mount Namespace Isolation**:
+  - Host root filesystem is mounted strictly read-only (`--ro-bind / /`).
+  - Read-write bind mounts are restricted strictly to permitted paths (`--bind <workspace root> <workspace root>`).
+  - An isolated ephemeral `tmpfs` is mounted on `/tmp` (`--tmpfs /tmp`), preventing agents from polluting host temporary storage or exfiltrating data through shared `/tmp`.
+  - Minimal `/dev` and fresh `/proc` namespaces (`--dev /dev --proc /proc`).
+- **Network Namespace Isolation (`--unshare-net`)**:
+  - In standard sandboxed mode, the network namespace is unshared (`--unshare-net`), cutting off all outbound socket connections and local network scanning.
+  - Commands requiring internet access (e.g. `npm install`, `curl`, `pip install`) must explicitly set `bypass_sandbox=True`, subject to the project security policy or user approval.
+- **PID & IPC Namespace Isolation**:
+  - `--unshare-pid` and `--unshare-ipc` isolate agent processes from other host processes and inter-process shared memory segments.
+- **Process Group & PTY Management**:
+  - Commands execute inside pseudo-terminals (PTY) in isolated process groups (`os.setsid`), multiplexing stdout/stderr into `tasks/<task_id>.log` and enabling deterministic signal escalation (`SIGINT` $\rightarrow$ 1,000ms $\rightarrow$ `SIGKILL`).
+- **Graceful Fallback**: If `bwrap` is unavailable on non-Linux hosts, execution falls back to strict Python-level path canonicalization, environment scrubbing, and PTY process boundary containment.
 
-### 5.2 Operational Modes: Turbo, Default, and Request Review
+### 5.2 Project Security Policy & User-Directory Isolation
+To prevent repository tampering, project security policies are **stored in the user directory** rather than within the project repository:
+- **Storage Location**: `~/.config/libhippo/projects/<project_id>.json` (keyed by canonical directory hash or project slug).
+- **Security Rationale**: Storing permissions inside the project repository (e.g. `.libhippo/security.json`) would allow an untrusted repository, a malicious Git branch, or an autonomous agent's code edits to unilaterally modify or weaken security policies. Storing it in the user's home configuration directory ensures the policy is immutable to repository contents.
+- **Directory Scoping**: Each project configuration is strictly scoped to one directory (`workspace_root`).
+- **Fine-Grained Allow / Deny / Ask Lists**:
+  - `read_file`: List of path patterns / globs (e.g. `allow: ["src/**", "tests/**"]`, `deny: ["**/.env*", "**/secrets/**"]`, `ask: ["../shared/**"]`).
+  - `write_file`: List of path patterns / globs (e.g. `allow: ["src/**", "tests/**"]`, `deny: [".git/**", "package-lock.json"]`).
+  - `command`: List of command binary names, prefix rules, or regexes (e.g. `allow: ["uv run pytest*", "git status", "git diff*"]`, `deny: ["rm -rf /*", "curl * | bash"]`, `ask: ["git push*", "npm publish*"]`).
+  - `network`: Boolean or domain whitelist (e.g. `allow_domains: ["registry.npmjs.org", "pypi.org"]`).
+- **Policy Evaluation Pipeline**:
+  1. If any target matches `deny`, the operation is immediately blocked with a security violation.
+  2. If the target matches `ask`, an interactive approval modal is presented to the user.
+  3. If the target matches `allow`, the operation proceeds automatically into the sandboxed runner.
+  4. If unmatched, the active operational mode (`turbo`, `default`, `request_review`) determines whether to prompt the user.
+
+### 5.3 Permission-Driven Sandbox Mounting (`bwrap` Dynamic Flag Synthesis)
+All global and project permission configurations (`read`, `write`, `network`) directly dictate the runtime arguments passed to `bwrap`, enforcing defense-in-depth at the Linux kernel namespace layer:
+
+1. **Read Permission Mounting (`read_file`)**:
+   - System executables, runtimes, and shared libraries (`/usr`, `/bin`, `/lib`, `/lib64`, `/etc/ssl`) are mounted read-only (`--ro-bind`).
+   - Allowed project read directories (`read_file.allow`, including the workspace and knowledge mounts) are mounted read-only (`--ro-bind <path> <path>`).
+   - **Kernel-Enforced Read Masking (`read_file.deny`)**:
+     - Sensitive paths matching the deny list (e.g. `~/.ssh`, `~/.aws`, `.env`, credentials) are **masked out** in the container mount namespace.
+     - `bwrap` mounts empty `tmpfs` overlays (`--tmpfs <denied_path>`) or empty directories (`--dir <denied_path>`) over the target paths, ensuring processes inside the sandbox receive `ENOENT` or empty files and cannot read sensitive host files.
+2. **Write Permission Mounting (`write_file`)**:
+   - Only explicitly allowed write targets (`write_file.allow`, such as `<workspace root>` and session scratch directory) are mounted read-write (`--bind <path> <path>`).
+   - **Read-Only Overlays on Denied Subpaths (`write_file.deny`)**:
+     - Critical subdirectories within the writable workspace that are in the deny list (e.g. `.git/`, `package-lock.json`, `.libhippo/cache/`) are **re-mounted read-only** on top (`--ro-bind <workspace>/.git <workspace>/.git`).
+     - Any command (e.g. `rm -rf .git`, `git checkout -f`, or an agent script) attempting to modify these files fails at the Linux VFS layer with `EROFS: Read-only file system`.
+3. **Network Permission Mounting (`network`)**:
+   - When network access is disallowed (`allow_network: false` in global/project policy, or standard sandboxed mode): `bwrap` executes with `--unshare-net`, isolating the network namespace to loopback only.
+   - When network access is granted (`allow_network: true` or approved `bypass_sandbox=True`): `bwrap` omits `--unshare-net`, granting access to the host network.
+4. **Combined Global & Project Hierarchy**:
+   - The runner computes the effective mount table by merging global user defaults (`~/.config/libhippo/permissions.json`) with project-specific overrides (`~/.config/libhippo/projects/<project_id>.json`):
+     $$\text{Deny Rules (Highest Priority: Masked)} > \text{Project Mounts} > \text{Global Mount Defaults}$$
+
+### 5.4 Operational Modes: Turbo, Default, and Request Review
 The harness configures user oversight via three operational modes:
 
 | Mode | Autonomy Level | Approval Gates & Safety Policy |
 | :--- | :--- | :--- |
-| **`turbo`** | **Full Autonomy** | All workspace file writes, deletions, and commands execute without user confirmation modals. Auto-approves commands within workspace bounds; minimizes interruptions. |
-| **`default`** | **Balanced Safety** | Auto-approves safe workspace file reads/writes and standard sandboxed commands. Displays user approval modals for commands attempting to escape `<workspace root>`, operations requesting network (`BypassSandbox=True`), or destructive bulk actions. |
-| **`request_review`** | **Strict Oversight** | High paranoia mode. Requires explicit user confirmation / interactive diff preview before any file write, file deletion, or terminal execution is executed. |
+| **`turbo`** | **Full Autonomy** | All operations matching project `allow` lists or inside workspace boundaries execute without user confirmation modals. Evaluates `deny` list strictly; bypasses `ask` prompts when safe. |
+| **`default`** | **Balanced Safety** | Auto-approves operations matching `allow` lists within workspace bounds. Displays user approval modals for unmatched commands, commands attempting to escape `<workspace root>`, network bypass requests (`bypass_sandbox=True`), or rules flagged `ask`. |
+| **`request_review`** | **Strict Oversight** | High paranoia mode. Requires explicit user confirmation / interactive diff preview before any file write, file deletion, or shell command execution is executed, regardless of `allow` list status. |
 
-### 5.3 Asynchronous Command Execution Architecture
+### 5.5 Asynchronous Command Execution Architecture
 For long-running tasks (e.g. `npm install`, test suites, dev servers):
-1. **Process Launch**: Commands execute in bash within a pseudo-terminal (PTY), with standard output and error multiplexed and streamed into a dedicated task log (`tasks/<task_id>.log`).
+1. **Process Launch**: Commands execute within a pseudo-terminal (PTY) inside `bwrap`, with standard output and error multiplexed and streamed into a dedicated task log (`tasks/<task_id>.log`).
 2. **Synchronous Wait Ceiling (`wait_ms`)**:
-   - If the process completes within `wait_ms` (e.g., 2,000ms), the harness returns output synchronously (`status: "completed", output: "...", exit_code: 0`).
+   - If the process completes within `wait_ms` (default 2,000ms), the harness returns output synchronously (`status: "completed", output: "...", exit_code: 0`).
    - If the process is still running after `wait_ms`, execution detaches to a tracked background task, returning `status: "running", task_id: "task-xyz", log_path: "..."` immediately.
 3. **Reactive Wakeup (Zero Polling)**:
    - When a detached background process finishes, the harness automatically injects a high-priority system notification into the agent's turn context (`[System Message] Task task-xyz completed with exit code 0. Log output: ...`).
@@ -398,7 +458,7 @@ For long-running tasks (e.g. `npm install`, test suites, dev servers):
    - Long-running servers or watchers set `is_daemon=True`.
    - The agent can send input via `manage_task(action="send_input", task_id="...", input="...")` or kill processes via `manage_task(action="kill")`.
 
-### 5.4 Prefix-Matchable Command Shaping
+### 5.6 Prefix-Matchable Command Shaping
 To prevent repetitive user approval prompts, commands must be structured for deterministic prefix-matching:
 - Avoid command substitutions (`$(...)` or backticks); run sub-steps as discrete calls.
 - Avoid wrapper chaining (`env`, `sudo`, `sh -c "..."`).
@@ -476,7 +536,7 @@ LibHippo's knowledge management system ([`architecture.md`](architecture.md)) pl
 [General Coding Agent Harness]
        │
        ├── Core Tool Registry
-       │     ├── view_file, replace_file_content, run_command ...
+       │     ├── read_file, write_file, search_file, modify_knowledge, run_command ...
        │     └── query_knowledge (Tool Bridge)
        │              │
        │              ▼
@@ -499,7 +559,95 @@ LibHippo's knowledge management system ([`architecture.md`](architecture.md)) pl
 
 ---
 
-## 8. Python Class Contracts & Harness Interfaces
+## 8. Automatic Discovery, Skills Convention, Global MCP, and Conversation Persistence
+
+To provide seamless developer ergonomics without manual configuration, the harness integrates automatic workspace discovery, standardized skill conventions, global MCP extensibility, and persistent multi-session conversation tracking:
+
+```mermaid
+flowchart TD
+    subgraph Discovery["Automatic Runner Discovery on Workspace Boot"]
+        WS[Workspace Root] --> DiscLib[1. Discover .libhippo/<br>Local mounts, SQLite catalog, Chroma cache]
+        WS --> DiscProjAgents[2. Discover Project AGENTS.md<br>Workspace-specific architectural rules]
+        UserHome[User Home ~/.config/libhippo/] --> DiscGlobAgents[3. Discover Global AGENTS.md<br>Developer-wide preferences & style]
+        WS --> DiscSkills[4. Discover .agents/skills/*/SKILL.md<br>Project-level custom skills]
+        UserHome --> DiscUserSkills[5. Discover ~/.agents/skills/*/SKILL.md<br>Global user skills]
+        UserHome --> DiscMCP[6. Discover ~/.config/libhippo/mcp.json<br>Global custom MCP servers]
+    end
+
+    subgraph ProjectAndConv["Project Security & Conversation Storage (~/.config/libhippo/)"]
+        ProjDir[projects/project_id.json<br>Scoped to workspace_root<br>allow / deny / ask lists]
+        ConvDir[projects/project_id/conversations/conv_id/]
+        ConvDir --> PersistZ2[transcript.jsonl: Linear Zone 2 History]
+        ConvDir --> PersistSub[subagents/: Worker states, transcripts, IDs]
+        ConvDir --> PersistArt[artifacts/: Generated diffs, docs, metadata]
+        ConvDir --> PersistTasks[tasks/: Background task logs, exit codes, PIDs]
+    end
+
+    Discovery --> GeneralHarness[GeneralAgentHarness Engine]
+    GeneralHarness <--> ProjectAndConv
+```
+
+### 8.1 Automatic Runner Discovery
+On initialization, `GeneralAgentHarness` automatically traverses the environment to discover and load contextual assets:
+1. **`.libhippo` Project Directory**:
+   - Discovers `<workspace_root>/.libhippo/` containing project-scoped knowledge (`project/`), SQLite catalog caches, and ChromaDB vector indices.
+   - Automatically registers the `project/` mount into the harness's internal `KnowledgeStore`.
+2. **Global & Project `AGENTS.md`**:
+   - **Global User Rules**: Discovers `~/.config/libhippo/AGENTS.md` (or `~/.gemini/config/AGENTS.md`) containing developer-wide conventions, editor settings, and language preferences.
+   - **Project Rules**: Discovers `<workspace_root>/AGENTS.md` containing repository-specific guidelines, testing commands, and architecture rules.
+   - Both rule sets are parsed and injected into the immutable Zone 1 static prefix in a deterministic, hierarchical order:
+     $$\text{Project AGENTS.md (Highest Precedence)} > \text{Global AGENTS.md}$$
+3. **General `.agents` Convention for Skill Discovery**:
+   - Follows the industry-standard `.agents/skills` directory convention:
+     - Project Skills: `<workspace_root>/.agents/skills/<skill_name>/SKILL.md`
+     - Global Skills: `~/.agents/skills/<skill_name>/SKILL.md` (or `~/.config/libhippo/skills/<skill_name>/SKILL.md`)
+   - Each skill directory contains:
+     - `SKILL.md`: Main instruction file with YAML frontmatter (`name`, `description`) and markdown guidelines.
+     - Optional helper scripts, reference docs, and templates.
+   - **Command-Based Invocation (`/<skill-name>`)**:
+     - Discovered skills are exposed as executable slash commands in the frontend: e.g. `/custom-skill`, `/migrate-workflows`.
+     - The frontend intercepts slash commands and dispatches them directly via `harness.invoke_skill(name, args)`.
+4. **Custom Model Context Protocol (MCP) Support (Configured Globally)**:
+   - Configured centrally in the user configuration directory: `~/.config/libhippo/mcp.json`.
+   - Uses the official MCP configuration specification:
+     ```json
+     {
+       "mcpServers": {
+         "github": {
+           "command": "npx",
+           "args": ["-y", "@modelcontextprotocol/server-github"],
+           "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "..." }
+         },
+         "postgres": {
+           "command": "python",
+           "args": ["-m", "mcp_server_postgres", "--connection-string", "..."]
+         }
+       }
+     }
+     ```
+   - On harness boot, all globally configured MCP servers are spawned via stdio/SSE clients, their declared tools and schemas are dynamically retrieved, and they are registered into the harness `ToolRegistry` alongside native coding tools.
+
+### 8.2 Persisted Conversation Architecture
+Conversations are first-class, durable entities grouped cleanly under each project:
+- **Storage Layout**:
+  - Project configuration: `~/.config/libhippo/projects/<project_id>.json`
+  - Conversations directory: `~/.config/libhippo/projects/<project_id>/conversations/<conversation_id>/`
+- **Persisted State Entities**:
+  1. **Zone 2 History (`transcript.jsonl`)**:
+     - Monotonically appended JSONL stream capturing every user turn, temporal metadata tag, assistant reasoning trace, tool invocation, and tool output.
+  2. **Subagent Registry (`subagents/`)**:
+     - Tracks all spawned child workers: conversation IDs, worker roles, execution states (`running`, `idle`, `completed`, `errored`), transcripts, and parent-child linkage.
+     - Enables resuming or inspecting subagents across CLI sessions or UI reconnects.
+  3. **Artifacts Store (`artifacts/`)**:
+     - Persists structured reports, architecture proposals, implementation plans, and code diffs.
+     - Records artifact metadata: `Summary`, `UserFacing: bool`, and `RequestFeedback: bool`.
+  4. **Background Tasks (`tasks/`)**:
+     - Persists long-running detached process metadata: `task_id`, command string, working directory, process PID, start timestamp, exit code, and stdout/stderr stream logs (`tasks/<task_id>.log`).
+     - Allows users and agents to reconnect, query status, or send input to running daemons across disconnections.
+
+---
+
+## 9. Python Class Contracts & Harness Interfaces
 
 ```python
 from __future__ import annotations
@@ -508,7 +656,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Coroutine, Literal
+from typing import Any, AsyncIterator, Callable, Coroutine, Literal
 from pydantic import BaseModel, Field
 
 
@@ -518,10 +666,54 @@ class ExecutionMode(str, Enum):
     REQUEST_REVIEW = "request_review"
 
 
+class SecurityRuleList(BaseModel):
+    """Fine-grained allow/deny/ask policy lists for an operation category."""
+
+    allow: list[str] = Field(default_factory=list)
+    deny: list[str] = Field(default_factory=list)
+    ask: list[str] = Field(default_factory=list)
+
+
+class ProjectSecurityPolicy(BaseModel):
+    """Project-level security policy stored in user dir (~/.config/libhippo/projects/)."""
+
+    project_id: str
+    workspace_root: Path
+    read_file: SecurityRuleList = Field(default_factory=SecurityRuleList)
+    write_file: SecurityRuleList = Field(default_factory=SecurityRuleList)
+    command: SecurityRuleList = Field(default_factory=SecurityRuleList)
+    allow_network: bool = False
+    allowed_domains: list[str] = Field(default_factory=list)
+
+
+class McpServerConfig(BaseModel):
+    """Global Model Context Protocol (MCP) server configuration."""
+
+    command: str
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+
+
+class GlobalMcpConfig(BaseModel):
+    """Root schema for ~/.config/libhippo/mcp.json."""
+
+    mcpServers: dict[str, McpServerConfig] = Field(default_factory=dict)
+
+
+class SkillDefinition(BaseModel):
+    """Discovered skill following .agents convention."""
+
+    name: str
+    description: str
+    skill_path: Path
+    system_prompt: str
+    tool_dependencies: list[str] = Field(default_factory=list)
+
+
 class HarnessConfig(BaseModel):
     """Runtime configuration for the General Coding Agent Harness."""
 
-    model: str = "gpt-6-luna"
+    model: str = "gpt-6.1-sol"
     temperature: float = Field(default=0.2, ge=0.0, le=1.0)
     workspace_root: Path = Field(default_factory=Path.cwd)
     mode: ExecutionMode = ExecutionMode.DEFAULT
@@ -533,6 +725,7 @@ class HarnessConfig(BaseModel):
     allow_sandbox_bypass: bool = False
     transport_mode: Literal["websocket", "http"] = "websocket"
     enable_http_fallback: bool = True
+    user_config_dir: Path = Field(default_factory=lambda: Path.home() / ".config" / "libhippo")
 
 
 @dataclass
@@ -557,10 +750,11 @@ class ToolDefinition:
     parameters_schema: dict[str, Any]
     handler: Callable[..., Coroutine[Any, Any, Any]]
     requires_sandbox_bypass: bool = False
+    requires_approval: bool = False
 
 
 class SandboxRunner(ABC):
-    """Execution sandbox enforcing workspace boundary isolation."""
+    """Execution sandbox enforcing workspace boundary and bwrap container isolation."""
 
     @abstractmethod
     async def run_command(
@@ -575,8 +769,25 @@ class SandboxRunner(ABC):
 
     @abstractmethod
     def validate_path(self, path: Path) -> Path:
-        """Verify that path resides strictly inside workspace_root."""
+        """Verify that path resides strictly inside workspace_root or scratch dir."""
         ...
+
+
+class ConversationSession:
+    """Manages persistent conversation state, subagents, artifacts, and task logs."""
+
+    def __init__(self, project_id: str, conversation_id: str, storage_dir: Path) -> None:
+        self.project_id = project_id
+        self.conversation_id = conversation_id
+        self.storage_dir = storage_dir
+        self.artifacts_dir = storage_dir / "artifacts"
+        self.tasks_dir = storage_dir / "tasks"
+        self.subagents_dir = storage_dir / "subagents"
+        self.transcript_file = storage_dir / "transcript.jsonl"
+
+    async def append_message(self, message: ContextMessage) -> None: ...
+    async def record_artifact(self, name: str, content: str, metadata: dict[str, Any]) -> Path: ...
+    async def record_task(self, task_id: str, info: dict[str, Any]) -> None: ...
 
 
 class GeneralAgentHarness:
@@ -586,17 +797,30 @@ class GeneralAgentHarness:
         self,
         config: HarnessConfig | None = None,
         sandbox: SandboxRunner | None = None,
+        policy: ProjectSecurityPolicy | None = None,
+        session: ConversationSession | None = None,
     ) -> None:
         self.config = config or HarnessConfig()
         self.sandbox = sandbox
+        self.policy = policy
+        self.session = session
         self.zone1_prefix: list[ContextMessage] = []
         self.zone2_history: list[ContextMessage] = []
         self.tools: dict[str, ToolDefinition] = {}
+        self.skills: dict[str, SkillDefinition] = {}
         self.current_phase: str = "alignment"
 
     def register_tool(self, tool: ToolDefinition) -> None:
         """Register a core coding or knowledge tool into the harness."""
         self.tools[tool.name] = tool
+
+    def register_skill(self, skill: SkillDefinition) -> None:
+        """Register a discovered skill from .agents/skills."""
+        self.skills[skill.name] = skill
+
+    def auto_discover(self) -> None:
+        """Automatically discover .libhippo, global/project AGENTS.md, skills, and MCP."""
+        ...
 
     def init_prefix(self, system_persona: str, repo_profile: str) -> None:
         """Initialize Zone 1 with immutable specifications for 100% KV-cache reuse."""
@@ -606,8 +830,12 @@ class GeneralAgentHarness:
         """Execute one conversational round through the 5-phase harness."""
         ...
 
+    async def stream(self, user_input: str) -> AsyncIterator[dict[str, Any]]:
+        """Stream conversational events (tokens, tool calls, questions) asynchronously."""
+        ...
+
     async def invoke_skill(self, name: str, args: dict[str, Any]) -> Any:
-        """Execute a specialized or custom skill invoked via the frontend."""
+        """Execute a specialized or custom skill invoked via the frontend command (/skill)."""
         ...
 
     async def ask_sidecar(self, query: str) -> Any:

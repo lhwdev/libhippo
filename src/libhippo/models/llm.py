@@ -27,6 +27,7 @@ class ModelConfig(BaseModel):
     base_url: str | None = None
     default_headers: dict[str, str] = Field(default_factory=dict)
     extra_kwargs: dict[str, Any] = Field(default_factory=dict)
+    model_info: dict[str, Any] | None = None
 
     def resolve_model_name(self) -> str:
         """Resolve effective model name using fallback if configured or in test mode."""
@@ -34,6 +35,16 @@ class ModelConfig(BaseModel):
         if use_fallback and self.fallback_model:
             return self.fallback_model
         return self.model
+
+
+DEFAULT_OPENAI_MODEL_INFO: dict[str, Any] = {
+    "vision": True,
+    "function_calling": True,
+    "json_output": True,
+    "family": "unknown",
+    "structured_output": True,
+    "multiple_system_messages": True,
+}
 
 
 def format_cached_system_message(
@@ -69,6 +80,7 @@ DEFAULT_AGENT_MODELS: dict[AgentRole, ModelConfig] = {
         cache_write=True,
         cache_mode="auto",
         cache_system_prompt_only=False,
+        model_info=DEFAULT_OPENAI_MODEL_INFO,
     ),
     "book_keeper": ModelConfig(
         provider="openai",
@@ -79,6 +91,7 @@ DEFAULT_AGENT_MODELS: dict[AgentRole, ModelConfig] = {
         cache_mode="explicit",
         cache_system_prompt_only=True,
         prompt_cache_key="libhippo-bookkeeper",
+        model_info=DEFAULT_OPENAI_MODEL_INFO,
     ),
     "curator": ModelConfig(
         provider="openai",
@@ -89,6 +102,7 @@ DEFAULT_AGENT_MODELS: dict[AgentRole, ModelConfig] = {
         cache_mode="explicit",
         cache_system_prompt_only=True,
         prompt_cache_key="libhippo-curator",
+        model_info=DEFAULT_OPENAI_MODEL_INFO,
     ),
     "checker": ModelConfig(
         provider="typesafe",
@@ -104,6 +118,7 @@ DEFAULT_AGENT_MODELS: dict[AgentRole, ModelConfig] = {
         cache_write=True,
         cache_mode="auto",
         cache_system_prompt_only=False,
+        model_info=DEFAULT_OPENAI_MODEL_INFO,
     ),
 }
 
@@ -180,8 +195,14 @@ class ModelRegistry:
         kwargs.update(config.extra_kwargs)
         kwargs.update(override_kwargs)
 
-        if "model_info" not in kwargs:
-            raise Exception("no model_info provided")
+        effective_model_info = (
+            override_kwargs.get("model_info")
+            or config.model_info
+            or config.extra_kwargs.get("model_info")
+        )
+        if not effective_model_info:
+            raise ValueError(f"model_info is strictly required for model '{model_name}'.")
+        kwargs["model_info"] = effective_model_info
 
         return OpenAIChatCompletionClient(**kwargs)
 

@@ -227,11 +227,15 @@
     `<turn_metadata timestamp="2026-10-03T16:47:02+09:00" session_elapsed="14m 20s" branch="main"/>`
   - Together with the programmatic `get_status()` tool, this gives the model exact real-time temporal grounding with 0 cache invalidation.
 
-### Q8. Why adopt a unified `write_file` and programmatic `search_file` over shell commands?
-- **Programmatic Ripgrep (`search_file`)**: Invoking ripgrep via raw shell commands (`run_command("rg ...")`) suffers from shell quoting hazards, argument escaping bugs, and risks bypassing `.gitignore` if flags are missed. Implementing `search_file` programmatically via native library bindings ensures `.gitignore` is unconditionally respected and output is returned structured without terminal ANSI noise.
-- **Unified `write_file` (Whole, Range, Patch)**:
-  - Different editing tasks require different ergonomics: creating new modules is best done via whole-file creation (`mode="whole"`); updating bounded function signatures is best done via line-ranges (`mode="range"`); fixing targeted variable references across large files is best done via exact string search-and-replace (`mode="patch"`).
-  - Unifying them into a single `write_file` tool eliminates tool proliferation while matching modern agent standards (Claude Code's `Edit`/`Write`, Antigravity's `replace_file_content`). Adding `delete_file` provides complete lifecycle symmetry.
+### Q8. Why adopt unified file tools (`read_file`, `write_file`) and pure Python `search_file` over shell commands?
+- **Pure Python `search_file` (No Ripgrep Dependency)**:
+  - Invoking ripgrep via external binaries (`rg`) introduces host packaging dependencies that fail inside minimal containers, chroots, or restricted sandbox environments where `ripgrep` is not pre-installed.
+  - Furthermore, running shell commands (`run_command("rg ...")`) introduces quoting hazards, subshell escaping issues, and risks bypassing `.gitignore` if flags are missed.
+  - Implementing `search_file` in pure Python provides zero-dependency portability across any Python runtime, natively parses hierarchical `.gitignore` rules, filters hidden files, applies glob filters, and returns structured `path:lineno:content` line matches with zero subshell overhead.
+- **Unified File Tools (`read_file`, `write_file`, `overwrite_file`, `delete_file`)**:
+  - `read_file` enforces line-range windowing (max 800 lines/call) to prevent catastrophic context exhaustion. Tool aliases and unused parameters (such as byte offsets) are omitted to conserve tool definition tokens in Zone 1.
+  - `write_file` unifies targeted line-range edits (`start_line`..`end_line`) and exact string replacements (`target`), preventing tool proliferation.
+  - `overwrite_file` and `delete_file` provide complete, atomic lifecycle management guarded by workspace boundaries and security policy checks.
 
 ### Q9. How does `/btw` answer user questions mid-run without disrupting the primary agent or invalidating KV-cache?
 - **The Problem**: A user watching a long build or reasoning sequence wants to ask a side question (*"which file was that error in?"* or *"why did you choose approach B?"*). Injecting this question into the primary agent's linear queue either pauses the task or pollutes the primary context with conversational tangents that degrade task convergence.
@@ -393,6 +397,56 @@ Task: Decide whether to APPROVE or REVISE. Provide actionable technical justific
     - `user/` $\rightarrow$ `~/.config/libhippo/knowledge/` (Read/Write, personal across projects).
     - `plugins/` $\rightarrow$ Dynamically mounted per enabled plugin (details to be discussed later).
   - **Read-Only Protection Where Needed**: Some knowledge mounts (such as read-only vendor plugins or external documentation packs) can be flagged `read_only: true`. Any write operation (`modify_knowledge`, split, merge, purge) against a read-only mount is blocked with `ReadOnlyMountError`, prompting the agent to specialize the rule inside the writable `project/` mount instead.
+
+---
+
+## 7. General Coding Agent Harness, Security, and Extensibility Rationale
+
+### Q1. Why use Bubblewrap (`bwrap`) as the sandboxing library on Linux?
+- **The Dilemma**: Autonomous coding agents execute untrusted terminal commands (e.g., package installation, compilers, test runners). Standard Python `subprocess` provides no kernel isolation, allowing rogue scripts to modify user files, access network resources, or tamper with system binaries. Conversely, heavy Docker containers incur severe startup latency, require daemon privileges, and complicate path translation under WSL/Linux.
+- **The Resolution**:
+  - `bubblewrap` (`bwrap`) is an unprivileged, rootless Linux containerization tool that leverages kernel namespaces (mount, network, PID, IPC, UTS) without requiring `sudo` or background daemons.
+  - Mount isolation mounts `/` strictly read-only, restricts write permissions exclusively to permitted paths (`--bind <workspace root>`), and provisions an isolated ephemeral `tmpfs` on `/tmp`.
+  - Network isolation (`--unshare-net`) eliminates unauthorized network access in standard mode.
+  - PTY process group management allows reliable process control and signal escalation (`SIGINT` $\rightarrow$ `SIGKILL`).
+
+### Q2. How do global and project permissions directly drive sandbox mounting?
+- **The Dilemma**: Relying solely on Python-level string checking for file paths or commands is vulnerable to symlink traversal, subshell trickery (`sh -c "cat /etc/shadow"`), or native C binaries ignoring Python checks.
+- **The Resolution**:
+  - Global and project permission lists (`read_file`, `write_file`, `network`) directly synthesize the Linux kernel mount table inside `bwrap`:
+    1. **Read list**: Allowed paths are mounted `--ro-bind`. Denied paths (e.g. `~/.ssh`, `~/.aws`, `.env`) are **masked out** with empty `tmpfs` overlays (`--tmpfs <path>`) or empty directories, making them completely unreadable to any process in the sandbox.
+    2. **Write list**: Permitted workspace and scratch directories are mounted read-write (`--bind <path> <path>`). Subdirectories in `write_file.deny` (such as `.git/` or `package-lock.json`) are **re-mounted read-only** on top (`--ro-bind <denied_path> <denied_path>`), causing write attempts to fail at the kernel VFS layer with `EROFS: Read-only file system`.
+    3. **Network list**: `--unshare-net` is enforced whenever network access is disallowed, cutting off raw sockets and network devices at the kernel level.
+  - This guarantees true defense-in-depth: untrusted binaries executed by the agent are physically prevented by the Linux kernel from reading or modifying restricted files.
+
+### Q3. Why store the project security policy in the user directory (`~/.config/libhippo/projects/`) rather than the workspace repository?
+- **The Dilemma**: If security policies (such as command execution allow/deny lists or write permissions) were checked into the project repository (e.g. `<workspace>/.libhippo/security.json`), checking out an untrusted branch, cloning a malicious repository, or an autonomous agent rewriting files could weaken or bypass the security policy.
+- **The Resolution**:
+  - The security policy is externalized to `~/.config/libhippo/projects/<project_id>.json`.
+  - Scoped to one directory (`workspace_root`), it defines granular `allow`, `deny`, and `ask` lists for `read_file`, `write_file`, and `command` execution.
+  - Because it resides in the user's home configuration directory outside the workspace root, repository code cannot tamper with its own governance policies.
+
+### Q4. Why strictly require `model_info` in `ModelConfig` and `create_chat_client`?
+- **The Dilemma**: Frontier models (such as `gpt-6.1-sol`, `gpt-6-luna`, `gpt-5-nano`) are not pre-registered in AutoGen's hardcoded legacy model tables. Silently guessing or falling back to default capabilities (`vision`, `function_calling`, `json_output`, `structured_output`) leads to runtime protocol mismatches and unpredictable behavior when models support differing capability matrices.
+- **The Resolution**: `model_info` is made strictly mandatory across `ModelConfig`, `DEFAULT_AGENT_MODELS`, and `create_chat_client`. Attempting to instantiate a model client without an explicit capability declaration raises an immediate error, ensuring capability contracts are verified at configuration time.
+
+### Q5. How does the runner discover resources, skills, and custom MCP servers?
+- **Automatic Hierarchy**:
+  1. `.libhippo/`: Discovers local project mounts, SQLite catalog, and ChromaDB vector store.
+  2. `AGENTS.md`: Cascades `Project AGENTS.md` over `Global ~/.config/libhippo/AGENTS.md`.
+  3. `.agents/skills`: Scans `<workspace>/.agents/skills/*/SKILL.md` and user global `~/.agents/skills/*/SKILL.md`, exposing each skill as an executable command (e.g., `/custom-skill`).
+  4. Global MCP: Reads `~/.config/libhippo/mcp.json`, spawning configured MCP stdio/SSE servers and registering their tools dynamically into the harness tool registry.
+
+### Q6. Why persist conversations under the project directory, and what state is retained?
+- **The Dilemma**: Long-running autonomous engineering tasks span multiple days, disconnects, and subagent delegations. Volatile in-memory sessions lose task logs, generated artifacts, and subagent lifecycles upon CLI termination or UI disconnect.
+- **The Resolution**:
+  - Conversations are durable entities stored under `~/.config/libhippo/projects/<project_id>/conversations/<conversation_id>/`.
+  - Persists:
+    - Zone 2 linear transcript (`transcript.jsonl`).
+    - Subagents: child worker IDs, states, transcripts, and parent links.
+    - Artifacts: generated markdown proposals, code diffs, and review feedback metadata.
+    - Background tasks: detached process PIDs, exit codes, and stdout/stderr stream logs (`tasks/<task_id>.log`).
+
 
 
 

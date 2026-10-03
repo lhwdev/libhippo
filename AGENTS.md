@@ -30,5 +30,4 @@ In most time, read `architecture.md` first.
 
 ## Files
 
-- When adding key modifications to architecture, modify `architecture.md` and also append to
-  corresponding section in `design_rationale_and_qa.md`.
+- When adding key modifications to architecture, modify corresponding markdown docs.

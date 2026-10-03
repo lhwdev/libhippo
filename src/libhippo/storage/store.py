@@ -244,6 +244,8 @@ class KnowledgeStore:
         rebuilt = await self.maybe_rebuild_index()
         return {"rebuilt": rebuilt, "mutation_count": self.vector_store.mutation_count}
 
+    compact_if_needed = post_task_maintenance
+
     async def sync_all(self) -> dict[str, Any]:
         """Alias for sync_incremental."""
 

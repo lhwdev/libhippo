@@ -97,9 +97,10 @@ graph TD
 
 ### 3.0 Centralized Model Registry & Client Factory (`libhippo.models.llm`)
 All model instantiations across AutoGen Chat Completion clients (OpenAI) and TypeSafe System One (Jev) are centralized in `libhippo.models.llm`:
-- **`ModelConfig` Schema**: Standardizes `provider` (`openai` | `typesafe`), `model`, `fallback_model`, `temperature`, `reasoning_effort`, `cache_write`, and authentication headers.
+- **`ModelConfig` Schema**: Standardizes `provider` (`openai` | `typesafe`), `model`, `fallback_model`, `temperature`, `reasoning_effort`, `cache_write`, `model_info` (required), and authentication headers.
+- **Strict `model_info` Requirement**: AutoGen's client requires explicit `model_info` capabilities for frontier models (`gpt-6.1-sol`, `gpt-6-luna`, `gpt-5-nano`); `create_chat_client` strictly validates that `model_info` is declared either in `ModelConfig` or call arguments to eliminate implicit model capability assumptions.
 - **Factory Functions**:
-  - `create_chat_client(role_or_config, ...)`: Instantiates `OpenAIChatCompletionClient` with role-specific defaults and prompt caching flags.
+  - `create_chat_client(role_or_config, ...)`: Instantiates `OpenAIChatCompletionClient` with role-specific defaults, mandatory `model_info`, and prompt caching flags.
   - `create_typesafe_client(role_or_config, ...)`: Instantiates `AsyncTypeSafeClient` for TypeSafe Jev semantic judgments.
   - `get_model_config(role_or_name)`: Reads default agent profile and applies environment overrides (`LIBHIPPO_<ROLE>_MODEL`).
 - **Model Specification**: Supports runtime overrides via environment variables (`LIBHIPPO_<ROLE>_MODEL`).
@@ -283,6 +284,9 @@ Root Namespace Index
 - **`force_keep` vs `read_only`**:
   - `force_keep: true` (frontmatter-level): Protects a specific leaf from automated refactoring (merges/splits) while allowing manual edits.
   - `read_only: true` (mount-level): Protects an entire filesystem subtree from any disk mutation by LLM agents.
+- **Externalized Project Security Policy & Sandbox Mounting**:
+  - For security isolation, project execution policies and allow/deny/ask lists for commands and filesystem writes are stored outside the workspace in the user directory (`~/.config/libhippo/projects/<project_id>.json`), ensuring untrusted repository contents cannot weaken agent security constraints.
+  - **Direct Effect on Sandbox Mounting**: Global and project permission lists (`read_file`, `write_file`, `network`) directly dictate the runtime Bubblewrap (`bwrap`) mount arguments: allowed read paths are mounted `--ro-bind`, denied read paths are masked with empty `tmpfs`, allowed write targets are mounted `--bind`, denied write subpaths (e.g. `.git/`) are overlaid with `--ro-bind`, and network isolation (`--unshare-net`) is set when network is disallowed (detailed in `architecture_runner.md`).
 
 ### 4.3 Hub-and-Leaf Directory Structure (Per Mount)
 Within each mount point, files follow the Hub-and-Leaf pattern: every subdirectory is accompanied by a sibling markdown file of identical basename. The parent file serves as a **Hub Knowledge (coarse overview and child index)**, while internal files act as **Leaf Knowledge (granular rules, edge cases, and code patterns)**.
