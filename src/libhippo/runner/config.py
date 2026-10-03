@@ -93,7 +93,7 @@ class HarnessConfig(BaseModel):
     """Runtime configuration for the General Coding Agent Harness."""
 
     model: str = "gpt-6.1-sol"
-    temperature: float = Field(default=0.2, ge=0.0, le=1.0)
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0) # legacy
     workspace_root: Path = Field(default_factory=Path.cwd)
     mode: ExecutionMode = ExecutionMode.DEFAULT
     soft_token_watermark: int = 60000

@@ -83,7 +83,7 @@ export const ArtifactsGallery: React.FC = () => {
             <div className="pb-2 border-b border-slate-800 font-mono text-slate-200 text-sm font-semibold flex items-center justify-between">
               <span>{selectedArtifact}</span>
             </div>
-            <pre className="p-4 bg-slate-950 border border-slate-800 rounded font-mono text-xs text-slate-200 overflow-x-auto whitespace-pre-wrap leading-relaxed selection:bg-sky-500/30">
+            <pre className="p-4 bg-slate-950 border border-slate-800 rounded font-mono text-xs text-slate-200 overflow-x-auto whitespace-pre-wrap leading-relaxed selection:bg-sky-500/30 select-text">
               {artifactContent}
             </pre>
           </div>

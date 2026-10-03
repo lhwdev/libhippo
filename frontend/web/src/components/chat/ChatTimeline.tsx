@@ -64,7 +64,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
             <Bot className="w-3.5 h-3.5 animate-pulse" />
             <span>Assistant (Thinking & Coding...)</span>
           </div>
-          <div className="whitespace-pre-wrap leading-relaxed font-sans text-sm selection:bg-sky-500/30">
+          <div className="whitespace-pre-wrap leading-relaxed font-sans text-sm selection:bg-sky-500/30 select-text">
             {streamingResponse || <span className="text-slate-500 italic">Formulating plan...</span>}
           </div>
         </div>

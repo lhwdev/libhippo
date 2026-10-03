@@ -53,13 +53,16 @@ class OpenAIResponsesWebSocketClient(ChatCompletionClient):
         }
         self._model_info = ModelInfo(**effective_info)
 
+        # Filter out None values
+        filtered_kwargs = {k: v for k, v in kwargs.items() if v is not None}
+
         # Fallback HTTP client powered by AutoGen built-in OpenAIChatCompletionClient
         self.http_client = OpenAIChatCompletionClient(
             model=model,
             api_key=self.api_key or "mock-key",
             base_url=base_url,
             model_info=self._model_info,
-            **kwargs,
+            **filtered_kwargs,
         )
 
         # Realtime client from openai[realtime]

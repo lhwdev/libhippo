@@ -54,7 +54,7 @@ export const MessageCard: React.FC<MessageCardProps> = ({ message }) => {
         )}
       </div>
 
-      <div className="whitespace-pre-wrap leading-relaxed font-sans text-sm selection:bg-sky-500/30">
+      <div className="whitespace-pre-wrap leading-relaxed font-sans text-sm selection:bg-sky-500/30 select-text">
         {message.content}
       </div>
 

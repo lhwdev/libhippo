@@ -18,6 +18,7 @@ In most time, read `architecture.md` first.
 - When refactoring internal codes, less consider backward compatibility;
   try to refactor use cases.
 - Search for web when dealing with latest things, i.e. OpenAI models, API.
+  * Do not mention legacy OpenAI models like o1, o4.
 
 ## Planning Rules
 

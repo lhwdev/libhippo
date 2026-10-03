@@ -629,6 +629,15 @@ On initialization, `GeneralAgentHarness` automatically traverses the environment
      }
      ```
    - On harness boot, all globally configured MCP servers are spawned via stdio/SSE clients, their declared tools and schemas are dynamically retrieved, and they are registered into the harness `ToolRegistry` alongside native coding tools.
+5. **Environment Variable Loading Hierarchy (`python-dotenv`)**:
+   - Discovers and loads environment variables from standard `.env` combinations in priority order (highest to lowest, with existing shell variables preserved):
+     1. `.env.<environment>.local` (e.g. `.env.development.local`, `.env.production.local`)
+     2. `.env.local`
+     3. `.env.<environment>` (e.g. `.env.development`, `.env.production`)
+     4. `.env`
+   - Active environment is determined by `LIBHIPPO_ENV`, `APP_ENV`, `NODE_ENV`, or defaults to `development`.
+   - Also inspects user configuration directory `~/.config/libhippo/` as a fallback environment directory.
+   - Handled via `python-dotenv` before initializing LLM clients and runner subsystems.
 
 ### 8.2 Persisted Conversation Architecture
 Conversations are first-class, durable entities grouped cleanly under each project:
@@ -717,7 +726,7 @@ class HarnessConfig(BaseModel):
     """Runtime configuration for the General Coding Agent Harness."""
 
     model: str = "gpt-6.1-sol"
-    temperature: float = Field(default=0.2, ge=0.0, le=1.0)
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0) # legacy
     workspace_root: Path = Field(default_factory=Path.cwd)
     mode: ExecutionMode = ExecutionMode.DEFAULT
     soft_token_watermark: int = 60000

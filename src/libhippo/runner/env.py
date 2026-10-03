@@ -71,8 +71,11 @@ def load_env_hierarchy(
     for d in dirs:
         for candidate in get_env_file_candidates(d, environment=environment):
             if candidate.is_file():
-                # override=False preserves existing os.environ values and higher-priority files
-                if load_dotenv(dotenv_path=candidate, override=override):
-                    loaded.append(candidate)
+                try:
+                    # override=False preserves existing os.environ values and higher-priority files
+                    if load_dotenv(dotenv_path=candidate, override=override):
+                        loaded.append(candidate)
+                except (OSError, PermissionError):
+                    pass
 
     return loaded

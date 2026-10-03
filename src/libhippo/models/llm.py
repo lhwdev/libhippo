@@ -204,7 +204,12 @@ class ModelRegistry:
             raise ValueError(f"model_info is strictly required for model '{model_name}'.")
         kwargs["model_info"] = effective_model_info
 
-        return OpenAIChatCompletionClient(**kwargs)
+        # Filter out None values
+        filtered_kwargs = {k: v for k, v in kwargs.items() if v is not None}
+        client = OpenAIChatCompletionClient(**filtered_kwargs)
+        from libhippo.models.logging_client import wrap_client_if_logging_enabled
+
+        return wrap_client_if_logging_enabled(client)
 
     def create_typesafe_client(
         self,

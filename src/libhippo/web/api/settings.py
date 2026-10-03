@@ -118,8 +118,11 @@ def setup_settings_routes(app: web.Application, harness: GeneralAgentHarness) ->
         data = await request.json()
         if "model" in data and isinstance(data["model"], str):
             harness.config.model = data["model"]
-        if "temperature" in data and isinstance(data["temperature"], (int, float)):
-            harness.config.temperature = float(data["temperature"])
+        if "temperature" in data: # legacy
+            if data["temperature"] is None:
+                harness.config.temperature = None
+            elif isinstance(data["temperature"], (int, float)):
+                harness.config.temperature = float(data["temperature"])
         if "mode" in data and isinstance(data["mode"], str):
             try:
                 harness.config.mode = ExecutionMode(data["mode"])

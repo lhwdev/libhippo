@@ -84,20 +84,30 @@ class GeneralAgentHarness:
         )
 
         # 3. Model Client & Transport
+        from libhippo.models.logging_client import wrap_client_if_logging_enabled
+
         if model_client is not None:
-            self.model_client = model_client
+            self.model_client = wrap_client_if_logging_enabled(model_client)
         else:
+            client_kwargs: dict[str, Any] = {}
+            if self.config.temperature is not None:
+                client_kwargs["temperature"] = self.config.temperature
+
             if self.config.transport_mode == "websocket":
-                self.model_client = OpenAIResponsesWebSocketClient(
-                    model=self.config.model,
-                    temperature=self.config.temperature,
-                    enable_http_fallback=self.config.enable_http_fallback,
+                self.model_client = wrap_client_if_logging_enabled(
+                    OpenAIResponsesWebSocketClient(
+                        model=self.config.model,
+                        enable_http_fallback=self.config.enable_http_fallback,
+                        **client_kwargs,
+                    )
                 )
             else:
-                self.model_client = create_chat_client(
-                    "task_solver",
-                    model=self.config.model,
-                    temperature=self.config.temperature,
+                self.model_client = wrap_client_if_logging_enabled(
+                    create_chat_client(
+                        "task_solver",
+                        model=self.config.model,
+                        **client_kwargs,
+                    )
                 )
 
         # 4. Context Memory & Workload Governor

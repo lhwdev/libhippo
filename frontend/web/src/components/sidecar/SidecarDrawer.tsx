@@ -55,7 +55,7 @@ export const SidecarDrawer: React.FC<SidecarDrawerProps> = ({ messages, onSendQu
                 <span>{item.timestamp}</span>
               </span>
             </div>
-            <div className="text-slate-200 leading-relaxed whitespace-pre-wrap pl-2 border-l-2 border-emerald-500/40">
+            <div className="text-slate-200 leading-relaxed whitespace-pre-wrap pl-2 border-l-2 border-emerald-500/40 select-text">
               {item.response}
             </div>
           </div>
