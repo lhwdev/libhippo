@@ -20,6 +20,9 @@ class ModelConfig(BaseModel):
     temperature: float | None = None
     reasoning_effort: Literal["minimal", "low", "medium", "high"] | None = None
     cache_write: bool = False
+    cache_mode: Literal["auto", "explicit", "off"] = "auto"
+    cache_system_prompt_only: bool = False
+    prompt_cache_key: str | None = None
     api_key: str | None = None
     base_url: str | None = None
     default_headers: dict[str, str] = Field(default_factory=dict)
@@ -33,12 +36,39 @@ class ModelConfig(BaseModel):
         return self.model
 
 
+def format_cached_system_message(
+    system_prompt: str,
+    cache_system_prompt_only: bool = True,
+) -> dict[str, Any]:
+    """Format a system message with explicit prompt cache breakpoints.
+
+    Supports OpenAI 'prompt_cache_breakpoint' and Anthropic 'cache_control'
+    so only the static system prompt is written to cache (avoiding 1.25x write
+    fees on volatile conversation turns).
+    """
+    if not cache_system_prompt_only:
+        return {"role": "system", "content": system_prompt}
+    return {
+        "role": "system",
+        "content": [
+            {
+                "type": "text",
+                "text": system_prompt,
+                "cache_control": {"type": "ephemeral"},
+                "prompt_cache_breakpoint": True,
+            }
+        ],
+    }
+
+
 DEFAULT_AGENT_MODELS: dict[AgentRole, ModelConfig] = {
     "task_solver": ModelConfig(
         provider="openai",
         model="gpt-6.1-sol",
         temperature=0.3,
         cache_write=True,
+        cache_mode="auto",
+        cache_system_prompt_only=False,
     ),
     "book_keeper": ModelConfig(
         provider="openai",
@@ -46,6 +76,9 @@ DEFAULT_AGENT_MODELS: dict[AgentRole, ModelConfig] = {
         temperature=0.0,
         reasoning_effort="low",
         cache_write=False,
+        cache_mode="explicit",
+        cache_system_prompt_only=True,
+        prompt_cache_key="libhippo-bookkeeper",
     ),
     "curator": ModelConfig(
         provider="openai",
@@ -53,6 +86,9 @@ DEFAULT_AGENT_MODELS: dict[AgentRole, ModelConfig] = {
         temperature=0.1,
         reasoning_effort="medium",
         cache_write=False,
+        cache_mode="explicit",
+        cache_system_prompt_only=True,
+        prompt_cache_key="libhippo-curator",
     ),
     "checker": ModelConfig(
         provider="typesafe",
@@ -66,8 +102,11 @@ DEFAULT_AGENT_MODELS: dict[AgentRole, ModelConfig] = {
         temperature=0.0,
         reasoning_effort="high",
         cache_write=True,
+        cache_mode="auto",
+        cache_system_prompt_only=False,
     ),
 }
+
 
 
 class ModelRegistry:

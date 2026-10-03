@@ -155,15 +155,24 @@
   - **Zone 3 (Lazy Compaction)**: Triggered only at high token watermarks (e.g., 8,000 tokens). Evicts bulky past tool outputs by replacing raw snippets with concise markers (`[Referenced: common/.../syntax.md]`) while preserving reasoning traces.
   - *(See [architecture_runner.md](architecture_runner.md) for complete runner lifecycle, zone definitions, and eviction data structures).*
 
-### Q3. Why disable prompt cache writes on single-use lookups (BookKeeper) while enabling them for Check-Verify refactoring loops?
-- **The Financial Dilemma**:
-  - OpenAI applies a cache write surcharge (~1.25x the standard input rate) when populating the prompt cache, expecting savings on subsequent cache reads (~0.1x).
-  - A subagent operating on strictly one-off tasks (e.g. `BookKeeperAgent` in its **Zero-Context Sandbox** or one-shot web scraping) never re-reads its prompt; paying the 1.25x surcharge for single-use queries is strictly wasteful.
-- **The Resolution**:
-  - **Cache Write: DISABLED** on `BookKeeperAgent` (and one-off `CuratorAgent` scrapes): Single-use prompts are billed at the standard baseline input rate, avoiding the 1.25x write surcharge on prompts that will never be re-read.
-  - **Cache Write: ENABLED** on:
-    1. `TaskSolverAgent`: Repeated conversational turns and iterative problem solving.
-    2. **Check $\rightarrow$ Verify Refactoring Context Loop** (`VerifierAgent` and `CuratorAgent` during refactoring cycles): Sequential turns append linearly, allowing subsequent rounds of split planning, drafting, and re-auditing to read cached prefixes at ~0.10x cost, rapidly amortizing the initial write fee.
+### Q3. Why disable prompt cache writes on single-use lookups (BookKeeper) and how can we cache ONLY system prompts?
+- **The Financial Dilemma (1.25x Cache Write Fee)**:
+  - For models in the GPT-5.6 family and later (including `gpt-6.1-sol` and `gpt-6-luna`), OpenAI bills cache write operations at **1.25x the standard input token rate** (+25% surcharge), while cache hits receive a significant discount (0.25x–0.50x).
+  - Because prompt caching on OpenAI is automatic for prefixes $\ge 1,024$ tokens, sending one-off, volatile queries (or prompts that are never reused) incurs a wasteful 25% cache write penalty on every turn without ever recouping savings.
+  - A subagent operating on strictly one-off tasks (e.g. `BookKeeperAgent` in its **Zero-Context Sandbox** or one-shot web scraping) never re-reads its query or candidate snippets; paying 1.25x for single-use tokens is financially counterproductive.
+- **The Resolution: Explicit Mode & System-Prompt-Only Caching**:
+  - **Cache System Prompt Only (`cache_system_prompt_only = True`)**:
+    - Uses OpenAI's explicit cache control mode (`prompt_cache_options.mode = "explicit"`).
+    - Places an explicit `prompt_cache_breakpoint: True` (and Anthropic `cache_control: {"type": "ephemeral"}`) strictly at the boundary of the static **System Prompt** (`messages[0]`).
+    - The static system prompt is written to the cache **once** (at 1.25x) and reused across subsequent queries at discounted read rates.
+  - **Sub-1k Stateless Bypass (`BookKeeperAgent`)**:
+    - OpenAI prompt caching only activates when the static prefix reaches at least **1,024 tokens**.
+    - For lightweight single-use lookups where the system prompt and tool definitions remain below 1,024 tokens, caching does not trigger at all, completely avoiding both the cache write operation and the 1.25x fee.
+  - **Full Linear Session Caching (`cache_write = True`, `cache_system_prompt_only = False`)**:
+    - **`TaskSolverAgent`**: Repeated conversational turns append linearly in Zone 2, making multi-turn caching cost-effective.
+    - **Check $\rightarrow$ Verify Refactoring Context Loop** (`VerifierAgent` and `CuratorAgent` during refactoring cycles): Sequential rounds append linearly, rapidly amortizing the initial 1.25x write fee across multi-turn refactoring iterations.
+
+
 
 ---
 
@@ -253,4 +262,20 @@ Task: Decide whether to APPROVE or REVISE. Provide actionable technical justific
 ### Q5. Why execute Vector Store compaction (`rebuild_index`) asynchronously after a task ends rather than inline during mutations?
 - **The Problem**: Rebuilding the HNSW vector index (wiping the collection and re-embedding/re-indexing all knowledge documents) takes several seconds for sizeable repositories. Triggering compaction inline inside `modify_knowledge` or during an active query would stall the agent's turn, creating disruptive latency spikes in interactive problem-solving sessions.
 - **The Resolution**: `VectorKnowledgeStore` monitors mutation churn via `mutation_count` and flags when `should_rebuild()` is met (default $\ge 200$ mutations). The actual compaction is dispatched **asynchronously as a background post-task maintenance operation** once `TaskSolverRunner` completes its user response. This preserves low interactive latency while ensuring the HNSW graph remains defragmented and performant.
+
+### Q6. Why decouple knowledge namespaces into dynamic mount points instead of a single flat directory?
+- **The Dilemma**:
+  - A single flat directory forces all knowledge—project-specific rules, personal developer preferences, shared language specifications, and external plugin docs—into one physical tree.
+  - This causes two major structural problems:
+    1. **Repository Pollution**: Project git repositories would either have to vendor standard language docs or ignore the directory entirely, preventing teams from checking project-specific architectural rules into Git.
+    2. **No Multi-Project Sharing**: Every project would duplicate global standards and developer preferences.
+- **The Dynamic Mount Resolution**:
+  - Namespaces are mapped dynamically to their logical locations:
+    - `project/` $\rightarrow$ `<workspace root>/.libhippo/` (Read/Write, committed to repo Git).
+    - `common/` $\rightarrow$ `<libhippo install>/knowledge/common/` (Read/Write, maintained and updated when new framework versions release, e.g. React 19).
+    - `user/` $\rightarrow$ `~/.config/libhippo/knowledge/` (Read/Write, personal across projects).
+    - `plugins/` $\rightarrow$ Dynamically mounted per enabled plugin (details to be discussed later).
+  - **Read-Only Protection Where Needed**: Some knowledge mounts (such as read-only vendor plugins or external documentation packs) can be flagged `read_only: true`. Any write operation (`modify_knowledge`, split, merge, purge) against a read-only mount is blocked with `ReadOnlyMountError`, prompting the agent to specialize the rule inside the writable `project/` mount instead.
+
+
 

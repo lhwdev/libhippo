@@ -233,56 +233,71 @@ Trigger boundary values change dynamically:
 ### 3.7 Context Stacking & Compaction in the Check-Verify Refactoring Loop
 During iterative refactoring cycles between `CheckerAgent`, `VerifierAgent`, and `CuratorAgent` (`Checker` $\rightarrow$ `Verifier` $\rightarrow$ `Curator` $\rightarrow$ `Checker` ...):
 - **Standard Linear Stacking**: Successive review rounds (Checker report $\rightarrow$ Verifier split directive $\rightarrow$ Curator child diffs $\rightarrow$ Checker re-audit) append linearly into the turn history for prompt caching across turns.
-- **Prompt Cache Write: ENABLED**: In contrast to purely stateless single-query lookups, the refactoring session maintains a multi-turn linear trajectory across iterative proposals.
 - **Compact-on-Exceed**: When accumulated turn tokens exceed the context threshold, older conversation is compacted by well-known head-compact-tail method.
 
+### 3.8 Prompt Caching Strategies
+Modern OpenAI models enforce an automatic **1,024-token prefix threshold** and charge a **1.25x cache write fee** (+25% surcharge), offset by 0.25x–0.50x read rates on cache hits. LibHippo uses three complementary caching strategies:
+1. **Stateless Sub-1k Bypass (`BookKeeperAgent`)**: Single-use lookups with lightweight system prompts and tool schemas kept under 1,024 tokens never trigger cache writes, completely avoiding the 1.25x write surcharge.
+2. **Zone 1 Static Prefix Caching (`TaskSolverAgent`, Refactoring Loop)**: In multi-turn sessions, static system prompt, tool schemas, and repository catalog summary are bundled into Zone 1 ($\ge 1,024$ tokens), written once and read at discounted rates across subsequent turns.
+3. **Explicit System-Prompt-Only Caching**: When configured with `cache_system_prompt_only = True` in `ModelConfig`, the client requests `prompt_cache_options.mode = "explicit"` with a `prompt_cache_breakpoint` on the system message, caching strictly the static prompt while keeping volatile user turns and dynamic retrieved snippets uncached at standard 1.0x rates.
 
 ---
 
-## 4. Cascading Knowledge Scopes & Storage Design
+
+## 4. Cascading Knowledge Scopes & Dynamic Mount Architecture
 
 Knowledge precedence follows a cascading hierarchy where granular scopes override broader defaults:
 $$\text{Project (Highest)} > \text{User (Preferences)} > \text{Plugins (Optional Packs)} > \text{Common (General Standards)}$$
 
-### 4.1 Hub-and-Leaf Directory Structure
-Every directory pairs with a sibling markdown file of identical basename. The parent file serves as a **Hub Knowledge (coarse overview and child index)**, while internal files act as **Leaf Knowledge (granular rules, edge cases, and code patterns)**.
+### 4.1 Dynamic Namespace Mounts
+Rather than mounting all knowledge into a single flat directory, namespaces act as dynamic mount points resolved to distinct physical locations:
+
+| Namespace | Backing Physical Mount Point | Access Mode | Purpose & Lifecycle |
+| :--- | :--- | :--- | :--- |
+| **`project/`** | `<workspace root>/.libhippo/` | **Read / Write** | Project-specific architecture, coding rules, and conventions. Included to project source. |
+| **`common/`** | `<libhippo install>/knowledge/common/` | **Read / Write** | Base language standards, core syntax, and cross-project specifications. |
+| **`user/`** | `~/.config/libhippo/knowledge/` | **Read / Write** | Global developer preferences, authoring styles, and personal snippets across projects. |
+| **`plugins/`** | Dynamic plugin locations | **Configurable** *(RO / RW)* | Optional modular knowledge packs mounted dynamically per enabled plugin. |
 
 ```text
-libhippo/knowledge/
-├── knowledge_catalog.db              <-- Local SQLite FTS5 / metadata catalog index
-├── common.md                         <-- Level 0 (Root): General domain standard overview
-├── common/
-│   ├── web.md                        <-- Level 1 (Domain): Web technology standards
-│   └── web/
-│       ├── html.md                   <-- Level 2 (Category): HTML5 rules & semantic structure
-│       └── html/
-│           ├── syntax.md             <-- Level 3 (Leaf): Concrete syntax & tags
-│           ├── accessibility.md      <-- Level 3 (Category): ARIA & keyboard navigation
-│           └── accessibility/
-│               └── aria_button.md    <-- Level 3 (Leaf): ARIA button accessibility patterns
-├── user.md                           <-- Level 0 (User Root)
-├── user/
-│   └── preferences.md                <-- User coding styles & preferred packages
-├── project.md                        <-- Level 0 (Project Root, tracked in Git)
-├── project/
-│   └── architecture.md               <-- Repository architecture & schema rules
-├── plugins.md                        <-- Level 0 (Plugins Root)
-├── plugins/                          <-- Modular plug-and-play knowledge bundles
-│   ├── react19.md                    <-- Level 1 (Plugin): React 19 rules & hooks
-│   └── react19/
-└── deprecated/                       <-- Quarantined, superseded knowledge records (not an active)
+[Dynamic Namespace Mounts]
+Root Namespace Index
+├── project/             <== MOUNT: <workspace root>/.libhippo/ (RW, Git-tracked)
+│   ├── project.md       <-- Project Hub
+│   └── architecture.md  <-- Project Leaf
+├── common/              <== MOUNT: <libhippo install>/knowledge/common/ (RW)
+│   ├── common.md        <-- Common Hub
+│   └── web/html/syntax.md
+├── user/                <== MOUNT: ~/.config/libhippo/knowledge/ (RW)
+│   ├── user.md
+│   └── preferences.md
+└── plugins/             <== MOUNT: Dynamic plugin directories (RO or RW)
 ```
 
-### 4.2 Markdown as Pure Source of Truth & Incremental Cache Sync
-- **Source of Truth**: Local human-readable, Git-tracked **Markdown files (`.md`)**.
-- **Disposable Caches**: Both the SQLite catalog (`knowledge_catalog.db`) and ChromaDB vector store (`.chromadb/`) are strictly derived, disposable caches (git-ignored). They can be deleted and regenerated at any time without data loss.
+### 4.2 Mount Permissions & Read-Only Protection
+- **Mount Configuration (`MountConfig`)**: Each mount point defines `namespace_prefix`, `physical_path`, and `read_only: bool` (defaulting to `False` for `project`, `user`, `common`).
+- **Enforcement in `modify_knowledge`**:
+  - The Maker-Checker pipeline and `modify_knowledge` tool verify the target mount's `read_only` flag before any file write, rename, split, merge, or deletion.
+  - Mutations targeting read-only mounts (e.g., third-party read-only plugin packs) are rejected with `ReadOnlyMountError`.
+  - To override or specialize rules from a read-only mount, agents draft an overriding leaf inside the writable `project/` mount.
+- **`force_keep` vs `read_only`**:
+  - `force_keep: true` (frontmatter-level): Protects a specific leaf from automated refactoring (merges/splits) while allowing manual edits.
+  - `read_only: true` (mount-level): Protects an entire filesystem subtree from any disk mutation by LLM agents.
+
+### 4.3 Hub-and-Leaf Directory Structure (Per Mount)
+Within each mount point, files follow the Hub-and-Leaf pattern: every subdirectory is accompanied by a sibling markdown file of identical basename. The parent file serves as a **Hub Knowledge (coarse overview and child index)**, while internal files act as **Leaf Knowledge (granular rules, edge cases, and code patterns)**.
+
+### 4.4 Markdown as Pure Source of Truth & Incremental Cache Sync
+- **Source of Truth**: Local human-readable, Git-tracked **Markdown files (`.md`)** across the mounted physical paths.
+- **Unified Disposable Caches**: Both the SQLite catalog (`knowledge_catalog.db`) and ChromaDB vector store (`.chromadb/`) are strictly derived, disposable caches (stored in `<workspace root>/.libhippo/cache/` or user cache). They index virtual paths (`project/...`, `common/...`) alongside mount metadata.
 - **3-Tier Incremental Synchronization**:
-  1. *Filesystem `mtime`*: Unchanged files are skipped in sub-milliseconds without disk I/O.
+  1. *Per-Mount Filesystem `mtime`*: Unchanged files within each mount are skipped in sub-milliseconds without disk I/O.
   2. *Content SHA-256*: Detects git branch checkouts or file touches where timestamp changed but content is identical, avoiding redundant vector re-embedding.
 - **Compaction & Rebuild (`rebuild_index`)**: Periodic rebuild to eliminate tombstone fragmentation in the HNSW vector index when mutation churn crosses a threshold (default 200 mutations). Compaction is executed **asynchronously in the background after a task run completes**, ensuring interactive task solving and user response times are never blocked by HNSW index recreation.
 
 
-### 4.3 Markdown Node Schema Example (`common/web/html/accessibility/aria_button.md`)
+### 4.5 Markdown Node Schema Example (`common/web/html/accessibility/aria_button.md`)
+
 ```markdown
 ---
 title: "Button Accessibility with ARIA"

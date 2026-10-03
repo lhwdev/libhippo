@@ -94,3 +94,21 @@ def test_create_typesafe_client_instantiation():
     from typesafe_sdk import AsyncTypeSafeClient
 
     assert isinstance(client, AsyncTypeSafeClient)
+
+
+def test_format_cached_system_message():
+    """Verify format_cached_system_message formats explicit prompt cache breakpoints."""
+    from libhippo.models.llm import format_cached_system_message
+
+    msg_uncached = format_cached_system_message("Prompt text", cache_system_prompt_only=False)
+    assert msg_uncached == {"role": "system", "content": "Prompt text"}
+
+    msg_cached = format_cached_system_message("Prompt text", cache_system_prompt_only=True)
+    assert msg_cached["role"] == "system"
+    assert isinstance(msg_cached["content"], list)
+    block = msg_cached["content"][0]
+    assert block["type"] == "text"
+    assert block["text"] == "Prompt text"
+    assert block["prompt_cache_breakpoint"] is True
+    assert block["cache_control"] == {"type": "ephemeral"}
+

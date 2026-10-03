@@ -1,181 +1,293 @@
-# LibHippo: TaskSolverAgent Runner & Context Harness Specification
-## Runtime Architecture & Execution Harness
+# LibHippo: General Coding Agent Harness Specification
+## Runtime Architecture & Autonomous Engineering Harness
 
-> **Target Component**: `libhippo.runner.TaskSolverRunner`  
-> **Target Agent**: `TaskSolverAgent` (`gpt-4o`)  
-> **Core Architectural Reference**: [architecture.md](architecture.md)  
-> **Rationale & Benchmarks**: [design_rationale_and_qa.md](design_rationale_and_qa.md)  
-
----
-
-## 1. Problem Definition & Scope
-
-`TaskSolverAgent` is the central reasoning and code generation agent in LibHippo. During complex programming workflows, it repeatedly calls `query_knowledge`, inspects technical documentation, generates code candidates, and revises drafts based on `VerifierAgent` feedback.
-
-Without an explicit execution harness, conventional agent loops suffer from:
-1. **Cache Invalidation from Sliding Windows**: Truncating or summarizing conversational history mid-session breaks static prefix alignment, destroying KV-cache reuse on modern providers (OpenAI, Anthropic, Gemini) and increasing latency/cost by $3\times \sim 5\times$.
-2. **Context Window Saturation**: Accumulating multiple raw markdown leaf documents retrieved via `query_knowledge` rapidly exhausts the token quota and causes "Lost in the Middle" hallucinations.
-3. **Pronoun Ambiguity in Tool Calls**: Unstructured agent turns produce ambiguous tool queries (e.g., *"fetch rules for that"*), breaking downstream zero-context subagents like `BookKeeperAgent`.
-
-`TaskSolverRunner` serves as the runtime harness enclosing `TaskSolverAgent`, managing prefix-cached memory zones, lazy snippet eviction, tool query disambiguation, and verifier iteration loops.
+> **Target Specification**: General Coding Agent Harness (`libhippo.runner`)  
+> **Knowledge Subsystem Reference**: [architecture.md](architecture.md)  
+> **Design Rationale & Benchmarks**: [design_rationale_and_qa.md](design_rationale_and_qa.md)  
+> **Harness Implementation Plan**: [`plan_agent_harness_architecture_implementation.md`](file:///home/lhwdev/.gemini/antigravity/brain/2ed237fb-f6ad-4b4b-8d82-9e80eec1acf2/plan_agent_harness_architecture_implementation.md)
 
 ---
 
-## 2. 3-Zone Context Memory Architecture
+## 1. Problem Definition & Architectural Scope
 
-The harness divides the prompt context into three strictly regulated zones:
+Modern autonomous software engineering agents require more than simple chat completions: they operate across complex repositories, execute terminal commands, manage large context windows, inspect and edit multiple files, spawn subagents, and interact with developers.
 
-```text
-[Prompt-Cache Maximized 3-Zone Architecture]
-┌────────────────────────────────────────────────────────────────────────┐
-│ Zone 1: Immutable Prefix (100% Cache Read)                             │
-│  - System Instructions + Platform/Repo Profiles + Catalog Spec        │
-│  👉 Bitwise identical across turns -> 50~80% cost & latency reduction  │
-├────────────────────────────────────────────────────────────────────────┤
-│ Zone 2: Append-Only Linear History (KV-Cache Extension Zone)           │
-│  - User prompt + Agent reasoning trace (CoT)                           │
-│  - query_knowledge tool calls & retrieved raw markdown snippets        │
-│  👉 Sequential append preserves previous turn KV-cache                 │
-├────────────────────────────────────────────────────────────────────────┤
-│ Zone 3: Lazy Compaction (Triggered on token quota crossing)            │
-│  - Trigger: Cumulative tokens exceed threshold (e.g., 8,000 tokens)    │
-│  - Action: Evicts bulky past tool outputs; replaces raw snippets with  │
-│    concise markers: '[Referenced: common/.../syntax.md]'               │
-└────────────────────────────────────────────────────────────────────────┘
-```
-
-### 2.1 Zone 1: Immutable Prefix
-- **Contents**: Base system instructions, project-level coding guidelines, active knowledge catalog index spec, and tool definitions.
-- **Guarantee**: Bitwise identical across every execution turn within a session. No dynamic timestamps or turn-varying session state may be injected into Zone 1.
-
-### 2.2 Zone 2: Append-Only Linear History
-- **Contents**: Initial user task prompt, followed by sequential blocks of:
-  - Agent thought/reasoning traces.
-  - Tool calls (`query_knowledge`).
-  - Verbatim raw knowledge snippets returned by tools.
-  - Verifier review feedback.
-- **Guarantee**: Turns append monotonically. Past turns remain untouched during normal execution, allowing provider KV-caches to extend incrementally without full re-computation.
-
-### 2.3 Zone 3: Lazy Compaction
-- **Threshold**: Evaluated after every tool return or agent turn.
-  - Soft threshold: $6{,}000$ tokens (warning & telemetry).
-  - Hard trigger: $8{,}000$ tokens (initiates lazy eviction).
-- **Compaction Target**: Reduces total context back down below $4{,}000$ tokens.
+### 1.1 Decoupled Architecture: Knowledge Management vs. General Agent Harness
+LibHippo cleanly decouples into two distinct architectural pillars:
+1. **Knowledge Management Subsystem ([`architecture.md`](architecture.md))**:
+   - Cascading knowledge tree with dynamic namespace mounts (`project/`, `common/`, `user/`, `plugins/`).
+   - 3-tier adaptive retrieval (`query_knowledge` with low/med/high effort tiers).
+   - Maker-Checker lifecycle governance (`CuratorAgent` drafting, `CheckerAgent`/TypeSafe Jev structural auditing, `VerifierAgent` escalation).
+2. **General Coding Agent Harness ([`architecture_runner.md`](architecture_runner.md))**:
+   - Comprehensive execution environment for coding agents.
+   - Token & workload governors with deterministic compaction.
+   - Multi-zone prompt-cache memory architecture.
+   - Complete toolset: file operations, ripgrep code search, sandboxed terminal execution, web fetch/search, subagent delegation, and interactive user clarification.
+   - Phased workflow harness: Task Alignment $\rightarrow$ Planning $\rightarrow$ Implementation $\rightarrow$ Review & Verification $\rightarrow$ Post-Task Maintenance.
+   - The LibHippo knowledge management system integrates seamlessly into this harness as a first-class pluggable toolset.
 
 ---
 
-## 3. Lazy Compaction Algorithm & Eviction Mechanics
+## 2. Workload & Token Governor
 
-Rather than invoking an expensive LLM summarization call that destroys context fidelity, `TaskSolverRunner` applies **deterministic tool-payload eviction**.
-
-### 3.1 Eviction Rules
-
-| Message / Segment Type | Eviction Policy | Rationale |
-| :--- | :--- | :--- |
-| **Zone 1 (Prefix)** | **Never Evicted** | Core persona and catalog instructions must remain static. |
-| **User Prompts** | **Never Evicted** | Core user requirements and constraints must remain verbatim. |
-| **Agent Reasoning (CoT)** | **Preserved** | The thought progression and architectural decisions must persist. |
-| **Verifier Feedback** | **Preserved** | Rejection explanations and fix directives are critical for convergence. |
-| **Historic Tool Call Arguments** | **Preserved** | Keeps record of what was queried (`query="...", effort="..."`). |
-| **Historic Raw Tool Snippets** | **Evicted $\rightarrow$ Replaced** | Replaced with compact reference pointers: `[Referenced: <path>]`. |
-| **Active Turn Tool Snippets** | **Preserved** | Current turn knowledge snippets remain verbatim until the turn concludes. |
-
-### 3.2 Eviction Workflow
+Autonomous coding agents can easily enter runaway loops or saturate model context windows. The harness enforces strict multi-tier workload boundaries:
 
 ```mermaid
 flowchart TD
-    TurnStart([New Turn / Tool Execution]) --> CountTokens[Count Total Active Context Tokens]
-    CountTokens --> CheckThreshold{Tokens >= 8,000?}
-    CheckThreshold -- No: Below Threshold --> AppendLinear[Append to Zone 2 linearly<br>Preserve full KV-cache]
-    AppendLinear --> NextTurn([Proceed to Agent Execution])
-
-    CheckThreshold -- Yes: Exceeds Limit --> ScanHistory[Scan Zone 2 for older ToolOutput messages]
-    ScanHistory --> EvictSnippets["Replace raw snippets with:<br>[Referenced: {path}]"]
-    EvictSnippets --> Recount[Recalculate Context Size]
-    Recount --> VerifySafety{Tokens < 4,000 target?}
-    VerifySafety -- Yes --> LogCompaction[Log compaction metrics & continue]
-    VerifySafety -- No: Still oversized --> PruneOldTurns[Prune oldest intermediary code drafts]
-    PruneOldTurns --> LogCompaction
-    LogCompaction --> NextTurn
+    TurnStart([Agent Turn Initiated]) --> CheckTurns{Turns >= max_turns (16)?}
+    CheckTurns -- Yes --> TerminateTurnLimit([Terminate: Max Turns Reached<br>Return Partial Artifacts])
+    CheckTurns -- No --> CountTokens[Count Total Active Context Tokens]
+    
+    CountTokens --> CheckSoft{Tokens >= soft_watermark (6,000)?}
+    CheckSoft -- No --> NormalExecution[Proceed to Agent Generation]
+    CheckSoft -- Yes --> CheckHard{Tokens >= hard_limit (8,000)?}
+    CheckHard -- No --> WarnTelemetry[Emit Telemetry Warning & Proceed]
+    CheckHard -- Yes --> TriggerCompaction[Trigger Zone 3 Lazy Compaction]
+    TriggerCompaction --> EvictPayloads[Evict Bulky Past Tool Outputs<br>Replace with [Referenced: path]]
+    EvictPayloads --> VerifyReduction{Tokens < compaction_target (4,000)?}
+    VerifyReduction -- Yes --> NormalExecution
+    VerifyReduction -- No --> PruneDrafts[Prune Oldest Intermediate Code Drafts]
+    PruneDrafts --> NormalExecution
 ```
 
-### 3.3 Reference Pointer Schema
+### 2.1 Context Token Watermarks
+- **Soft Watermark ($6{,}000$ tokens)**: Telemetry warning; flags that context growth requires upcoming eviction.
+- **Hard Compaction Limit ($8{,}000$ tokens)**: Halts linear expansion; triggers deterministic Zone 3 payload compaction.
+- **Compaction Target ($4{,}000$ tokens)**: Reclaims context space so the agent retains at least 50% headroom for code generation.
 
-When a tool output is compacted:
+### 2.2 Turn & Loop Circuit Breakers
+- **Maximum Conversational Turns**: Hard ceiling at 16 turns per task session.
+- **Consecutive Tool Failure Threshold**: If an identical tool call fails 3 consecutive times with equivalent errors, execution pauses and triggers an interactive clarification modal (`ask_question`).
+- **Command Execution Timeout**: Synchronous shell commands time out after 30,000 ms before auto-backgrounding into tracked background tasks (`manage_task`).
+
+---
+
+## 3. 3-Zone Context Memory Architecture
+
+To maximize provider KV-cache reuse (OpenAI, Anthropic, Gemini) and eliminate redundant token charges, context memory is divided into three strictly regulated zones:
+
 ```text
-[BEFORE COMPACTION - 1,200 tokens]
-ToolResult(call_id="call_9821"):
----
-title: "Button Accessibility with ARIA"
-path: "common/web/html/accessibility/aria_button.md"
-... (1,200 tokens of raw rules, examples, and keyboard handlers) ...
----
-
-[AFTER COMPACTION - 18 tokens]
-ToolResult(call_id="call_9821"):
-[Referenced: common/web/html/accessibility/aria_button.md (relevance: 0.92, status: HIT)]
+┌────────────────────────────────────────────────────────────────────────┐
+│ Zone 1: Immutable Static Prefix (100% Cache Read)                      │
+│  - System instructions & agent persona                                 │
+│  - Repository profile & workspace layout                               │
+│  - Complete tool definitions & schemas                                 │
+│  👉 Bitwise identical across turns -> 50~80% latency & cost reduction   │
+├────────────────────────────────────────────────────────────────────────┤
+│ Zone 2: Append-Only Linear History (KV-Cache Extension Zone)           │
+│  - User prompt + Agent reasoning trace (CoT)                           │
+│  - Tool calls & raw outputs (file contents, ripgrep matches, bash out) │
+│  👉 Strictly monotonic append preserves previous turns' KV-cache       │
+├────────────────────────────────────────────────────────────────────────┤
+│ Zone 3: Deterministic Snippet Compaction (On Quota Crossing)           │
+│  - Evicts bulky past tool outputs (raw file contents, catalog leaves)   │
+│  - Replaces payloads with compact pointers: '[Referenced: path]'       │
+│  - Never truncates system prompts, user turns, or reasoning traces     │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
-If the agent subsequently needs to re-read specific rules from that document, it can execute `read_knowledge(file_path="common/web/html/accessibility/aria_button.md", section="rules")`.
+### 3.1 Zone 1: Immutable Static Prefix
+- **Bitwise Guarantee**: No dynamic variables (e.g. wall-clock timestamps, ephemeral session IDs, turn counters) are permitted inside Zone 1.
+- **Caching Benefit**: Exceeds provider 1,024-token cache thresholds, guaranteeing that all turns within a session read system prompts and tool schemas at 0.25x–0.50x cached rates.
+
+### 3.2 Zone 2: Append-Only Linear History
+- **Monotonic Extension**: New turns, tool arguments, and results append strictly to the tail. Existing turns are never modified or re-ordered during normal execution.
+
+### 3.3 Zone 3: Deterministic Compaction
+When context crosses the $8{,}000$-token threshold, the harness scans historical tool outputs in Zone 2 from oldest to newest:
+- Replaces raw file contents or knowledge leaves with reference pointers:
+  ```text
+  [Referenced: src/libhippo/storage/store.py (lines 1-120)]
+  [Referenced: common/web/html/syntax.md (relevance: 0.92)]
+  ```
+- Retains full tool call signatures and model reasoning chains. If the agent needs to re-inspect code, it issues a targeted `view_file` slice.
 
 ---
 
-## 4. Tool Execution & Disambiguation Harness
+## 4. General Coding Tool Suite
 
-### 4.1 Query Pre-Disambiguation Enforcement
-Downstream subagents (`BookKeeperAgent`) operate in a zero-context sandbox without session history. The runner enforces that queries issued by `TaskSolverAgent` are self-contained.
+The harness provides a complete, production-grade tool registry for software engineering:
 
-- **Bad (Rejected/Warned)**: `query_knowledge(query="fix that button bug")`
-- **Good (Permitted)**: `query_knowledge(query="HTML custom button ARIA role keyboard accessibility", effort="medium")`
-
-### 4.2 Parallel Tool Dispatch
-The harness natively batches multiple tool calls emitted in a single turn:
-1. Collect all `query_knowledge` calls from the model response.
-2. Dispatch async tasks concurrently via `asyncio.gather`.
-3. Collect results, format markdown payloads, and append them atomically to Zone 2.
+| Category | Tool Name | Arguments | Description & Operational Contract |
+| :--- | :--- | :--- | :--- |
+| **Filesystem** | **`view_file`** | `AbsolutePath`, `StartLine`, `EndLine`, `ContentOffset` | Reads line-addressed file slices (max 800 lines/call). Never loads unbounded files into context. |
+| | **`write_to_file`** | `TargetFile`, `CodeContent`, `Overwrite`, `Append` | Creates or atomically overwrites complete files, auto-creating parent directories. |
+| | **`replace_file_content`** | `TargetFile`, `TargetContent`, `ReplacementContent`, `StartLine`, `EndLine` | Replaces an exact contiguous block of code within a bounded line range. Enforces exact character matching. |
+| **Exploration** | **`search_code`** | `pattern`, `path`, `glob`, `flags` | High-speed code search utilizing `rg` (ripgrep). Returns file paths, line numbers, and matching lines. |
+| | **`list_dir`** | `path`, `depth`, `show_hidden` | Inspects directory structure and hierarchy up to a specified depth. |
+| **Execution** | **`run_command`** | `CommandLine`, `Cwd`, `WaitMsBeforeAsync`, `BypassSandbox` | Executes shell commands in bash. Synchronous wait up to `WaitMsBeforeAsync`; transitions to background task if long-running. |
+| | **`manage_task`** | `Action` ("status"\|"kill"\|"send_input"), `TaskId`, `Input` | Manages long-running or background processes (dev servers, test watchers, builds). |
+| **Interaction** | **`ask_question`** | `questions: list[Question]` | Renders an interactive modal with selectable options and custom write-in for clarifying ambiguous user intent. |
+| **Subagents** | **`invoke_subagent`** | `TypeName`, `Role`, `Prompt`, `Model`, `Workspace` | Spawns specialized child agents (`research`, `reviewer`) with isolated context and workspace branching. |
+| | **`send_message`** | `Recipient`, `Message` | Inter-agent communication channel between parent harness and running subagents. |
+| **Web Research**| **`search_web`** | `query`, `domain` | Searches web engines (DuckDuckGo default, Tavily/Brave pluggable) for external documentation and solutions. |
+| | **`fetch_web`** | `url` | Scrapes and converts web pages to clean markdown text. |
+| **Knowledge** | **`query_knowledge`** | `query`, `effort`, `criticality` | Plugs in LibHippo's 3-tier adaptive knowledge retrieval system ([`architecture.md`](architecture.md)). |
 
 ---
 
-## 5. Runner Execution Lifecycle
+## 5. Sandbox & Security Execution Model
+
+The harness implements defense-in-depth isolation for all filesystem and command operations:
+
+```mermaid
+flowchart LR
+    Agent[Agent Command / File Request] --> BoundaryCheck{Path / Cwd inside<br>Workspace Root?}
+    BoundaryCheck -- No: Outside Workspace --> RejectBoundary([Access Denied: Path escapes workspace root])
+    BoundaryCheck -- Yes: Inside Workspace --> ModeCheck{Requires Network or<br>Privileged System Access?}
+    ModeCheck -- No: Standard Command --> StandardSandbox[Standard Sandbox Mode<br>Auto-Approved<br>Read/Write Workspace Only]
+    ModeCheck -- Yes: Elevated Access --> BypassPrompt[Bypass Sandbox Request<br>User Approval Modal Required]
+    BypassPrompt --> UserDecision{User Approves?}
+    UserDecision -- Approved --> ElevatedRun[Run with Host Privileges]
+    UserDecision -- Denied --> CancelRun([Command Execution Blocked])
+```
+
+### 5.1 Workspace Boundary Containment
+- **Working Directory (`Cwd`) Enforcement**: `Cwd` must always resolve within `<workspace root>`. Commands attempting to run in `/tmp`, `/home`, or system root are blocked.
+- **Path Sanitization**: Absolute paths are verified to reside inside the workspace or the designated session scratch directory (`<appDataDir>/brain/<conversation_id>/scratch/`).
+
+### 5.2 Dual Sandbox Execution Modes
+1. **Standard Sandbox Mode (`BypassSandbox: false`)**:
+   - Default mode.
+   - Full read/write access strictly to the project workspace and session scratch directory.
+   - Network access is disabled.
+   - Commands are auto-approved without manual user prompts.
+2. **Bypass Sandbox Mode (`BypassSandbox: true`)**:
+   - Disables filesystem and network isolation.
+   - **Requires explicit user approval** via UI prompt.
+   - Reserved strictly for operations needing external network or system binaries.
+
+### 5.3 Prefix-Matchable Command Shaping
+To prevent repetitive user approval prompts, commands must be structured for deterministic prefix-matching:
+- Avoid command substitutions (`$(...)` or backticks); run sub-steps as discrete calls.
+- Avoid wrapper chaining (`env`, `sudo`, `sh -c "..."`).
+- Prefer invoking the target binary directly with literal arguments (e.g. `uv run pytest tests/`).
+
+---
+
+## 6. Phased Harness Lifecycle & Coordination
+
+The harness coordinates autonomous engineering through five explicit lifecycle phases:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Initialized: Configure runner & load Zone 1
-    Initialized --> AwaitingTask: Ready for user input
-    AwaitingTask --> Reasoning: Receive User Prompt
-    Reasoning --> DispatchingTools: Model emits query_knowledge calls
-    DispatchingTools --> Reasoning: Inject raw snippets into Zone 2
-    Reasoning --> EvaluatingQuota: Model produces code draft
-    EvaluatingQuota --> Compacting: Tokens >= hard_threshold (8k)
-    Compacting --> SubmittingToVerifier: Context reduced < target (4k)
-    EvaluatingQuota --> SubmittingToVerifier: Tokens < hard_threshold
-    SubmittingToVerifier --> AwaitingVerifier: Submit solution to VerifierAgent
-    AwaitingVerifier --> Reasoning: Verifier issues REVISE feedback
-    AwaitingVerifier --> Terminated: Verifier issues [APPROVE: TERMINATE]
-    Terminated --> [*]
+    [*] --> Phase1_Alignment: User Task Submitted
+    Phase1_Alignment --> Phase2_Planning: Requirements Clear
+    Phase1_Alignment --> Phase1_Alignment: Ambiguity Detected (ask_question)
+    
+    Phase2_Planning --> Phase3_Implementation: Plan Approved
+    
+    state Phase3_Implementation {
+        [*] --> InspectCode
+        InspectCode --> CheckKnowledge: query_knowledge
+        CheckKnowledge --> EditFiles: replace_file_content / write_to_file
+        EditFiles --> RunTests: run_command (sandboxed)
+        RunTests --> InspectCode: Test Failures
+        RunTests --> DoneCoding: Tests Pass
+    }
+    
+    Phase3_Implementation --> Phase4_Review: Submit Solution
+    
+    state Phase4_Review {
+        [*] --> MakerCheckerAudit
+        MakerCheckerAudit --> ReviseDirective: Issues Found
+        MakerCheckerAudit --> VerificationPass: High Confidence Pass
+    }
+    
+    Phase4_Review --> Phase3_Implementation: Fix Directive (REVISE)
+    Phase4_Review --> Phase5_Maintenance: Verified (APPROVE)
+    
+    Phase5_Maintenance --> [*]: Complete & Return Response
 ```
+
+### Phase 1: Task Alignment & Requirement Clarification
+- Inspects repository structure, existing conventions, and issue descriptions.
+- If requirements are underspecified or design trade-offs exist, the harness invokes `ask_question` to align with the developer before generating code.
+
+### Phase 2: Architectural Planning
+- Formulates a step-by-step implementation strategy.
+- Identifies candidate files to modify, new files to create, and potential breaking changes.
+- Issues `query_knowledge` calls to retrieve relevant project and domain standards from the mounted LibHippo knowledge namespaces.
+
+### Phase 3: Implementation & Coding
+- Edits files using precise line-addressed tools (`replace_file_content`).
+- Executes incremental builds, linter checks, and unit tests via `run_command`.
+- Tracks modified files in session working memory.
+
+### Phase 4: Review & Verification
+- Executes full test suites and static analysis tools.
+- Optionally spawns an isolated `reviewer` subagent or Maker-Checker audit.
+- If defects or deprecations are detected, loops back to Phase 3 with concrete fix directives.
+
+### Phase 5: Post-Task Maintenance
+- Runs asynchronously after the user response is delivered:
+  - Dispatches HNSW vector index compaction (`rebuild_index`) if mutation churn threshold is met.
+  - Cleans up ephemeral scratch files.
+  - Emits telemetry metrics (tokens used, cache hit ratios, tool latencies).
 
 ---
 
-## 6. Python Class Contracts & Runner Interface
+## 7. Knowledge Subsystem Bridge
+
+LibHippo's knowledge management system ([`architecture.md`](architecture.md)) plugs into the general coding agent harness as a specialized, first-class subsystem:
+
+```text
+[General Coding Agent Harness]
+       │
+       ├── Core Tool Registry
+       │     ├── view_file, replace_file_content, run_command ...
+       │     └── query_knowledge (Tool Bridge)
+       │              │
+       │              ▼
+       │     [LibHippo Knowledge Subsystem (architecture.md)]
+       │     ├── Dynamic Namespace Mount Router
+       │     │     ├── /project  ==> <workspace>/.libhippo/ (RW)
+       │     │     ├── /common   ==> <install>/knowledge/common/ (RW)
+       │     │     ├── /user     ==> ~/.config/libhippo/ (RW)
+       │     │     └── /plugins  ==> dynamic plugin directories (RO/RW)
+       │     ├── 3-Tier Adaptive Retrieval (Low / Med / High)
+       │     └── Maker-Checker Governance (Curator + Checker/Jev + Verifier)
+       │
+       └── Post-Task Maintenance Hook
+             └── rebuild_index (Async Vector Compaction)
+```
+
+1. **Tool Exposure**: The harness registers `query_knowledge` in Zone 1 tool definitions, enabling the agent to perform coarse-to-fine knowledge lookups at any stage.
+2. **Mount Protection & Evolution**: `project`, `common`, and `user` are Read/Write, allowing both project rules and shared language/framework knowledge (e.g. React updates) to be updated via Maker-Checker governance. Mounts flagged `read_only: true` (e.g. third-party plugin packages) are protected from disk mutations, prompting project-level specialization.
+3. **Background Compaction Hook**: The harness calls `VectorKnowledgeStore.compact_if_needed()` during Phase 5 maintenance without blocking interactive user turns.
+
+---
+
+## 8. Python Class Contracts & Harness Interfaces
 
 ```python
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from enum import Enum
+from pathlib import Path
+from typing import Any, Callable, Coroutine, Literal
 from pydantic import BaseModel, Field
 
 
-class RunnerConfig(BaseModel):
-    """Configuration parameters for TaskSolverRunner."""
+class ExecutionMode(str, Enum):
+    SANDBOXED = "sandboxed"
+    BYPASS = "bypass"
+
+
+class HarnessConfig(BaseModel):
+    """Runtime configuration for the General Coding Agent Harness."""
 
     model: str = "gpt-4o"
     temperature: float = Field(default=0.2, ge=0.0, le=1.0)
+    workspace_root: Path = Field(default_factory=Path.cwd)
     soft_token_watermark: int = 6000
     hard_token_limit: int = 8000
     compaction_target_tokens: int = 4000
     max_turns: int = 16
+    command_timeout_ms: int = 30000
+    allow_sandbox_bypass: bool = False
 
 
 @dataclass
@@ -191,40 +303,69 @@ class ContextMessage:
     is_evictable: bool = False
 
 
-class TaskSolverRunner:
-    """Execution harness wrapping TaskSolverAgent with prompt-cache friendly memory."""
+@dataclass
+class ToolDefinition:
+    """Schema and handler binding for a harness tool."""
 
-    def __init__(self, config: RunnerConfig | None = None) -> None:
-        self.config = config or RunnerConfig()
+    name: str
+    description: str
+    parameters_schema: dict[str, Any]
+    handler: Callable[..., Coroutine[Any, Any, Any]]
+    requires_sandbox_bypass: bool = False
+
+
+class SandboxRunner(ABC):
+    """Execution sandbox enforcing workspace boundary isolation."""
+
+    @abstractmethod
+    async def run_command(
+        self,
+        command_line: str,
+        cwd: Path,
+        wait_ms: int = 2000,
+        bypass_sandbox: bool = False,
+    ) -> dict[str, Any]:
+        """Execute a shell command with security boundary enforcement."""
+        ...
+
+    @abstractmethod
+    def validate_path(self, path: Path) -> Path:
+        """Verify that path resides strictly inside workspace_root."""
+        ...
+
+
+class GeneralAgentHarness:
+    """Production-grade execution harness for autonomous software engineering."""
+
+    def __init__(
+        self,
+        config: HarnessConfig | None = None,
+        sandbox: SandboxRunner | None = None,
+    ) -> None:
+        self.config = config or HarnessConfig()
+        self.sandbox = sandbox
         self.zone1_prefix: list[ContextMessage] = []
         self.zone2_history: list[ContextMessage] = []
-        self.total_tokens: int = 0
+        self.tools: dict[str, ToolDefinition] = {}
+        self.current_phase: str = "alignment"
 
-    def init_prefix(self, system_prompt: str, catalog_summary: str) -> None:
-        """Initialize Zone 1 with immutable system specifications."""
+    def register_tool(self, tool: ToolDefinition) -> None:
+        """Register a core coding or knowledge tool into the harness."""
+        self.tools[tool.name] = tool
+
+    def init_prefix(self, system_persona: str, repo_profile: str) -> None:
+        """Initialize Zone 1 with immutable specifications for 100% KV-cache reuse."""
         ...
 
     async def step(self, user_input: str) -> str:
-        """Execute one conversational round, handling tool calls and verifier feedback."""
-        ...
-
-    async def dispatch_tools(self, tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Execute query_knowledge calls in parallel and append results to history."""
+        """Execute one conversational round through the 5-phase harness."""
         ...
 
     def compact_context(self) -> int:
-        """Execute lazy compaction on historical tool snippets when quota is crossed.
-        
-        Returns the number of tokens reclaimed.
-        """
-        ...
-
-    def get_prompt_payload(self) -> list[dict[str, str]]:
-        """Construct the prompt payload ensuring static prefix alignment."""
+        """Execute deterministic Zone 3 eviction on past tool outputs when quota is crossed."""
         ...
 
     async def post_task_maintenance(self) -> None:
-        """Execute asynchronous background maintenance (e.g. vector store rebuild) after task finishes."""
+        """Execute background maintenance (e.g. vector compaction) after task completion."""
         ...
 ```
-

@@ -26,6 +26,7 @@ from libhippo.models.llm import (
     create_chat_client,
     create_typesafe_client,
     default_model_registry,
+    format_cached_system_message,
     get_model_config,
 )
 
@@ -51,5 +52,7 @@ __all__ = [
     "create_chat_client",
     "create_typesafe_client",
     "default_model_registry",
+    "format_cached_system_message",
     "get_model_config",
 ]
+
