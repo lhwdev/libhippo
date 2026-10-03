@@ -124,6 +124,78 @@ The harness provides a complete, production-grade tool registry for software eng
 | | **`fetch_web`** | `url` | Scrapes and converts web pages to clean markdown text. |
 | **Knowledge** | **`query_knowledge`** | `query`, `effort`, `criticality` | Plugs in LibHippo's 3-tier adaptive knowledge retrieval system ([`architecture.md`](architecture.md)). |
 
+### 4.1 Output-Aware Tool Execution & Subagent Fan-Out (Tool Virtualization)
+
+When tool (e.g. `run_command("npm run check")`) outputs large diagnostic logs (e.g. 500 lines of errors across 14 files), naively appending the raw output into the active context causes rapid token window exhaustion, destroys prompt-cache alignment, and scatters the agent's focus.
+
+To solve this, the harness intercepts raw tool output and applies an **inline triage classification**. This can be executed via a **Unified Single-Stage LLM Call** (recommended default using a fast model like `gpt-5-nano`) or a **Two-Stage Jev Gatekeeper Pipeline**:
+
+```mermaid
+flowchart TD
+    ToolExec([run_command completes with output]) --> CheckLen{Output length <= threshold<br>(e.g. <= 30 lines)?}
+    CheckLen -- Yes: Short --> AppendZone2[1. short: Append directly into Zone 2<br>Zero classification overhead]
+    
+    CheckLen -- No: Long --> TriageMethod{Triage Engine}
+    
+    subgraph SingleStage["Unified Single-Stage (gpt-5-nano) [Recommended]"]
+        TriageMethod -->|Single API Call| FastLLM[Fast LLM Triage & Extraction<br>Emits: tier, summary, subproblems]
+    end
+    
+    subgraph TwoStage["Two-Stage Pipeline (Jev + LLM)"]
+        TriageMethod -->|Step 1: Judgment| JevFilter[TypeSafe Jev Categorization<br>long-unimportant vs long-important]
+        JevFilter -->|Step 2: If important| SubproblemLLM[LLM Subproblem Decomposition]
+    end
+    
+    FastLLM -->|tier == long-unimportant| LongUnimportant[2. long-unimportant:<br>Write raw log to tasks/task-xyz.log<br>Append 2-line summary to Zone 2]
+    FastLLM -->|tier == long-important| LongImportant[3. long-important:<br>Decompose into isolated subproblems [a, b, c, ...]]
+    
+    JevFilter -->|long-unimportant| LongUnimportant
+    SubproblemLLM --> LongImportant
+    
+    LongImportant --> SpawnFanout[Spawn Subagents for each subproblem<br>Context = Cached Parent Prefix + Subproblem Slice]
+    SpawnFanout --> SubagentExec[Subagents execute in parallel/sequential<br>Diagnose, edit code, & generate summary]
+    SubagentExec --> SynthesizeContext[Replace Parent Tool Output with:<br>[Command input] + [Error overview] + [Subagent summaries]]
+    SynthesizeContext --> AppendZone2
+```
+
+#### 4.1.1 3-Tier Output Triage
+1. **`short`** ($\le 30$ lines / $\le 300$ tokens):
+   - Fast path (e.g., `ls -la`, simple git status, minor compiler warning).
+   - Appended verbatim into Zone 2 linear history with zero classification or summarization overhead.
+2. **`long-unimportant`**:
+   - High volume (e.g. massive npm install trace, verbose build telemetry), but does not contain actionable, decoupled task directives.
+   - Raw output is preserved out-of-band in task logs (`tasks/<task_id>.log`).
+   - Only a compact, structured 2-line outcome summary is injected into Zone 2.
+3. **`long-important`**:
+   - High volume AND contains actionable, decomposable subproblems (e.g. 500 lines of type errors spanning 14 files, separable into independent clusters $a, b, c$).
+   - Decomposes errors into isolated subproblem descriptors: `"{N} files have errors across isolated subproblems: [a, b, c, ...]"`.
+
+#### 4.1.2 Triage Context Scope & Same-Model KV-Cache Sharing
+Does the triage router need previous conversation context?
+- **Why Previous Context is Critical**:
+  - Without conversational history, a router only sees syntax (`"TS2322 in Button.tsx"`). It cannot distinguish whether `Button.tsx` is an unexpected regression caused by the agent's recent edits or an unrelated legacy error, nor can it formulate goal-aligned subproblem directives.
+  - Supplying the parent context ensures the triage router understands the user's primary goal, recent diffs, and architectural guidelines.
+- **Model Selection & KV-Cache Sharing Strategy**:
+  - **Same Model as Parent with Lowered Reasoning Effort (Optimal)**:
+    - *The Problem with a Different Model*: If parent runs on `gpt-6.1-sol` (6,000 tokens of context) and dispatches to `gpt-5-nano` with full context, `gpt-5-nano` has a **cold cache**, having to ingest and cache all 6,000 tokens from scratch.
+    - *The Same-Model Cache Hit*: Invoking the **same model** as the parent agent inherits the **100% warm KV-cache** of the parent's prefix. Only the new tool output (~500 lines) is processed as fresh tokens.
+    - *Dynamic Effort Downgrade*: By adjusting runtime configuration (e.g. `reasoning_effort = "low"`, `temperature = 0.0`), the triage call runs at ultra-fast speeds and minimal output tokens while retaining 100% prompt cache read discounts.
+  - **Stateless Small Model Alternative (`gpt-5-nano`)**:
+    - If a dedicated small model is preferred, it must run **stateless** (receiving only `[Initial User Goal]` + `[Command + Error Log]`, $\le 1{,}000$ tokens), completely omitting intermediate conversational history to avoid cold-cache token bloat.
+
+#### 4.1.3 Subagent Fan-Out & KV-Cache Maximization
+- **Context Prefix Sharing**: When launching subagents for $a, b, c, ...$:
+  - Subagent context = `[Zone 1 Static Prefix] + [Parent Context (before bulky tool output)] + [Subproblem Descriptor + Relevant Error Slice]`.
+  - Because the parent context prefix is identical across all child subagents, **all subagents enjoy near-100% KV-cache read hits** on the shared parent history!
+- **Concurrency & Collision Prevention**:
+  - Subagents run concurrently (or sequentially, per user preference).
+  - To prevent concurrent write races on the same files, subproblems are clustered by disjoint file boundaries. If cross-file coupling exists, execution falls back to sequential subagent runs or git-isolated worktrees.
+- **Context Replacement & Roll-up**:
+  - The parent context never ingests the 500-line raw log.
+  - Instead, the subsequent context window appends:
+    `[Parent Context] + [run_command("npm run check")] + [Error Decomposition Summary] + [Aggregated Subagent Resolution Summaries]`.
+  - The tool execution behaves as a self-contained, delegated subagent orchestrator, maintaining a high-signal, compact context window for the primary agent.
+
 ---
 
 ## 5. Sandbox & Security Execution Model

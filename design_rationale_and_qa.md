@@ -172,7 +172,52 @@
     - **`TaskSolverAgent`**: Repeated conversational turns append linearly in Zone 2, making multi-turn caching cost-effective.
     - **Check $\rightarrow$ Verify Refactoring Context Loop** (`VerifierAgent` and `CuratorAgent` during refactoring cycles): Sequential rounds append linearly, rapidly amortizing the initial 1.25x write fee across multi-turn refactoring iterations.
 
+### Q4. Why treat high-volume tool execution as an inline subagent fan-out rather than appending raw output into context?
+- **The Context Thrashing Dilemma**:
+  - Commands like `npm run check` or `pytest` often emit hundreds of lines of compiler/linter errors.
+  - Blindly appending raw logs into the parent agent's context produces three catastrophic side-effects:
+    1. **Context Window Saturation**: Instantly exhausts token budgets, triggering premature eviction of prior architectural reasoning.
+    2. **Cognitive Thrashing**: A single agent attempting to fix 14 disparate files in one thread often hallucinates, fixes one error while breaking another, or forgets earlier requirements.
+    3. **Cache Invalidation**: Bulky outputs permanently bloat the active context tail, destroying downstream KV-cache reuse.
+- **The 3-Tier Output Triage Resolution**:
+  - The harness intercepts tool outputs and classifies them inline (via deterministic heuristics and TypeSafe Jev):
+    - `short` ($\le 30$ lines): Appended directly into Zone 2 with 0 overhead.
+    - `long-unimportant`: Raw log saved out-of-band to `tasks/<task_id>.log`; only a compact 2-line summary is added to Zone 2.
+    - `long-important`: Decomposed into modular subproblems $[a, b, c, ...]$ and dispatched to dedicated worker subagents.
+- **Why It Maximizes KV-Cache Reuse**:
+  - Each spawned subagent inherits: `[Zone 1 Static Prefix] + [Parent Context (before bulky tool output)] + [Subproblem Descriptor + Relevant Slice]`.
+  - Because the shared parent history is bitwise identical and already warm in the model provider's cache, **every parallel child subagent hits the KV-cache at 100% read discount**.
+- **Synthetic Context Replacement**:
+  - The parent context never ingests the raw 500 lines.
+  - Instead, the tool return is replaced with: `[command input] + [error overview] + [subagent resolution summaries]`.
+  - The tool effectively operates as a self-contained subagent orchestrator, keeping the parent's working context clean and focused.
 
+### Q5. Two-Stage Jev Pipeline vs. Unified Single-Stage LLM for Tool Output Triage
+- **The Observation**:
+  - If a tool output is classified as `long-important`, an LLM must still be invoked immediately afterward to parse the 500-line log and extract isolated subproblems $[a, b, c, ...]$.
+  - If it is `long-unimportant`, an LLM is still needed if a natural-language summary is required.
+  - Therefore, running Jev first risks an extra serialized network round-trip while still paying full LLM input tokens on the 500 lines.
+- **Architectural Comparison**:
+
+| Dimension | Option A: Two-Stage (Jev Gatekeeper $\rightarrow$ LLM Extractor) | Option B: Unified Single-Stage LLM (`gpt-5-nano` / Structured Output) |
+| :--- | :--- | :--- |
+| **Network Round Trips** | 2 sequential calls (Jev ~100ms + LLM ~600ms = ~700ms) | **1 single call** (~500ms total). Faster time-to-first-subagent. |
+| **Token Cost on Long Path** | Jev ($0) + LLM reads full 500 lines. | **LLM reads full 500 lines once**, emitting tier + summary + subproblems. |
+| **Semantic Coherence** | Risk of mismatch: Jev flags "separable", but LLM discovers circular type dependencies and cannot isolate them. | **Holistic judgment**: LLM decides separability *while* attempting to partition the errors into subproblems. |
+| **Ideal Use Case** | When `long-unimportant` outputs are handled **heuristically with 0 LLM calls** (e.g. regex exit code + raw log pointer). | When high-quality generative summarization and structured subproblem decomposition are required (**Recommended Default**). |
+
+### Q6. Should the Tool Triage Router receive Parent Context, and how can it reuse the Prompt Cache?
+- **Does the Router Need Context?**:
+  - **Yes, for Goal-Aligned Triage**: Without the parent conversation, a triage model only sees raw stacktraces. It cannot know what task the developer asked for, which files were just edited, or what constraints apply. With context, it can identify regressions introduced by recent edits and formulate precise, goal-directed subproblem prompts.
+- **The Cross-Model Cache Miss Dilemma**:
+  - LLM KV-caches are strictly model-specific.
+  - If the parent agent runs on `gpt-6.1-sol` with 6,000 tokens of conversational context, sending that 6,000-token context to `gpt-5-nano` results in a **100% cold-cache miss**.
+  - `gpt-5-nano` must re-embed all 6,000 tokens and may incur a 1.25x cache write fee for a one-off call, defeating the purpose of using a small model.
+- **The Resolution: Same-Model Dispatch with Lowered Reasoning Effort**:
+  - By invoking the **same model** as the parent agent (e.g. `gpt-6.1-sol`), the triage call hits the **already-warm KV cache at 100% read discount** ($0.10\times \sim 0.25\times$).
+  - Only the new 500 lines of error log are processed as new tokens.
+  - Runtime parameters can be dynamically down-regulated (`reasoning_effort = "low"` or `"minimal"`, `temperature = 0.0`), yielding near-instant generation with low output tokens while maintaining maximum context fidelity.
+- **Stateless Exception**: If a lightweight model like `gpt-5-nano` is used, it should be kept **strictly stateless** (receiving only `[Initial Goal]` + `[Error Log]`, staying under 1,024 tokens to trigger the sub-1k stateless cache bypass).
 
 ---
 
