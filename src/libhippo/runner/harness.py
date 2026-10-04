@@ -20,7 +20,7 @@ from autogen_core.models import (
 )
 from autogen_core.tools import ToolSchema
 
-from libhippo.models.llm import create_chat_client
+
 from libhippo.runner.config import HarnessConfig, SkillDefinition
 from libhippo.runner.discovery import ResourceDiscovery
 from libhippo.runner.governor import WorkloadGovernor
@@ -124,6 +124,8 @@ class GeneralAgentHarness:
                     )
                 )
             else:
+                from libhippo.models.llm import create_chat_client
+
                 self.model_client = wrap_client_if_logging_enabled(
                     create_chat_client(
                         "task_solver",
@@ -232,18 +234,18 @@ class GeneralAgentHarness:
                 else:
                     llm_messages.append(AssistantMessage(content=m.content, source="assistant"))
             elif m.role == "tool":
-                llm_messages.append(
-                    FunctionExecutionResultMessage(
-                        content=[
-                            FunctionExecutionResult(
-                                call_id=m.tool_call_id or "call_unknown",
-                                content=m.content,
-                                is_error=bool(m.metadata.get("is_error", False)),
-                                name=m.metadata.get("tool_name", "tool"),
-                            )
-                        ]
-                    )
+                fer = FunctionExecutionResult(
+                    call_id=m.tool_call_id or "call_unknown",
+                    content=m.content,
+                    is_error=bool(m.metadata.get("is_error", False)),
+                    name=m.metadata.get("tool_name", "tool"),
                 )
+                if llm_messages and isinstance(llm_messages[-1], FunctionExecutionResultMessage):
+                    llm_messages[-1].content.append(fer)
+                else:
+                    llm_messages.append(
+                        FunctionExecutionResultMessage(content=[fer])
+                    )
         return llm_messages
 
     def transition_phase(self, new_phase: str) -> PhaseTransitionEvent:
@@ -360,10 +362,10 @@ class GeneralAgentHarness:
                 )
                 await self.session.append_message(as_msg)
 
-                for call in tool_calls:
-                    call_id = getattr(call, "id", None) or f"call_{uuid.uuid4().hex[:8]}"
-                    tool_name = getattr(call, "name", "")
-                    raw_args = getattr(call, "arguments", "{}")
+                for tc in tool_calls_meta:
+                    call_id = tc["id"]
+                    tool_name = tc["name"]
+                    raw_args = tc["arguments"]
                     try:
                         args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
                         if not isinstance(args, dict):

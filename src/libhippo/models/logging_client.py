@@ -133,8 +133,17 @@ def _log_request(
         else:
             lines.append("Context: 1 message (system prompt shown above)")
     else:
-        prev_messages = messages[:-1]
-        latest_msg = messages[-1]
+        # Collect all trailing tool messages as latest turn if multiple tool messages are at the end
+        latest_msgs: list[Any] = [messages[-1]]
+        last_role, _ = _format_message(messages[-1])
+        if "tool" in last_role.lower() or "functionexecution" in last_role.lower():
+            for m in reversed(messages[:-1]):
+                r, _ = _format_message(m)
+                if "tool" in r.lower() or "functionexecution" in r.lower():
+                    latest_msgs.insert(0, m)
+                else:
+                    break
+        prev_messages = messages[: len(messages) - len(latest_msgs)]
 
         shown_sys_ids = {id(sm) for sm, _ in shown_sys_msgs}
         hidden_messages = [m for m in prev_messages if id(m) not in shown_sys_ids]
@@ -167,10 +176,11 @@ def _log_request(
                     tool_names.append(str(t))
             lines.append(f"Tools: {len(tools)} tools ({', '.join(tool_names[:10])}{'...' if len(tool_names) > 10 else ''})")
 
-        if id(latest_msg) not in shown_sys_ids:
-            role, text = _format_message(latest_msg)
-            lines.append(f"--- Latest Message [{role}] ---")
-            lines.append(text)
+        for lm in latest_msgs:
+            if id(lm) not in shown_sys_ids:
+                role, text = _format_message(lm)
+                lines.append(f"--- Latest Message [{role}] ---")
+                lines.append(text)
 
     lines.append("=" * 96)
     logger.info("\n".join(lines))

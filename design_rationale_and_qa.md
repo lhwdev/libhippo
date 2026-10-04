@@ -61,7 +61,7 @@
   - Running a full flagship LLM (`gpt-6.1-sol` or `gpt-6-astra`) to review every routine 2-line markdown addition incurs severe token latency ($1\sim 3\text{s}$) and financial overhead, alongside subtle schema drift risks.
 - **The Dual-Tier Resolution**:
   - **Routine Review Gate (`CheckerAgent` powered by TypeSafe Jev)**: Validates schema conformance, hierarchy fit, sizing bounds, importance/effectiveness scoring, content quality, and sibling coalescence. Approved diffs (`PASS`) commit directly: **0 LLM token burn, sub-100ms latency**.
-  - **LLM Escalation Gate (`VerifierAgent` powered by `gpt-6.1-sol`)**: Heavy LLM reasoning is reserved strictly for high-order architectural decisions: hierarchy refactoring (`split/group`) on `OVERSIZED` nodes, and semantic deprecation conflicts. *(Task solution code auditing is decoupled to `architecture_runner.md`)*.
+  - **LLM Escalation Gate (`VerifierAgent` powered by `gpt-6.1-sol`)**: Heavy LLM reasoning is reserved strictly for high-order architectural decisions: hierarchy refactoring (`split/group`) on `OVERSIZED` nodes, and semantic deprecation conflicts. *(Task solution code auditing is decoupled to `architecture_harness.md`)*.
 
 ### Q5. Why use bidirectional hysteresis and asymmetric metrics for document length regulation?
 - **The Thrashing Risk**:
@@ -74,7 +74,7 @@
 - **Dynamic Modulation & Post-Merge Edge Cases**:
   - Cohesive single-responsibility documents receive higher split headroom (up to 2,200 tokens) via coherence modulation.
   - Distinct primitives under diverse hubs receive lower merge thresholds (down to 150 tokens) to avoid unnatural combinations. If an undersized doc cannot be cleanly merged, it is either kept as an exception or pruned.
-  - *(See [architecture.md#45-knowledge-length-regulation-hysteresis-token-count](architecture.md#45-knowledge-length-regulation-hysteresis-token-count) for complete formulas and contracts).*
+  - *(See [architecture_knowledge.md#45-knowledge-length-regulation-hysteresis-token-count](architecture_knowledge.md#45-knowledge-length-regulation-hysteresis-token-count) for complete formulas and contracts).*
 
 ### Q6. Why score document importance, and how does it influence retrieval without overpowering relevance?
 - **The Problem**: Pure semantic cosine similarity can rank obscure, keyword-heavy edge cases higher than foundational architectural standards.
@@ -126,7 +126,7 @@
     - **`low` (Deterministic Fast-Path)**: Local Vector/FTS search ($<50\text{ms}$, 0 LLM cost). Fails fast if confidence $< \tau_{\text{low}}$ (no LLM fallback). Designed for high-volume parallel batch lookups.
     - **`medium` (Optimistic Fast-Path with Gated Escalation — Default)**: Handles ~80% of queries directly via local search in $<50\text{ms}$. If confidence falls below $\tau_{\text{med}}$, automatically escalates to `BookKeeperAgent` for query expansion and cross-checks.
     - **`high` (Deep Agent Exploration with Initial Vector Match)**: Executes an initial single-vector search first and passes the candidate results to `BookKeeperAgent`for deep multi-hop synthesis, query decomposition, and cross-domain triage.
-  - *(See [architecture.md#51-query_knowledge-adaptive-knowledge-retrieval-tool](architecture.md#51-query_knowledge-adaptive-knowledge-retrieval-tool) for parameters and thresholds).*
+  - *(See [architecture_knowledge.md#51-query_knowledge-adaptive-knowledge-retrieval-tool](architecture_knowledge.md#51-query_knowledge-adaptive-knowledge-retrieval-tool) for parameters and thresholds).*
 
 ### Q3. Why seed `BookKeeperAgent` with initial vector results on `high` effort?
 - **Analysis**:
@@ -153,7 +153,7 @@
   - **Zone 1 (Immutable Prefix)**: System prompt, static user preferences, and catalog spec remain constant (100% cache hit rate).
   - **Zone 2 (Append-Only Linear History)**: Turns, reasoning traces, and retrieved snippets append sequentially, preserving previous KV-cache.
   - **Zone 3 (Lazy Compaction)**: Triggered at calibrated model-adaptive watermarks. Evicts bulky past tool outputs by replacing raw snippets with concise markers (`[Referenced: common/.../syntax.md]`) while preserving reasoning traces.
-  - *(See [architecture_runner.md](architecture_runner.md) for complete runner lifecycle, zone definitions, and eviction data structures).*
+  - *(See [architecture_harness.md](architecture_harness.md) for complete runner lifecycle, zone definitions, and eviction data structures).*
 
 ### Q3. Why disable prompt cache writes on single-use lookups (BookKeeper) and how can we cache ONLY system prompts?
 - **The Financial Dilemma (1.25x Cache Write Fee)**:
@@ -305,7 +305,7 @@ LibHippo matches model tiers to task complexity, latency constraints, and operat
 - **High-Efficiency Web Draftsman (`gpt-6-luna` for `CuratorAgent`)**: Leverages a 1.05M token context window at $0.10 / $0.50 to ingest whole API documentation pages without truncation.
 - **Ultra-Fast Sub-Second Librarian (`gpt-5-nano` for `BookKeeperAgent`)**: Optimized for high-throughput query expansion and snippet extraction at $0.05 / $0.40, maintaining sub-300ms interactive retrieval response times.
 - **Deterministic Typed Gatekeeper (`TypeSafe Jev` for `CheckerAgent`)**: Evaluates taxonomy, sizing hysteresis, importance/effectiveness, and content quality deterministically with $0 LLM token cost.
-*(See [architecture.md#3-agent-specifications-models-and-context-isolation](architecture.md#3-agent-specifications-models-and-context-isolation) for full agent configuration matrix).*
+*(See [architecture_knowledge.md#3-agent-specifications-models-and-context-isolation](architecture_knowledge.md#3-agent-specifications-models-and-context-isolation) for full agent configuration matrix).*
 
 ### Q1. Why centralize model configuration across AutoGen OpenAI models and TypeSafe Jev in `libhippo.models.llm`?
 - **The Problem**:

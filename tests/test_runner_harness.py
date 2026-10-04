@@ -266,3 +266,244 @@ async def test_openai_responses_websocket_client_fallback_and_steer():
 
     await client.close()
 
+
+@pytest.mark.asyncio
+async def test_openai_responses_websocket_client_tool_calling_and_delta():
+    """Verify OpenAIResponsesWebSocketClient transmits tools, parses tool calls on response.completed, and chains deltas."""
+    from autogen_core import FunctionCall
+    from autogen_core.models import (
+        AssistantMessage,
+        FunctionExecutionResult,
+        FunctionExecutionResultMessage,
+        SystemMessage,
+        UserMessage,
+    )
+    from libhippo.runner.transport import OpenAIResponsesWebSocketClient
+
+    client = OpenAIResponsesWebSocketClient(
+        model="gpt-6.1-sol",
+        api_key="mock-key",
+        enable_http_fallback=False,
+    )
+
+    from typing import Any
+
+    sent_events: list[dict] = []
+
+    class MockEvent:
+        def __init__(self, type: str, response: Any = None):
+            self.type = type
+            self.response = response
+
+    class MockResponse:
+        def __init__(self, id_: str, output: list, usage: Any = None):
+            self.id = id_
+            self.output = output
+            self.usage = usage
+
+    class MockItem:
+        def __init__(self, type: str, **kwargs):
+            self.type = type
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+
+    class MockConnection:
+        def __init__(self, events_to_yield: list):
+            self.events = events_to_yield
+
+        async def send(self, data: dict):
+            sent_events.append(data)
+
+        async def __aiter__(self):
+            for e in self.events:
+                yield e
+
+    mock_resp1 = MockResponse(
+        id_="resp_first_turn",
+        output=[MockItem(type="function_call", id="call_list_1", name="list_dir", arguments='{"dir_path": "."}')],
+    )
+    conn1 = MockConnection([
+        MockEvent("response.created", response=mock_resp1),
+        MockEvent("response.completed", response=mock_resp1),
+    ])
+
+    client._connection = conn1
+    client._is_connected = True
+
+    messages_turn1 = [
+        SystemMessage(content="You are a coding assistant."),
+        UserMessage(content="Summarize what is in this project.", source="user"),
+    ]
+    tools = [{"name": "list_dir", "description": "List directory", "parameters": {}}]
+
+    result1 = await client.create(messages=messages_turn1, tools=tools)
+
+    # 1. Assert sent_events has response.create with model, instructions, input, tools
+    assert len(sent_events) == 1
+    create_payload = sent_events[0]
+    assert create_payload["type"] == "response.create"
+    assert create_payload["model"] == "gpt-6.1-sol"
+    assert create_payload["instructions"] == "You are a coding assistant."
+    assert len(create_payload["input"]) == 1
+    assert create_payload["input"][0]["content"] == "Summarize what is in this project."
+    assert len(create_payload["tools"]) == 1
+    assert create_payload["tools"][0]["name"] == "list_dir"
+    assert "previous_response_id" not in create_payload
+
+    # 2. Assert result1 parsed tool call instead of returning empty stop
+    assert result1.finish_reason == "function_calls"
+    assert isinstance(result1.content, list)
+    assert len(result1.content) == 1
+    assert isinstance(result1.content[0], FunctionCall)
+    assert result1.content[0].name == "list_dir"
+    assert client.last_response_id == "resp_first_turn"
+
+    # Turn 2: Delta chaining
+    sent_events.clear()
+    mock_resp2 = MockResponse(
+        id_="resp_second_turn",
+        output=[MockItem(type="message", content="The project contains libhippo package.")],
+    )
+    conn2 = MockConnection([
+        MockEvent("response.created", response=mock_resp2),
+        MockEvent("response.completed", response=mock_resp2),
+    ])
+    client._connection = conn2
+
+    messages_turn2 = [
+        SystemMessage(content="You are a coding assistant."),
+        UserMessage(content="Summarize what is in this project.", source="user"),
+        AssistantMessage(content=result1.content, source="assistant"),
+        FunctionExecutionResultMessage(content=[FunctionExecutionResult(call_id="call_list_1", content="README.md, src, tests", name="list_dir")]),
+    ]
+
+    result2 = await client.create(messages=messages_turn2, tools=tools)
+
+    assert len(sent_events) == 1
+    create_payload2 = sent_events[0]
+    assert create_payload2["type"] == "response.create"
+    assert create_payload2["previous_response_id"] == "resp_first_turn"
+    assert "instructions" not in create_payload2
+    # Input should ONLY contain the delta function_call_output!
+    assert len(create_payload2["input"]) == 1
+    assert create_payload2["input"][0]["type"] == "function_call_output"
+    assert create_payload2["input"][0]["call_id"] == "call_list_1"
+
+    assert result2.finish_reason == "stop"
+    assert result2.content == "The project contains libhippo package."
+    assert client.last_response_id == "resp_second_turn"
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_harness_multiple_tool_invocations_turn(tmp_path: Path):
+    """Verify that multiple tool invocations in a single turn execute all tools and batch results into one message."""
+    from autogen_core import FunctionCall
+    from autogen_core.models import (
+        AssistantMessage,
+        ChatCompletionClient,
+        CreateResult,
+        FunctionExecutionResultMessage,
+        LLMMessage,
+        ModelCapabilities,
+        ModelInfo,
+        RequestUsage,
+    )
+    from libhippo.runner.types import ToolCallResultEvent, ToolCallStartEvent
+
+    ws_dir = tmp_path / "workspace"
+    ws_dir.mkdir(parents=True)
+    cfg_dir = tmp_path / "cfg"
+    (ws_dir / "file1.txt").write_text("Hello from file 1")
+    (ws_dir / "file2.txt").write_text("Hello from file 2")
+
+    config = HarnessConfig(
+        workspace_root=ws_dir,
+        user_config_dir=cfg_dir,
+    )
+
+    received_messages: list[list[LLMMessage]] = []
+
+    class MockMultiToolClient(ChatCompletionClient):
+        def __init__(self):
+            self.turn = 0
+            self._info = ModelInfo(vision=True, function_calling=True, json_output=True, family="unknown")
+
+        @property
+        def model_info(self) -> ModelInfo:
+            return self._info
+
+        @property
+        def capabilities(self) -> ModelCapabilities:
+            return {"vision": True, "function_calling": True, "json_output": True}
+
+        def actual_usage(self) -> RequestUsage:
+            return RequestUsage(prompt_tokens=10, completion_tokens=10)
+
+        def total_usage(self) -> RequestUsage:
+            return RequestUsage(prompt_tokens=10, completion_tokens=10)
+
+        def count_tokens(self, messages, tools=[]):
+            return 10
+
+        def remaining_tokens(self, messages, tools=[]):
+            return 1000
+
+        async def close(self):
+            pass
+
+        async def create_stream(self, messages, tools=[], **kwargs):
+            res = await self.create(messages, tools=tools, **kwargs)
+            yield res
+
+        async def create(self, messages, tools=[], **kwargs):
+            received_messages.append(list(messages))
+            self.turn += 1
+            if self.turn == 1:
+                return CreateResult(
+                    finish_reason="function_calls",
+                    content=[
+                        FunctionCall(id="call_f1", name="read_file", arguments='{"path": "file1.txt"}'),
+                        FunctionCall(id="call_f2", name="read_file", arguments='{"path": "file2.txt"}'),
+                    ],
+                    usage=RequestUsage(prompt_tokens=10, completion_tokens=10),
+                    cached=False,
+                )
+            else:
+                return CreateResult(
+                    finish_reason="stop",
+                    content="Both files read successfully.",
+                    usage=RequestUsage(prompt_tokens=20, completion_tokens=10),
+                    cached=False,
+                )
+
+    client = MockMultiToolClient()
+    harness = GeneralAgentHarness(config=config, model_client=client)
+
+    events = []
+    async for event in harness.stream("Read both files"):
+        events.append(event)
+
+    start_events = [e for e in events if isinstance(e, ToolCallStartEvent)]
+    assert len(start_events) == 2
+    assert [e.tool_call_id for e in start_events] == ["call_f1", "call_f2"]
+
+    result_events = [e for e in events if isinstance(e, ToolCallResultEvent)]
+    assert len(result_events) == 2
+    assert [e.tool_call_id for e in result_events] == ["call_f1", "call_f2"]
+    assert "Hello from file 1" in str(result_events[0].result)
+    assert "Hello from file 2" in str(result_events[1].result)
+
+    assert len(received_messages) == 2
+    turn2_msgs = received_messages[1]
+    last_msg = turn2_msgs[-1]
+    assert isinstance(last_msg, FunctionExecutionResultMessage)
+    assert len(last_msg.content) == 2
+    assert last_msg.content[0].call_id == "call_f1"
+    assert last_msg.content[1].call_id == "call_f2"
+    assert "Hello from file 1" in last_msg.content[0].content
+    assert "Hello from file 2" in last_msg.content[1].content
+
+
+

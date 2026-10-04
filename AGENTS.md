@@ -8,7 +8,9 @@ In most time, read `architecture.md` first.
 
 ## Rules
 
+- Do not read or access secrets.
 - Use `rg` (ripgrep) rather than `grep`.
+  * When searching gitignored files like `.venv`, use grep.
 - Be conscise, try to reduce:
   * rarely used English words,
   * unnecessary explaination,
@@ -18,12 +20,12 @@ In most time, read `architecture.md` first.
 - When refactoring internal codes, less consider backward compatibility;
   try to refactor use cases.
 - Search for web when dealing with latest things, i.e. OpenAI models, API.
-  * Do not mention legacy OpenAI models like o1, o4.
-  * Do not spam python commands testing library APIs; search docs or read source.
+  * Do not mention legacy OpenAI models like o1; search.
 
 ### Rules for Python
 
 - Put import on top, unless dynamic import is needed.
+- Do not overuse `inspect`; just search docs on web, or read source.
 
 ### Planning Rules
 

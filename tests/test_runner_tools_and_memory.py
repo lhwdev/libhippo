@@ -26,7 +26,7 @@ def test_context_memory_zone3_compaction():
 
     # User turn with temporal metadata
     u_msg = mem.append_user_turn("Run tests", timestamp="2026-10-03T18:00:00Z", branch="feature")
-    assert '<turn_metadata timestamp="2026-10-03T18:00:00Z"' in u_msg.content
+    assert '<USER_PROMPT timestamp="2026-10-03T18:00:00Z"' in u_msg.content
 
     # Bulky tool outputs
     large_log = "error: line\n" * 200

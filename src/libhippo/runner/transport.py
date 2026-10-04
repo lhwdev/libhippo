@@ -203,6 +203,30 @@ class OpenAIResponsesClient(ChatCompletionClient):
             thought=thought,
         )
 
+    def _get_request_items(
+        self, messages: Sequence[LLMMessage]
+    ) -> tuple[str | None, list[dict[str, Any]], str | None]:
+        """Extract instructions, input items, and optional previous_response_id for delta chaining."""
+        if not self.last_response_id or not messages:
+            instructions, input_items = self._convert_messages(messages)
+            return instructions, input_items, None
+
+        # Find the last AssistantMessage to identify the delta messages since the last turn
+        last_asst_idx = None
+        for i in range(len(messages) - 1, -1, -1):
+            if isinstance(messages[i], AssistantMessage):
+                last_asst_idx = i
+                break
+
+        if last_asst_idx is not None and last_asst_idx < len(messages) - 1:
+            delta_messages = messages[last_asst_idx + 1 :]
+            _, delta_items = self._convert_messages(delta_messages)
+            if delta_items:
+                return None, delta_items, self.last_response_id
+
+        instructions, input_items = self._convert_messages(messages)
+        return instructions, input_items, None
+
     async def create(
         self,
         messages: Sequence[LLMMessage],
@@ -211,7 +235,7 @@ class OpenAIResponsesClient(ChatCompletionClient):
         extra_create_args: dict[str, Any] = {},
         cancellation_token: Any | None = None,
     ) -> CreateResult:
-        instructions, input_items = self._convert_messages(messages)
+        instructions, input_items, prev_id = self._get_request_items(messages)
         formatted_tools = self._convert_tools(tools)
 
         req_kwargs: dict[str, Any] = {
@@ -231,15 +255,29 @@ class OpenAIResponsesClient(ChatCompletionClient):
         if temp is not None:
             req_kwargs["temperature"] = temp
 
-        if self.last_response_id:
-            req_kwargs["previous_response_id"] = self.last_response_id
+        if prev_id:
+            req_kwargs["previous_response_id"] = prev_id
 
         for k, v in self.kwargs.items():
             if k not in req_kwargs and k not in ("temperature", "reasoning_effort"):
                 req_kwargs[k] = v
 
-        response = await self._client.responses.create(**req_kwargs)
-        return self._parse_response(response)
+        try:
+            response = await self._client.responses.create(**req_kwargs)
+            return self._parse_response(response)
+        except Exception:
+            if prev_id:
+                self.last_response_id = None
+                instructions_full, input_items_full = self._convert_messages(messages)
+                req_kwargs["input"] = input_items_full
+                if instructions_full:
+                    req_kwargs["instructions"] = instructions_full
+                else:
+                    req_kwargs.pop("instructions", None)
+                req_kwargs.pop("previous_response_id", None)
+                response = await self._client.responses.create(**req_kwargs)
+                return self._parse_response(response)
+            raise
 
     async def create_stream(
         self,
@@ -249,7 +287,7 @@ class OpenAIResponsesClient(ChatCompletionClient):
         extra_create_args: dict[str, Any] = {},
         cancellation_token: Any | None = None,
     ) -> AsyncIterator[Any]:
-        instructions, input_items = self._convert_messages(messages)
+        instructions, input_items, prev_id = self._get_request_items(messages)
         formatted_tools = self._convert_tools(tools)
 
         req_kwargs: dict[str, Any] = {
@@ -270,19 +308,34 @@ class OpenAIResponsesClient(ChatCompletionClient):
         if temp is not None:
             req_kwargs["temperature"] = temp
 
-        if self.last_response_id:
-            req_kwargs["previous_response_id"] = self.last_response_id
+        if prev_id:
+            req_kwargs["previous_response_id"] = prev_id
 
         for k, v in self.kwargs.items():
             if k not in req_kwargs and k not in ("temperature", "reasoning_effort"):
                 req_kwargs[k] = v
 
-        stream_resp = await self._client.responses.create(**req_kwargs)
+        try:
+            stream_resp = await self._client.responses.create(**req_kwargs)
+        except Exception:
+            if prev_id:
+                self.last_response_id = None
+                instructions_full, input_items_full = self._convert_messages(messages)
+                req_kwargs["input"] = input_items_full
+                if instructions_full:
+                    req_kwargs["instructions"] = instructions_full
+                else:
+                    req_kwargs.pop("instructions", None)
+                req_kwargs.pop("previous_response_id", None)
+                stream_resp = await self._client.responses.create(**req_kwargs)
+            else:
+                raise
+
         async for event in stream_resp:
             ev_type = getattr(event, "type", "")
             if ev_type == "response.text.delta":
                 yield getattr(event, "delta", "")
-            elif ev_type == "response.completed":
+            elif ev_type in ("response.completed", "response.incomplete"):
                 resp_obj = getattr(event, "response", None)
                 if resp_obj:
                     yield self._parse_response(resp_obj)
@@ -309,7 +362,7 @@ class OpenAIResponsesWebSocketClient(ChatCompletionClient):
         self.reasoning_effort = reasoning_effort
         self.enable_http_fallback = enable_http_fallback
         self.kwargs = kwargs
-        self.last_response_id: str | None = None
+        self._last_response_id: str | None = None
         self._is_connected: bool = False
         self._connection: Any = None
         self._pending_steer: str | None = None
@@ -337,6 +390,21 @@ class OpenAIResponsesWebSocketClient(ChatCompletionClient):
         )
 
         self._client: AsyncOpenAI | None = None
+
+    @property
+    def last_response_id(self) -> str | None:
+        return self._last_response_id
+
+    @last_response_id.setter
+    def last_response_id(self, val: str | None) -> None:
+        self._last_response_id = val
+        if hasattr(self, "http_client"):
+            self.http_client.last_response_id = val
+
+    def _get_request_items(
+        self, messages: Sequence[LLMMessage]
+    ) -> tuple[str | None, list[dict[str, Any]], str | None]:
+        return self.http_client._get_request_items(messages)
 
     @property
     def model_info(self) -> ModelInfo:
@@ -389,7 +457,11 @@ class OpenAIResponsesWebSocketClient(ChatCompletionClient):
 
         if self._is_connected and self._connection is not None:
             try:
-                return await self._create_via_websocket(messages, tools)
+                return await self._create_via_websocket(
+                    messages=messages,
+                    tools=tools,
+                    extra_create_args=extra_create_args,
+                )
             except Exception:
                 if not self.enable_http_fallback:
                     raise
@@ -408,51 +480,58 @@ class OpenAIResponsesWebSocketClient(ChatCompletionClient):
         self,
         messages: Sequence[LLMMessage],
         tools: Sequence[Any] = [],
+        extra_create_args: dict[str, Any] = {},
     ) -> CreateResult:
         """Execute delta turn over live WebSocket connection with delta chaining."""
-        last_user_msg = messages[-1].content if messages else ""
-        delta_payload = {
-            "type": "conversation.item.create",
-            "item": {
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": str(last_user_msg)}],
-            },
+        instructions, input_items, prev_id = self._get_request_items(messages)
+        formatted_tools = self.http_client._convert_tools(tools)
+
+        create_event: dict[str, Any] = {
+            "type": "response.create",
+            "model": self.model,
+            "input": input_items,
         }
+        if instructions:
+            create_event["instructions"] = instructions
+        if formatted_tools:
+            create_event["tools"] = formatted_tools
+        if prev_id:
+            create_event["previous_response_id"] = prev_id
 
-        await self._connection.send(delta_payload)
+        effort = extra_create_args.get("reasoning_effort", self.reasoning_effort)
+        if effort and effort != "none":
+            create_event["reasoning"] = {"effort": effort}
 
-        # Trigger response creation with previous_response_id
-        create_event: dict[str, Any] = {"type": "response.create"}
-        if self.last_response_id:
-            create_event["previous_response_id"] = self.last_response_id
+        temp = extra_create_args.get("temperature", self.kwargs.get("temperature"))
+        if temp is not None:
+            create_event["temperature"] = temp
+
+        for k, v in self.kwargs.items():
+            if k not in create_event and k not in ("temperature", "reasoning_effort", "model"):
+                create_event[k] = v
+
         await self._connection.send(create_event)
 
-        collected_text: list[str] = []
-        resp_id = None
-
+        resp_obj = None
         async for event in self._connection:
             event_type = getattr(event, "type", "")
             if event_type == "response.created":
                 resp = getattr(event, "response", None)
                 if resp:
-                    resp_id = getattr(resp, "id", None)
-                    self.last_response_id = resp_id
-            elif event_type == "response.text.delta":
-                delta = getattr(event, "delta", "")
-                collected_text.append(delta)
-            elif event_type in ("response.text.done", "response.done"):
+                    self.last_response_id = getattr(resp, "id", None)
+            elif event_type in ("response.completed", "response.incomplete"):
+                resp_obj = getattr(event, "response", None)
+                if resp_obj:
+                    self.last_response_id = getattr(resp_obj, "id", self.last_response_id)
                 break
-            elif event_type == "response.incomplete":
-                break
+            elif event_type in ("response.failed", "response.error"):
+                err = getattr(event, "error", None) or getattr(event, "response", None)
+                raise RuntimeError(f"WebSocket response failed: {err}")
 
-        full_content = "".join(collected_text)
-        return CreateResult(
-            finish_reason="stop",
-            content=full_content,
-            usage=RequestUsage(prompt_tokens=len(str(last_user_msg)), completion_tokens=len(full_content)),
-            cached=self.last_response_id is not None,
-        )
+        if resp_obj is None:
+            raise RuntimeError("WebSocket connection closed before response completed")
+
+        return self.http_client._parse_response(resp_obj)
 
     async def create_stream(
         self,
@@ -468,22 +547,37 @@ class OpenAIResponsesWebSocketClient(ChatCompletionClient):
 
         if self._is_connected and self._connection is not None:
             try:
-                last_user_msg = messages[-1].content if messages else ""
-                await self._connection.send(
-                    {
-                        "type": "conversation.item.create",
-                        "item": {
-                            "type": "message",
-                            "role": "user",
-                            "content": [{"type": "input_text", "text": str(last_user_msg)}],
-                        },
-                    }
-                )
-                create_event: dict[str, Any] = {"type": "response.create"}
-                if self.last_response_id:
-                    create_event["previous_response_id"] = self.last_response_id
+                instructions, input_items, prev_id = self._get_request_items(messages)
+                formatted_tools = self.http_client._convert_tools(tools)
+
+                create_event: dict[str, Any] = {
+                    "type": "response.create",
+                    "model": self.model,
+                    "input": input_items,
+                    "stream": True,
+                }
+                if instructions:
+                    create_event["instructions"] = instructions
+                if formatted_tools:
+                    create_event["tools"] = formatted_tools
+                if prev_id:
+                    create_event["previous_response_id"] = prev_id
+
+                effort = extra_create_args.get("reasoning_effort", self.reasoning_effort)
+                if effort and effort != "none":
+                    create_event["reasoning"] = {"effort": effort}
+
+                temp = extra_create_args.get("temperature", self.kwargs.get("temperature"))
+                if temp is not None:
+                    create_event["temperature"] = temp
+
+                for k, v in self.kwargs.items():
+                    if k not in create_event and k not in ("temperature", "reasoning_effort", "model", "stream"):
+                        create_event[k] = v
+
                 await self._connection.send(create_event)
 
+                completed = False
                 async for event in self._connection:
                     event_type = getattr(event, "type", "")
                     if event_type == "response.created":
@@ -492,8 +586,19 @@ class OpenAIResponsesWebSocketClient(ChatCompletionClient):
                             self.last_response_id = getattr(resp, "id", None)
                     elif event_type == "response.text.delta":
                         yield getattr(event, "delta", "")
-                    elif event_type in ("response.text.done", "response.done", "response.incomplete"):
+                    elif event_type in ("response.completed", "response.incomplete"):
+                        resp_obj = getattr(event, "response", None)
+                        if resp_obj:
+                            self.last_response_id = getattr(resp_obj, "id", self.last_response_id)
+                            yield self.http_client._parse_response(resp_obj)
+                        completed = True
                         break
+                    elif event_type in ("response.failed", "response.error"):
+                        err = getattr(event, "error", None) or getattr(event, "response", None)
+                        raise RuntimeError(f"WebSocket response failed: {err}")
+
+                if not completed:
+                    raise RuntimeError("WebSocket closed before receiving response completion")
                 return
             except Exception:
                 if not self.enable_http_fallback:

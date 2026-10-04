@@ -8,6 +8,19 @@ from pathlib import Path
 from typing import Any, Self
 
 import aiosqlite
+import aiosqlite.core
+from threading import Thread
+
+if not getattr(aiosqlite.core, "_libhippo_daemon_patched", False):
+    _orig_thread = aiosqlite.core.Thread
+
+    class _DaemonThread(_orig_thread):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            kwargs["daemon"] = True
+            super().__init__(*args, **kwargs)
+
+    aiosqlite.core.Thread = _DaemonThread
+    aiosqlite.core._libhippo_daemon_patched = True  # type: ignore[attr-defined]
 
 from libhippo.models.knowledge import KnowledgeCandidate, KnowledgeFrontmatter
 

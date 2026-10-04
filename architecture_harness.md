@@ -2,7 +2,8 @@
 ## Runtime Architecture & Autonomous Engineering Harness
 
 > **Target Specification**: General Coding Agent Harness (`libhippo.runner`)  
-> **Knowledge Subsystem Reference**: [architecture.md](architecture.md)  
+> **Knowledge Subsystem Reference**: [architecture_knowledge.md](architecture_knowledge.md)  
+> **Root Architecture Reference**: [architecture.md](architecture.md)  
 > **Design Rationale & Benchmarks**: [design_rationale_and_qa.md](design_rationale_and_qa.md)  
 > **Harness Implementation Plan**: [`plan_agent_harness_architecture_implementation.md`](file:///home/lhwdev/.gemini/antigravity/brain/2ed237fb-f6ad-4b4b-8d82-9e80eec1acf2/plan_agent_harness_architecture_implementation.md)
 
@@ -14,11 +15,11 @@ Modern autonomous software engineering agents require more than simple chat comp
 
 ### 1.1 Decoupled Architecture: Knowledge Management vs. General Agent Harness
 LibHippo cleanly decouples into two distinct architectural pillars:
-1. **Knowledge Management Subsystem ([`architecture.md`](architecture.md))**:
+1. **Knowledge Management Subsystem ([`architecture_knowledge.md`](architecture_knowledge.md))**:
    - Cascading knowledge tree with dynamic namespace mounts (`project/`, `common/`, `user/`, `plugins/`).
    - 3-tier adaptive retrieval (`query_knowledge` with low/med/high effort tiers).
    - Maker-Checker lifecycle governance (`CuratorAgent` drafting, `CheckerAgent`/TypeSafe Jev structural auditing, `VerifierAgent` escalation).
-2. **General Coding Agent Harness ([`architecture_runner.md`](architecture_runner.md))**:
+2. **General Coding Agent Harness ([`architecture_harness.md`](architecture_harness.md))**:
    - Comprehensive execution environment for coding agents.
    - Token & workload governors with deterministic compaction.
    - Multi-zone prompt-cache memory architecture.
@@ -282,7 +283,7 @@ The harness provides a complete, production-grade tool registry for software eng
 | | **`send_message`** | `recipient`, `message` | Inter-agent communication channel between parent harness and running subagents. |
 | **Web Research**| **`search_web`** | `query`, `domain` | Searches web engines (DuckDuckGo default, Tavily/Brave pluggable) for external documentation and solutions. |
 | | **`fetch_web`** | `url` | Scrapes and converts web pages to clean markdown text. |
-| **Knowledge** | **`query_knowledge`** | `query`, `effort`, `criticality` | Plugs in LibHippo's 3-tier adaptive knowledge retriever ([`architecture.md`](architecture.md)). |
+| **Knowledge** | **`query_knowledge`** | `query`, `effort`, `criticality` | Plugs in LibHippo's 3-tier adaptive knowledge retriever ([`architecture_knowledge.md`](architecture_knowledge.md)). |
 | | **`modify_knowledge`**| `action`, `path`, `content`, `metadata`, `extra_paths` | Atomically commits markdown modifications, splits, merges, or deprecations to knowledge mounts, guarded by mount permissions and Maker-Checker validation. |
 
 ### 4.1 Output-Aware Tool Execution & Subagent Fan-Out (Tool Virtualization)
@@ -533,7 +534,7 @@ stateDiagram-v2
 
 ## 7. Knowledge Subsystem Bridge
 
-LibHippo's knowledge management system ([`architecture.md`](architecture.md)) plugs into the general coding agent harness as a specialized, first-class subsystem:
+LibHippo's knowledge management system ([`architecture_knowledge.md`](architecture_knowledge.md)) plugs into the general coding agent harness as a specialized, first-class subsystem:
 
 ```text
 [General Coding Agent Harness]
@@ -543,7 +544,7 @@ LibHippo's knowledge management system ([`architecture.md`](architecture.md)) pl
        │     └── query_knowledge (Tool Bridge)
        │              │
        │              ▼
-       │     [LibHippo Knowledge Subsystem (architecture.md)]
+       │     [LibHippo Knowledge Subsystem (architecture_knowledge.md)]
        │     ├── Dynamic Namespace Mount Router
        │     │     ├── /project  ==> <workspace>/.libhippo/ (RW)
        │     │     ├── /common   ==> <install>/knowledge/common/ (RW)

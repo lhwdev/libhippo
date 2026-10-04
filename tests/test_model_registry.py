@@ -88,7 +88,9 @@ def test_create_chat_client_instantiation():
 
     assert isinstance(client, (OpenAIChatCompletionClient, LoggingChatCompletionClient))
     if isinstance(client, LoggingChatCompletionClient):
-        assert isinstance(client._inner, OpenAIChatCompletionClient)
+        from libhippo.runner.transport import OpenAIResponsesClient
+
+        assert isinstance(client._inner, (OpenAIChatCompletionClient, OpenAIResponsesClient))
 
 
 def test_create_typesafe_client_instantiation():

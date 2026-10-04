@@ -209,13 +209,13 @@ RATIONALE: Document exceeded 1800 tokens; separating styling and accessibility.
 @pytest.mark.asyncio
 async def test_verifier_split_and_merge_mutations(tmp_path):
     """Test VerifierAgent split_oversized_node and merge_nodes against KnowledgeStore."""
-    store = KnowledgeStore(root_dir=tmp_path / "knowledge")
-    await store.initialize()
+    async with KnowledgeStore(root_dir=tmp_path / "knowledge") as store:
+        await store.initialize()
 
-    agent = VerifierAgent(store=store)
+        agent = VerifierAgent(store=store)
 
-    # 1. Split oversized node
-    hub_content = """---
+        # 1. Split oversized node
+        hub_content = """---
 title: "HTML Buttons"
 namespace: "common"
 ---
@@ -224,10 +224,10 @@ Hub for button patterns.
 ## Detailed Rules & Edge Cases (Fine View)
 - See child nodes for details.
 """
-    child_nodes = [
-        {
-            "path": "common/web/button/aria.md",
-            "content": """---
+        child_nodes = [
+            {
+                "path": "common/web/button/aria.md",
+                "content": """---
 title: "Button ARIA"
 namespace: "common"
 ---
@@ -236,10 +236,10 @@ ARIA button guidelines.
 ## Detailed Rules
 Handle Space key.
 """,
-        },
-        {
-            "path": "common/web/button/styles.md",
-            "content": """---
+            },
+            {
+                "path": "common/web/button/styles.md",
+                "content": """---
 title: "Button Styles"
 namespace: "common"
 ---
@@ -248,25 +248,25 @@ Style guidelines.
 ## Detailed Rules
 No outline: none.
 """,
-        },
-    ]
+            },
+        ]
 
-    split_res = await agent.split_oversized_node(
-        path="common/web/button.md",
-        store=store,
-        hub_content=hub_content,
-        child_nodes=child_nodes,
-    )
-    assert split_res["status"] == "success"
-    assert len(split_res["children"]) == 2
+        split_res = await agent.split_oversized_node(
+            path="common/web/button.md",
+            store=store,
+            hub_content=hub_content,
+            child_nodes=child_nodes,
+        )
+        assert split_res["status"] == "success"
+        assert len(split_res["children"]) == 2
 
-    # Verify nodes exist in store
-    assert await store.get_node("common/web/button.md") is not None
-    assert await store.get_node("common/web/button/aria.md") is not None
-    assert await store.get_node("common/web/button/styles.md") is not None
+        # Verify nodes exist in store
+        assert await store.get_node("common/web/button.md") is not None
+        assert await store.get_node("common/web/button/aria.md") is not None
+        assert await store.get_node("common/web/button/styles.md") is not None
 
-    # 2. Merge nodes
-    merged_content = """---
+        # 2. Merge nodes
+        merged_content = """---
 title: "Consolidated Button Rules"
 namespace: "common"
 ---
@@ -275,15 +275,15 @@ Consolidated button rules.
 ## Detailed Rules
 Consolidated details.
 """
-    merge_res = await agent.merge_nodes(
-        target_path="common/web/button/consolidated.md",
-        extra_paths=["common/web/button/aria.md", "common/web/button/styles.md"],
-        content=merged_content,
-        store=store,
-    )
-    assert merge_res["status"] == "success"
-    assert await store.get_node("common/web/button/consolidated.md") is not None
-    assert await store.get_node("common/web/button/aria.md") is None
+        merge_res = await agent.merge_nodes(
+            target_path="common/web/button/consolidated.md",
+            extra_paths=["common/web/button/aria.md", "common/web/button/styles.md"],
+            content=merged_content,
+            store=store,
+        )
+        assert merge_res["status"] == "success"
+        assert await store.get_node("common/web/button/consolidated.md") is not None
+        assert await store.get_node("common/web/button/aria.md") is None
 
 
 @pytest.mark.asyncio

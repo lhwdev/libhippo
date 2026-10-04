@@ -80,8 +80,18 @@ export function useWebSocket() {
               if (last && last.role === "assistant") {
                 const tools = last.toolCalls ? [...last.toolCalls, toolCall] : [toolCall];
                 return [...prev.slice(0, -1), { ...last, toolCalls: tools }];
+              } else {
+                return [
+                  ...prev,
+                  {
+                    id: `asst-${Date.now()}`,
+                    role: "assistant",
+                    content: "",
+                    toolCalls: [toolCall],
+                    timestamp: new Date().toLocaleTimeString(),
+                  },
+                ];
               }
-              return prev;
             });
             break;
           }
@@ -93,14 +103,18 @@ export function useWebSocket() {
               existing.error = data.error;
             }
             setMessages((prev) => {
-              const last = prev[prev.length - 1];
-              if (last && last.toolCalls) {
-                const updated = last.toolCalls.map((t) =>
-                  t.id === data.tool_call_id ? { ...t, result: data.result, error: data.error ?? undefined } : t
-                );
-                return [...prev.slice(0, -1), { ...last, toolCalls: updated }];
-              }
-              return prev;
+              return prev.map((msg) => {
+                if (msg.role === "assistant" && msg.toolCalls) {
+                  const hasCall = msg.toolCalls.some((t) => t.id === data.tool_call_id);
+                  if (hasCall) {
+                    const updated = msg.toolCalls.map((t) =>
+                      t.id === data.tool_call_id ? { ...t, result: data.result, error: data.error ?? undefined } : t
+                    );
+                    return { ...msg, toolCalls: updated };
+                  }
+                }
+                return msg;
+              });
             });
             break;
           }
@@ -128,15 +142,21 @@ export function useWebSocket() {
             setIsStreaming(false);
             setTotalTokens(data.total_tokens);
             if (data.response) {
-              setMessages((prev) => [
-                ...prev,
-                {
-                  id: `asst-${Date.now()}`,
-                  role: "assistant",
-                  content: data.response,
-                  timestamp: new Date().toLocaleTimeString(),
-                },
-              ]);
+              setMessages((prev) => {
+                const last = prev[prev.length - 1];
+                if (last && last.role === "assistant" && (!last.content || last.content === "")) {
+                  return [...prev.slice(0, -1), { ...last, content: data.response }];
+                }
+                return [
+                  ...prev,
+                  {
+                    id: `asst-${Date.now()}`,
+                    role: "assistant",
+                    content: data.response,
+                    timestamp: new Date().toLocaleTimeString(),
+                  },
+                ];
+              });
             }
             setStreamingResponse("");
             break;
