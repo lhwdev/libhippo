@@ -29,9 +29,13 @@ Maintains living, audited engineering knowledge across agent sessions.
   - `BookKeeperAgent` Performs advanced search if fast-path `query_knowledge` fails.
   - **Maker-Checker Governance Loop (`libhippo.orchestration.maker_checker`)**
 
-    1. `CuratorAgent` as maker generates candidate markdown drafts from web and conversation context. Complete draft is handed to `CheckerAgent`.
-    2. `CheckerAgent` (TypeSafe Jev) as checker evaluates frontmatter, length bounds with hysteresis, content quality, and rule effectiveness and invokes `CuratorAgent` (for low quality) or  `VerifierAgent` (for merge/split) if needed.
+    1. `CuratorAgent` as maker generates candidate markdown drafts from web specifications upon mandatory retrieval misses.
+    2. `CheckerAgent` (TypeSafe Jev) as checker evaluates frontmatter, length bounds with hysteresis, content quality, and rule effectiveness and invokes `CuratorAgent` (for low quality) or `VerifierAgent` (for merge/split) if needed.
     3. `VerifierAgent` as verifier handles escalations (splitting oversized nodes, merging undersized stubs) and holds exclusive disk write authority (`modify_knowledge`).
+  - **Context Knowledge Harvesting (`KnowledgeHarvestObserver`, `KnowledgeHarvestSidecar`)**:
+    - `KnowledgeHarvestObserver` (TypeSafe Jev System One) evaluates completed turns/tasks for novel patterns and bug resolutions with zero LLM reasoning cost.
+    - `KnowledgeHarvestSidecar` synthesizes drafts from warm KV-cache snapshots, submits to Maker-Checker governance, and commits without blocking interactive turns.
+    - `TaskSolverAgent` can also explicitly queue discoveries via `record_learning(topic, insight, scope)`.
 
 ---
 
@@ -48,16 +52,18 @@ Provides an execution runtime for autonomous software engineering tasks.
   - **Filesystem**: `read_file` (windowed, max 800 lines), `write_file` (targeted line/string replace), `overwrite_file`, `delete_file`.
   - **Code Exploration**: Pure Python `search_file` (hierarchical `.gitignore` parsing) and `list_dir`.
   - **Terminal & Tasks**: Sandboxed `run_command` and background `manage_task` execution.
+  - **Knowledge**: `query_knowledge` (mandatory retrieval before scaffolding/modifications), `record_learning` (explicit learning queues), and `modify_knowledge`.
   - **Subagents**: `invoke_subagent`, `shorten_tool_output`, and `manage_subagents` for parallel delegation and LLM-driven output shortening.
   - **User Interaction**: Interactive `ask_question` modal and ambient `get_status`.
 
 - **Targeted Transport Architecture (`libhippo.runner.transport`)**:
   - **Dedicated WebSockets**: Uses `previous_response_id` for delta chaining and native mid-turn steering.
   - **Resilient HTTP Fallback**: Automatic failover to `OpenAIResponsesClient` on socket drop.
-  - **Ephemeral Sidecar (`/btw`)**: Parallel, non-interfering queries hitting warm parent KV-cache.
+  - **Ephemeral Sidecar (`/btw`) & Harvest Sidecar**: Parallel, non-interfering workers hitting warm parent KV-cache.
+  - **Cache & Usage Telemetry**: Deep extraction of `input_tokens_details.cached_tokens`, `cache_write_tokens`, and `reasoning_tokens` for live hit rate logging (`Cache: HIT (...)`).
 
 - **Client Decoupling**:
-  - Headless backend engine (`GeneralAgentHarness`) streaming typed events (`TokenChunkEvent`, `ToolCallStartEvent`, `ToolCallResultEvent`, etc.).
+  - Headless backend engine (`GeneralAgentHarness`) streaming typed events (`TokenChunkEvent`, `ToolCallStartEvent`, `ToolCallResultEvent`, `TurnCompletedEvent` with cache metrics).
   - React 19 web frontend (`frontend/web`) and aiohttp server (`src/libhippo/web`).
 
 ---
@@ -71,15 +77,20 @@ flowchart TD
         H --> TS[TaskSolverAgent]
         H --> SC["/btw Sidecar Agent"]
         H --> Web["Web UI / CLI Transport"]
+        TS -->|record_learning| HS[KnowledgeHarvestSidecar]
+        H -->|post_task_maintenance| HO[KnowledgeHarvestObserver / Jev]
+        HO -->|has_novel_learnings >= 0.70| HS
     end
 
     subgraph Knowledge["Knowledge Subsystem (architecture_knowledge.md)"]
-        TS -->|query_knowledge| QD[3-Tier Dispatcher]
+        TS -->|Mandatory query_knowledge| QD[3-Tier Dispatcher]
         QD --> KS[(Knowledge Store<br>Markdown + Vector)]
         QD --> BK[BookKeeperAgent]
-        QD --> CU[CuratorAgent]
+        QD -->|MISS:MANDATORY| CU[CuratorAgent]
         CU --> CH[CheckerAgent / Jev]
+        HS -->|Draft candidate| CH
         CH -->|Escalate| VA[VerifierAgent]
+        CH -->|PASS| KS
         VA -->|modify_knowledge| KS
     end
 

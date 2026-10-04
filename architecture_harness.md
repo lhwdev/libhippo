@@ -238,6 +238,7 @@ To maximize provider KV-cache reuse (OpenAI, Anthropic, Gemini) and eliminate re
 
 ### 3.1 Zone 1: Immutable Static Prefix
 - **Bitwise Guarantee**: No dynamic variables (e.g. wall-clock timestamps, ephemeral session IDs, turn counters) are permitted inside Zone 1.
+- **Template Assembly**: Zone 1 is assembled via a template engine from [`harness.md`](src/libhippo/runner/harness.md), which lives directly alongside [`harness.py`](src/libhippo/runner/harness.py). Complicated sections (workspace environment, active rules from `AGENTS.md`, and clean tool categorizations) are embedded dynamically while omitting redundant tool parameter schemas (which are provided directly via function calling). Precise operational contracts for core tools (`read_file`, `write_file`, `overwrite_file`, `run_command`, `shorten_tool_output`, `query_knowledge`, `record_learning`) are explicitly included.
 - **Caching Benefit**: Exceeds provider 1,024-token cache thresholds, guaranteeing that all turns within a session read system prompts and tool schemas at 0.25x–0.50x cached rates.
 
 ### 3.2 Zone 2: Append-Only Linear History
@@ -283,7 +284,8 @@ The harness provides a complete, production-grade tool registry for software eng
 | | **`send_message`** | `recipient`, `message` | Inter-agent communication channel between parent harness and running subagents. |
 | **Web Research**| **`search_web`** | `query`, `domain` | Searches web engines (DuckDuckGo default, Tavily/Brave pluggable) for external documentation and solutions. |
 | | **`fetch_web`** | `url` | Scrapes and converts web pages to clean markdown text. |
-| **Knowledge** | **`query_knowledge`** | `query`, `effort`, `criticality` | Plugs in LibHippo's 3-tier adaptive knowledge retriever ([`architecture_knowledge.md`](architecture_knowledge.md)). |
+| **Knowledge** | **`query_knowledge`** | `query`, `effort`, `criticality` | Plugs in LibHippo's 3-tier adaptive knowledge retriever ([`architecture_knowledge.md`](architecture_knowledge.md)). Mandatory before scaffolding or editing frameworks. |
+| | **`record_learning`** | `topic`, `insight`, `scope` | Explicitly queues newly uncovered repository patterns, bug resolutions, or preferences for asynchronous background harvesting. |
 | | **`modify_knowledge`**| `action`, `path`, `content`, `metadata`, `extra_paths` | Atomically commits markdown modifications, splits, merges, or deprecations to knowledge mounts, guarded by mount permissions and Maker-Checker validation. |
 
 ### 4.1 Output-Aware Tool Execution & Subagent Fan-Out (Tool Virtualization)
@@ -502,10 +504,13 @@ flowchart TD
 2. **Seamless Mid-Turn Steering**: While the agent is reasoning or running tools, user messages automatically steer in-flight execution without tearing down connections or requiring separate commands.
 3. **LLM-Driven Output Delegation**: The agent decides whether to preserve verbose outputs in context for long-horizon planning or delegate/shorten them via `shorten_tool_output`.
 4. **Asynchronous Post-Task Maintenance**:
-   - Runs in the background after turns complete:
+   - Runs in the background after turns complete without blocking interactive responses:
+     - Dispatches `KnowledgeHarvestObserver` (TypeSafe Jev) to detect novel learnings from recent turn history.
+     - Spawns `KnowledgeHarvestSidecar` to draft Hub/Leaf notes from warm KV-cache snapshots and run Maker-Checker governance.
+     - Drains explicit `record_learning` queues submitted by `TaskSolverAgent`.
      - Dispatches HNSW vector index compaction (`rebuild_index`) when mutation churn occurs.
      - Cleans up ephemeral scratch resources.
-     - Emits telemetry metrics (tokens used, cache hit ratios, tool latencies).
+     - Emits turn telemetry (`TurnCompletedEvent`) containing duration, total tokens, `cached_tokens`, and `cache_hit_rate`.
 
 ---
 
@@ -517,8 +522,10 @@ LibHippo's knowledge management system ([`architecture_knowledge.md`](architectu
 [General Coding Agent Harness]
        │
        ├── Core Tool Registry
-       │     ├── read_file, write_file, search_file, modify_knowledge, run_command ...
-       │     └── query_knowledge (Tool Bridge)
+       │     ├── read_file, write_file, search_file, run_command ...
+       │     ├── query_knowledge (Tool Bridge - Mandatory First Step)
+       │     ├── record_learning (Explicit Harvest Queue)
+       │     └── modify_knowledge (Disk Mutation Authority)
        │              │
        │              ▼
        │     [LibHippo Knowledge Subsystem (architecture_knowledge.md)]
@@ -528,15 +535,18 @@ LibHippo's knowledge management system ([`architecture_knowledge.md`](architectu
        │     │     ├── /user     ==> ~/.config/libhippo/ (RW)
        │     │     └── /plugins  ==> dynamic plugin directories (RO/RW)
        │     ├── 3-Tier Adaptive Retrieval (Low / Med / High)
-       │     └── Maker-Checker Governance (Curator + Checker/Jev + Verifier)
+       │     └── Maker-Checker Governance (Curator/Sidecar + Checker/Jev + Verifier)
        │
        └── Post-Task Maintenance Hook
+             ├── KnowledgeHarvestObserver (TypeSafe Jev Semantic Gating)
+             ├── KnowledgeHarvestSidecar (Warm-Cache Draft & Governance Commit)
              └── rebuild_index (Async Vector Compaction)
 ```
 
-1. **Tool Exposure**: The harness registers `query_knowledge` in Zone 1 tool definitions, enabling the agent to perform coarse-to-fine knowledge lookups at any stage.
-2. **Mount Protection & Evolution**: `project`, `common`, and `user` are Read/Write, allowing both project rules and shared language/framework knowledge (e.g. React updates) to be updated via Maker-Checker governance. Mounts flagged `read_only: true` (e.g. third-party plugin packages) are protected from disk mutations, prompting project-level specialization.
-3. **Background Compaction Hook**: The harness calls `VectorKnowledgeStore.compact_if_needed()` during Phase 5 maintenance without blocking interactive user turns.
+1. **Tool Exposure**: The harness registers `query_knowledge` in Zone 1 tool definitions, strictly enforcing coarse-to-fine knowledge lookups before modifying or scaffolding frameworks.
+2. **Context Harvesting**: Problem-solving discoveries (compiler error fixes, internal patterns, user preferences) are captured either explicitly via `record_learning` or autonomously through `KnowledgeHarvestObserver` and synthesized in the background by `KnowledgeHarvestSidecar`.
+3. **Mount Protection & Evolution**: `project`, `common`, and `user` are Read/Write, allowing both project rules and shared language/framework knowledge (e.g. React updates) to be updated via Maker-Checker governance. Mounts flagged `read_only: true` (e.g. third-party plugin packages) are protected from disk mutations, prompting project-level specialization.
+4. **Background Compaction Hook**: The harness calls `VectorKnowledgeStore.compact_if_needed()` during maintenance without blocking interactive user turns.
 
 ---
 
@@ -812,7 +822,11 @@ class GeneralAgentHarness:
         """Automatically discover .libhippo, global/project AGENTS.md, skills, and MCP."""
         ...
 
-    def init_prefix(self, system_persona: str, repo_profile: str) -> None:
+    def assemble_system_prompt(self) -> str:
+        """Assemble complete Zone 1 prompt using harness.md template and dynamic context."""
+        ...
+
+    def init_prefix(self) -> None:
         """Initialize Zone 1 with immutable specifications for 100% KV-cache reuse."""
         ...
 

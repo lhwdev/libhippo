@@ -34,19 +34,23 @@ class ContextMemory:
     def set_zone1_prefix(
         self,
         system_persona: str,
-        repo_profile: str,
+        repo_profile: str | None = None,
         tool_definitions: list[dict[str, Any]] | None = None,
     ) -> None:
         """Initialize Zone 1 static prefix (bitwise invariant across turns)."""
-        sections = [
-            f"# Agent Role & System Instructions\n{system_persona.strip()}",
-            f"# Repository Profile & Context\n{repo_profile.strip()}",
-        ]
-        if tool_definitions:
-            tool_text = "\n".join(f"- {t.get('name')}: {t.get('description')}" for t in tool_definitions)
-            sections.append(f"# Available Tool Suite\n{tool_text}")
+        if repo_profile is None and tool_definitions is None:
+            prefix_content = system_persona.strip()
+        else:
+            sections = [
+                f"# Agent Role & System Instructions\n{system_persona.strip()}",
+            ]
+            if repo_profile:
+                sections.append(f"# Repository Profile & Context\n{repo_profile.strip()}")
+            if tool_definitions:
+                tool_text = "\n".join(f"- {t.get('name')}: {t.get('description')}" for t in tool_definitions)
+                sections.append(f"# Available Tool Suite\n{tool_text}")
+            prefix_content = "\n\n---\n\n".join(sections)
 
-        prefix_content = "\n\n---\n\n".join(sections)
         msg = ContextMessage(
             role="system",
             content=prefix_content,

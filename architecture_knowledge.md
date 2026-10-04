@@ -30,8 +30,9 @@
 
 The system coordinates specialized agents via an AutoGen `GraphFlow`.
 - **Retrieval**: Governed by the `query_knowledge` 3-tier adaptive dispatcher (`low`, `medium`, `high` effort).
-- **Lifecycle Governance**: Structured as a tiered Maker-Checker pipeline:
-  - **Drafting (Maker)**: `CuratorAgent` (`gpt-6-luna`) drafts technical markdown nodes from conversations and authoritative web sources.
+- **Lifecycle Governance**: Structured as a tiered Maker-Checker pipeline across two creation pathways:
+  - **Pathway A (Pre-Task Web Curation)**: `CuratorAgent` (`gpt-6-luna`) drafts technical markdown nodes from authoritative web documentation when mandatory queries encounter retrieval misses.
+  - **Pathway B (Post-Task Context Harvesting)**: `KnowledgeHarvestObserver` (TypeSafe Jev) analyzes completed turns/tasks for non-obvious repository patterns, bug resolutions, and preferences. High-novelty triggers ($\ge 0.70$) spawn `KnowledgeHarvestSidecar` to synthesize draft nodes from warm KV-cache snapshots without disrupting interactive coding.
   - **Structural Auditing (Checker)**: `CheckerAgent` (powered by `TypeSafe Jev`) provides structural and schema auditing (combining deterministic token/frontmatter/fence validation with TypeSafe Jev semantic scoring). Escalations trigger `VerifierAgent`.
   - **Deep Refactoring (Verifier)**: `VerifierAgent` (`gpt-6.1-sol`) executes structural hierarchy refactoring on `OVERSIZED` nodes, arbitrates deprecations, and holds exclusive reasoning authority to modify knowledge on disk.
   *(Note: Solution code auditing and final task termination by VerifierAgent are removed from the core library architecture and handled in `architecture_harness.md`).*
@@ -336,6 +337,7 @@ Use native `<button>` whenever possible. Only use `role="button"` on `<div>` wit
 | Tool Name | Caller | Input Arguments | Functional Description |
 | :--- | :--- | :--- | :--- |
 | **`query_knowledge`** | `TaskSolverAgent` | `query: str`, `effort: "low"\|"medium"\|"high"`, `criticality: "mandatory"\|"preferred"\|"optional"` | Dispatches query across the 3 effort tiers using importance-aware confidence scoring, returning raw snippets or librarian synthesis. |
+| **`record_learning`** | `TaskSolverAgent` | `topic: str`, `insight: str`, `scope: "project"\|"common"\|"user"` | Explicitly queues an empirical learning, gotcha, or preference for asynchronous sidecar audit and commitment. |
 | **`search_knowledge`** | `BookKeeperAgent` | `query: str`, `namespace: str = None`, `top_k: int = 5` | Searches local vector store and FTS5 catalog for candidate nodes, returning file paths and similarity scores. |
 | **`read_knowledge`** | `TaskSolverAgent`, `BookKeeperAgent` | `file_path: str`, `section: "summary"\|"rules"\|"full"` | Reads the specified section from knowledge markdown document without as-is. |
 | **`audit_knowledge`** | `CheckerAgent`<br>*(TypeSafe Jev)* | `path: str`, `content: str`, `parent_path: str`, `sibling_paths: list[str]` | Executes structural audit (taxonomy fit, sizing hysteresis, importance scoring, SRP coherence, sibling coalescence, YAML schema), returning `JevAuditReport`. |

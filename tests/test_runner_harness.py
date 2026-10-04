@@ -499,7 +499,7 @@ async def test_harness_multiple_tool_invocations_turn(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_harness_shorten_tool_output(tmp_path: Path):
-    """Test shorten_tool_output delegates to subagent and replaces bulky output in context."""
+    """Test shorten_tool_output directly prunes bulky tool outputs without subagent roundtrips."""
     ws_dir = tmp_path / "workspace"
     ws_dir.mkdir(parents=True)
     cfg_dir = tmp_path / "cfg"
@@ -508,27 +508,58 @@ async def test_harness_shorten_tool_output(tmp_path: Path):
         workspace_root=ws_dir,
         user_config_dir=cfg_dir,
     )
-    client = make_mock_client("Summary: Test failed with AssertionError at line 42.")
+    client = make_mock_client("OK")
     harness = GeneralAgentHarness(config=config, model_client=client)
 
-    # Simulate a bulky tool output in memory
-    bulky_log = "error: test_fail\n" * 100
-    harness.memory.append_tool_output("run_command", bulky_log, tool_call_id="call_test1")
+    # 1. Test pruning a bulky read_file output
+    bulky_code = "def foo(): pass\n" * 100
+    harness.memory.append_tool_output("read_file", bulky_code, tool_call_id="call_read_1")
 
-    # Call shorten_tool_output tool
     assert "shorten_tool_output" in harness.registered_tools
     tool_def = harness.registered_tools["shorten_tool_output"]
-    res = await tool_def.handler(instruction="Summarize the failure reason", tool_name="run_command")
 
-    assert res["status"] == "shortened"
-    assert "AssertionError at line 42" in res["result"]
+    res_read = await tool_def.handler(
+        tool_name="read_file",
+        run_id="call_read_1",
+        summary="Inspected 100 lines; verified foo definition.",
+    )
+    assert res_read["status"] == "shortened"
+    assert res_read["reclaimed_tokens"] > 50
 
-    # Verify memory message was replaced
-    last_tool_msg = harness.memory.get_last_tool_output("run_command")
-    assert last_tool_msg is not None
-    assert "[Tool output shortened via subagent]" in last_tool_msg.content
-    assert "AssertionError at line 42" in last_tool_msg.content
-    assert bulky_log not in last_tool_msg.content
+    last_read_msg = harness.memory.get_last_tool_output("read_file")
+    assert last_read_msg is not None
+    assert "discarded/shortened by agent: Inspected 100 lines; verified foo definition." in last_read_msg.content
+    assert bulky_code not in last_read_msg.content
+
+    # 2. Test pruning a bulky run_command output
+    bulky_log = "error: test_fail\n" * 100
+    harness.memory.append_tool_output("run_command", bulky_log, tool_call_id="call_cmd_1")
+
+    res_cmd = await tool_def.handler(
+        tool_name="run_command",
+        run_id="call_cmd_1",
+        summary="Test failed with AssertionError at line 42; raw trace pruned.",
+    )
+    assert res_cmd["status"] == "shortened"
+    assert "AssertionError at line 42" in res_cmd["result"]
+
+    last_cmd_msg = harness.memory.get_last_tool_output("run_command")
+    assert last_cmd_msg is not None
+    assert "AssertionError at line 42" in last_cmd_msg.content
+    assert bulky_log not in last_cmd_msg.content
+
+    # 3. Sanity check: verify error if run_id / tool_name does not match recent output
+    with pytest.raises(Exception, match="No recent tool output found to shorten"):
+        await tool_def.handler(tool_name="nonexistent_tool", run_id="invalid_id")
+
+    # 4. Sanity check: verify error if tool output occurred in distant history (> 10 messages ago)
+    harness.memory.append_tool_output("run_command", "ancient output", tool_call_id="call_ancient")
+    for i in range(12):
+        harness.memory.append_user_turn(f"User turn {i}")
+        harness.memory.append_assistant_turn(f"Assistant turn {i}")
+
+    with pytest.raises(Exception, match="occurred too far in the past"):
+        await tool_def.handler(tool_name="run_command", run_id="call_ancient")
 
 
 @pytest.mark.asyncio
@@ -553,3 +584,88 @@ async def test_harness_stream_steering_in_flight(tmp_path: Path):
 
     assert any("Steered: Change direction to SQLite" in getattr(e, "delta", "") for e in events)
     client.steer.assert_called_with("Change direction to SQLite")
+
+
+def test_harness_template_assembled_system_prompt(tmp_path: Path):
+    """Verify harness template engine embeds workspace, rules, and core tool contracts."""
+    ws_dir = tmp_path / "my_project"
+    ws_dir.mkdir(parents=True)
+    cfg_dir = tmp_path / "cfg"
+
+    config = HarnessConfig(
+        workspace_root=ws_dir,
+        user_config_dir=cfg_dir,
+    )
+    client = make_mock_client("OK")
+    harness = GeneralAgentHarness(config=config, model_client=client)
+
+    prompt = harness.assemble_system_prompt()
+
+    # Core structure checks
+    assert "<identity>" in prompt
+    assert "<environment>" in prompt
+    assert "<user_rules>" in prompt
+    assert "<tone_and_behavior>" in prompt
+    assert "<tools:available>" in prompt
+    assert "<tools:core_guidance>" in prompt
+    assert "<knowledge:format>" in prompt
+
+    # Template variable substitution checks
+    assert "my_project" in prompt
+    assert str(ws_dir.resolve()) in prompt
+    assert "No custom user rules specified." in prompt
+
+    # Tools summary: concise categorization without duplicating parameter schemas
+    assert "- **Filesystem**:" in prompt
+    assert "`read_file`" in prompt
+    assert "`write_file`" in prompt
+    assert "`query_knowledge`" in prompt
+
+    # Core tool contracts are explicitly present
+    assert "Line numbers (`<line_number>: <code_line>`) are prefixed for reference and addressability only" in prompt
+
+    # Ensure memory zone1 prefix was populated with the assembled prompt
+    assert len(harness.memory.zone1_prefix) == 1
+    assert harness.memory.zone1_prefix[0].content == prompt
+
+    # Verify tool execution discipline and trending retrieval guidance
+    assert "<tools:execution_discipline>" in prompt
+    assert "Group multiple tool calls" in prompt
+    assert "Recommend trending AI models" in prompt
+
+
+@pytest.mark.asyncio
+async def test_harness_injects_ambient_session_context_on_initial_turn(tmp_path: Path):
+    """Verify ambient date/time/branch/workspace info is injected on the first user turn."""
+    ws_dir = tmp_path / "ambient_project"
+    ws_dir.mkdir(parents=True)
+    cfg_dir = tmp_path / "cfg"
+
+    config = HarnessConfig(
+        workspace_root=ws_dir,
+        user_config_dir=cfg_dir,
+    )
+    client = make_mock_client("Understood.")
+    harness = GeneralAgentHarness(config=config, model_client=client)
+
+    # First turn: should inject ambient session_context
+    async for _ in harness.stream("What is your mission?"):
+        pass
+
+    first_turn_msg = harness.memory.zone2_history[0]
+    assert "<session_context>" in first_turn_msg.content
+    assert "Current Date & Time:" in first_turn_msg.content
+    assert "ambient_project" in first_turn_msg.content
+    assert "Active Git Branch:" in first_turn_msg.content
+    assert "User & Platform:" in first_turn_msg.content
+    assert "What is your mission?" in first_turn_msg.content
+
+    # Second turn: should NOT duplicate ambient session_context
+    async for _ in harness.stream("Can you also list files?"):
+        pass
+
+    second_turn_msg = harness.memory.zone2_history[2]
+    assert "<session_context>" not in second_turn_msg.content
+    assert "Can you also list files?" in second_turn_msg.content
+
+

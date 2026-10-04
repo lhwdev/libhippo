@@ -19,12 +19,15 @@ _PROMPTS_DIR = Path(__file__).parent / "system_prompts"
 
 @functools.lru_cache(maxsize=16)
 def load_prompt_file(name: str) -> str:
-    """Read a markdown prompt file from the prompts/ directory."""
+    """Read a markdown prompt file from prompts/ or runner/ directory."""
     clean_name = name.removesuffix(".md")
     path = _PROMPTS_DIR / f"{clean_name}.md"
-    if not path.is_file():
-        raise FileNotFoundError(f"Prompt file not found at {path}")
-    return path.read_text(encoding="utf-8").strip()
+    if path.is_file():
+        return path.read_text(encoding="utf-8").strip()
+    runner_path = Path(__file__).resolve().parent.parent / "runner" / f"{clean_name}.md"
+    if runner_path.is_file():
+        return runner_path.read_text(encoding="utf-8").strip()
+    raise FileNotFoundError(f"Prompt file not found at {path}")
 
 
 def get_agent_system_prompt(role: str) -> str:
@@ -40,7 +43,7 @@ def get_agent_system_prompt(role: str) -> str:
     }
     role_key = aliases.get(clean, clean)
 
-    valid_roles = {"book_keeper", "curator", "verifier", "task_solver", "harness"}
+    valid_roles = {"book_keeper", "curator", "verifier", "task_solver", "harness", "harvest_sidecar"}
     if role_key not in valid_roles:
         raise ValueError(f"Unknown agent role '{role}'. Available: {sorted(valid_roles)}")
     return load_prompt_file(role_key)
@@ -59,4 +62,6 @@ def __getattr__(name: str) -> str:
         return load_prompt_file("task_solver")
     if name == "HARNESS_SYSTEM_PROMPT":
         return load_prompt_file("harness")
+    if name == "HARVEST_SIDECAR_PROMPT":
+        return load_prompt_file("harvest_sidecar")
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

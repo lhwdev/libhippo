@@ -16,7 +16,12 @@ In most time, read `architecture.md` first.
   * unnecessary explaination,
   * comments that can be figured out right from code.
 - When adding code/text to file, follow style of the file.
-- Preserve previous file if unnecessary.
+
+# Project-Specific Rules
+
+- Always extract large agent prompts to markdown file.
+- Use XML-like tags (e.g. `<TAG>...</TAG>`) for structuring system prompts.
+- Reduce target of write_file as possible.
 - When refactoring internal codes, less consider backward compatibility;
   try to refactor use cases.
 - Search for web when dealing with latest things, i.e. OpenAI models, API.

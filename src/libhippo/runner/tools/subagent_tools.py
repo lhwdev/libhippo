@@ -73,49 +73,84 @@ class SubagentTools(BaseToolSuite):
 
     async def shorten_tool_output(
         self,
-        instruction: str,
         tool_name: str | None = None,
+        run_id: str | None = None,
+        summary: str | None = None,
     ) -> dict[str, Any]:
-        """Fork a subagent with inherited context to carry out instruction on previous tool output and shorten it."""
-        if not self.subagent_manager:
-            raise ToolExecutionError("Subagent manager is not initialized.")
+        """Prune or discard a recent bulky tool output from context memory after inspecting it.
 
-        mem = getattr(self, "memory", None) or getattr(self.subagent_manager, "memory", None)
+        Directly replaces the verbose output (e.g. large file reads, dense search results,
+        compiler traces, test logs) with a concise summary in memory without extra roundtrips.
+        """
+        mem = getattr(self, "memory", None) or (
+            getattr(self.subagent_manager, "memory", None) if self.subagent_manager else None
+        )
         if not mem:
             raise ToolExecutionError("Context memory is not available for output shortening.")
 
-        target_msg = mem.get_last_tool_output(tool_name)
+        # Sanity check: search strictly within recent window of Zone 2 history
+        # to ensure we never prune outputs from distant past turns.
+        recency_window = 10
+        recent_messages = mem.zone2_history[-recency_window:] if len(mem.zone2_history) > recency_window else mem.zone2_history
+        target_msg = None
+
+        for msg in reversed(recent_messages):
+            if msg.role == "tool":
+                matches_run_id = (run_id is None) or (msg.tool_call_id == run_id) or (msg.metadata.get("tool_call_id") == run_id)
+                matches_tool = (tool_name is None) or (msg.metadata.get("tool_name") == tool_name)
+                if matches_run_id and matches_tool:
+                    target_msg = msg
+                    break
+
         if not target_msg:
-            raise ToolExecutionError(f"No previous tool output found to shorten (tool_name={tool_name}).")
+            # Check if it was in older history to provide a clear error message
+            older_match = (
+                any(
+                    m.role == "tool"
+                    and (
+                        (run_id and (m.tool_call_id == run_id or m.metadata.get("tool_call_id") == run_id))
+                        or (tool_name and m.metadata.get("tool_name") == tool_name)
+                    )
+                    for m in mem.zone2_history[:-recency_window]
+                )
+                if len(mem.zone2_history) > recency_window
+                else False
+            )
 
-        await self.check_approval_if_needed(
-            "shorten_tool_output",
-            {"instruction": instruction, "tool_name": tool_name or target_msg.metadata.get("tool_name")},
-        )
+            if older_match:
+                raise ToolExecutionError(
+                    f"Refusing to shorten tool output: matching execution for tool_name='{tool_name}' / run_id='{run_id}' "
+                    "occurred too far in the past."
+                )
 
-        sub_result = await self.subagent_manager.execute_task(
-            instruction=instruction,
-            role=f"Output Delegator for {target_msg.metadata.get('tool_name', 'tool')}",
-            parent_memory=mem,
-        )
+            detail = f"tool_name='{tool_name}'" if tool_name else ""
+            if run_id:
+                detail = f"{detail}, run_id='{run_id}'" if detail else f"run_id='{run_id}'"
+            raise ToolExecutionError(f"No recent tool output found to shorten ({detail or 'any tool'}).")
 
-        compact_text = (
-            f"[Tool output shortened via subagent]\n"
-            f"Directive: {instruction}\n"
-            f"Result:\n{sub_result}"
-        )
-        mem.replace_tool_output(
-            new_content=compact_text,
-            tool_name=target_msg.metadata.get("tool_name"),
-            tool_call_id=target_msg.tool_call_id,
-        )
+        actual_tool = target_msg.metadata.get("tool_name") or tool_name or "tool"
+        actual_run_id = target_msg.tool_call_id or run_id or ""
+
+        old_tokens = target_msg.raw_token_count
+        if summary:
+            compact_text = f"[Tool output of {actual_tool} shortened]"
+        else:
+            compact_text = f"[Tool output of {actual_tool} discarded]"
+
+        old_lines = target_msg.content.count("\n") + 1
+        target_msg.content = compact_text
+        target_msg.raw_token_count = mem.count_tokens(compact_text)
+        reclaimed_tokens = max(0, old_tokens - target_msg.raw_token_count)
 
         return {
             "status": "shortened",
-            "instruction": instruction,
-            "tool_name": target_msg.metadata.get("tool_name"),
-            "result": sub_result,
+            "tool_name": actual_tool,
+            "run_id": actual_run_id,
+            "summary": summary,
+            "old_lines": old_lines,
+            "reclaimed_tokens": reclaimed_tokens,
         }
+
 
     def get_tool_definitions(self) -> dict[str, ToolDefinition]:
         """Return ToolDefinition schemas for subagents."""
@@ -164,20 +199,28 @@ class SubagentTools(BaseToolSuite):
             ),
             "shorten_tool_output": ToolDefinition(
                 name="shorten_tool_output",
-                description="Fork a subagent to carry out an instruction on a large/verbose tool output (e.g. summarize, diagnose, or extract) and replace the bulky output in main context with the concise result.",
+                description=(
+                    "Prune or discard a recent bulky tool output (e.g. large file reads, dense search results, "
+                    "huge directory trees, compiler traces, or test logs) from context memory after inspecting it. "
+                    "Directly compacts the output in memory with zero extra roundtrips. "
+                    "For delegating problems to subagents, use invoke_subagent instead."
+                ),
                 parameters_schema={
                     "type": "object",
                     "properties": {
-                        "instruction": {
-                            "type": "string",
-                            "description": "Specific directive for the subagent (e.g. 'Summarize failing tests', 'Diagnose type error and fix')",
-                        },
                         "tool_name": {
                             "type": "string",
-                            "description": "Optional name of the tool output to shorten (defaults to the most recent tool output)",
+                            "description": "Name of the recent tool whose output to prune (e.g. 'read_file', 'search_file', 'run_command', 'list_dir')",
+                        },
+                        "run_id": {
+                            "type": "string",
+                            "description": "Optional tool_call_id / run ID for sanity checking the specific tool execution",
+                        },
+                        "summary": {
+                            "type": "string",
+                            "description": "Optional concise note of what was diagnosed or why the raw output was pruned",
                         },
                     },
-                    "required": ["instruction"],
                 },
                 handler=self.shorten_tool_output,
             ),

@@ -23,6 +23,27 @@ class KnowledgeTools(BaseToolSuite):
         super().__init__(*args, **kwargs)
         self.store = store or (dispatcher.store if dispatcher else None)
         self.dispatcher = dispatcher
+        self.harvest_queue: list[dict[str, Any]] = []
+
+    async def record_learning(
+        self,
+        topic: str,
+        insight: str,
+        scope: str = "project",
+    ) -> dict[str, Any]:
+        """Record an empirical learning or project convention for asynchronous harvesting."""
+        entry = {
+            "topic": topic,
+            "insight": insight,
+            "scope": scope,
+        }
+        self.harvest_queue.append(entry)
+        return {
+            "status": "queued",
+            "topic": topic,
+            "scope": scope,
+            "message": "Learning queued for asynchronous sidecar audit and commitment.",
+        }
 
     async def query_knowledge(
         self,
@@ -101,6 +122,21 @@ class KnowledgeTools(BaseToolSuite):
     def get_tool_definitions(self) -> dict[str, ToolDefinition]:
         """Return ToolDefinition schemas for knowledge subsystem operations."""
         defs: dict[str, ToolDefinition] = {}
+
+        defs["record_learning"] = ToolDefinition(
+            name="record_learning",
+            description="Flag an empirical learning, repository convention, or bug workaround to be asynchronously audited and stored in the knowledge base.",
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Short topic or title (e.g. 'React 19 form actions')"},
+                    "insight": {"type": "string", "description": "Key rule, gotcha, or pattern discovered during task execution"},
+                    "scope": {"type": "string", "enum": ["project", "common", "user"], "default": "project", "description": "Target knowledge scope"},
+                },
+                "required": ["topic", "insight"],
+            },
+            handler=self.record_learning,
+        )
 
         if self.store or self.dispatcher:
             defs["query_knowledge"] = ToolDefinition(

@@ -7,7 +7,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from libhippo.runner.transport import OpenAIResponsesClient
 from libhippo.models.logging_client import wrap_client_if_logging_enabled
 
 AgentRole = Literal["task_solver", "book_keeper", "curator", "checker", "verifier"]
@@ -209,6 +208,8 @@ class ModelRegistry:
         # Filter out None values
         filtered_kwargs = {k: v for k, v in kwargs.items() if v is not None}
         
+        from libhippo.runner.transport import OpenAIResponsesClient
+
         client = OpenAIResponsesClient(**filtered_kwargs)
         return wrap_client_if_logging_enabled(client)
 

@@ -104,6 +104,8 @@ class TurnCompletedEvent:
     total_tokens: int
     duration_seconds: float
     response: str = ""
+    cached_tokens: int = 0
+    cache_hit_rate: float = 0.0
     type: str = "turn_completed"
 
 

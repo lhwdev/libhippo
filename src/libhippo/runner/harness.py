@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import getpass
 import json
+import platform
+import re
+import subprocess
 import uuid
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 from autogen_core import FunctionCall
@@ -28,7 +33,7 @@ from libhippo.runner.memory import ContextMemory
 from libhippo.runner.persistence import ConversationSession
 from libhippo.runner.project import ProjectManager
 from libhippo.runner.sandbox import BubblewrapSandboxRunner, SandboxRunner
-from libhippo.runner.sidecar import SidecarExecutor
+from libhippo.runner.sidecar import KnowledgeHarvestSidecar, SidecarExecutor
 from libhippo.runner.subagents import SubagentManager
 from libhippo.runner.tools import CodingToolSuite
 from libhippo.runner.transport import OpenAIResponsesWebSocketClient
@@ -44,9 +49,19 @@ from libhippo.runner.types import (
     ToolDefinition,
     TurnCompletedEvent,
 )
+from libhippo.agents.system_prompts.template import (
+    assemble_harness_system_prompt,
+    format_tools_summary,
+    format_user_rules,
+    format_workspace_info,
+    load_prompt_template,
+    render_prompt_template,
+)
 from libhippo.storage.mount import create_default_mounts
 from libhippo.storage.store import KnowledgeStore
 from libhippo.tools.retrieval import KnowledgeDispatcher
+
+load_harness_template = load_prompt_template
 
 
 class GeneralAgentHarness:
@@ -153,6 +168,10 @@ class GeneralAgentHarness:
         self.tools.memory = self.memory
         self.registered_tools = self.tools.get_tool_definitions()
         self.sidecar = SidecarExecutor(model_client=self.model_client)
+        from libhippo.agents.harvest_observer import KnowledgeHarvestObserver
+
+        self.harvest_observer = KnowledgeHarvestObserver()
+        self.harvest_sidecar = KnowledgeHarvestSidecar(model_client=self.model_client, store=self.store)
 
         # 7. Resource Discovery & Extensibility
         self.skills: dict[str, SkillDefinition] = {}
@@ -165,39 +184,19 @@ class GeneralAgentHarness:
         """Automatically discover project AGENTS.md, skills, and MCP configurations."""
         self.skills = self.discovery.discover_skills()
 
+    def assemble_system_prompt(self) -> str:
+        """Assemble complete Zone 1 system prompt using template engine."""
+        agents_rules = self.discovery.discover_agents_markdown()
+        return assemble_harness_system_prompt(
+            workspace_root=self.workspace_root,
+            registered_tools=self.registered_tools,
+            agents_rules=agents_rules,
+        )
+
     def init_prefix(self) -> None:
         """Initialize Zone 1 static prefix guaranteed to remain bitwise invariant."""
-        agents_rules = self.discovery.discover_agents_markdown()
-        rule_texts: list[str] = []
-        if "global" in agents_rules:
-            rule_texts.append(f"## Developer Global Guidelines\n{agents_rules['global']}")
-        if "project" in agents_rules:
-            rule_texts.append(f"## Project Repository Guidelines\n{agents_rules['project']}")
-
-        from libhippo.agents.prompts import get_agent_system_prompt
-
-        try:
-            base_persona = get_agent_system_prompt("harness")
-        except Exception:
-            base_persona = (
-                "You are LibHippo's autonomous software engineering agent. "
-                "You write robust code, execute sandboxed terminal commands, "
-                "adhere strictly to repository conventions, and verify code using tests."
-            )
-
-        combined_rules = "\n\n".join(rule_texts)
-        persona = f"{base_persona}\n\n{combined_rules}" if combined_rules else base_persona
-        repo_profile = f"Workspace Root: {self.workspace_root.name}"
-
-        tool_defs = [
-            {"name": t.name, "description": t.description}
-            for t in self.registered_tools.values()
-        ]
-        self.memory.set_zone1_prefix(
-            system_persona=persona,
-            repo_profile=repo_profile,
-            tool_definitions=tool_defs,
-        )
+        system_prompt = self.assemble_system_prompt()
+        self.memory.set_zone1_prefix(system_persona=system_prompt)
 
     def get_tool_schemas(self) -> list[ToolSchema]:
         """Convert registered tools into AutoGen ToolSchema objects."""
@@ -268,6 +267,22 @@ class GeneralAgentHarness:
                 pass
         return final_answer
 
+    def _resolve_git_branch(self) -> str:
+        """Resolve current git branch name, falling back to 'main'."""
+        try:
+            res = subprocess.run(
+                ["git", "branch", "--show-current"],
+                cwd=self.workspace_root,
+                capture_output=True,
+                text=True,
+                timeout=1.0,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                return res.stdout.strip()
+        except Exception:
+            pass
+        return "main"
+
     async def stream(self, user_input: str) -> AsyncIterator[HarnessEvent]:
         """Stream asynchronous execution events for autonomous software engineering."""
         if self.is_running:
@@ -285,10 +300,29 @@ class GeneralAgentHarness:
             start_time = datetime.datetime.now(datetime.timezone.utc)
             self.governor.start_turn()
 
+            is_initial_turn = len(self.memory.zone2_history) == 0
+            branch = self._resolve_git_branch()
+            now = datetime.datetime.now()
+            local_str = now.strftime("%A, %Y-%m-%d %H:%M:%S")
+            tz_offset = now.astimezone().strftime("%z")
+
+            if is_initial_turn:
+                ambient_header = (
+                    f"<session_context>\n"
+                    f"- Current Date & Time: {local_str} (UTC: {start_time.isoformat()}, Timezone: {tz_offset})\n"
+                    f"- Workspace: {self.workspace_root.resolve()} ({self.workspace_root.name})\n"
+                    f"- Active Git Branch: {branch}\n"
+                    f"- User & Platform: {getpass.getuser()} on {platform.system()} ({platform.machine()})\n"
+                    f"</session_context>\n\n"
+                )
+                turn_content = f"{ambient_header}{user_input}"
+            else:
+                turn_content = user_input
+
             u_msg = self.memory.append_user_turn(
-                user_content=user_input,
+                user_content=turn_content,
                 timestamp=start_time.isoformat(),
-                branch="main",
+                branch=branch,
             )
             await self.session.append_message(u_msg)
 
@@ -301,6 +335,8 @@ class GeneralAgentHarness:
             max_tool_iterations = 10
             current_iteration = 0
             out_content = ""
+            turn_cached_tokens = 0
+            turn_prompt_tokens = 0
 
             while current_iteration < max_tool_iterations:
                 if self._interrupt_event.is_set():
@@ -320,6 +356,9 @@ class GeneralAgentHarness:
                         tools=tool_schemas,
                         extra_create_args=extra_args,
                     )
+                    if hasattr(res, "usage") and res.usage:
+                        turn_prompt_tokens += getattr(res.usage, "prompt_tokens", 0) or 0
+                        turn_cached_tokens += int(getattr(res, "cached_tokens", 0) or getattr(res.usage, "cached_tokens", 0) or 0)
                 except asyncio.CancelledError:
                     out_content = "[Generation cancelled by user interrupt]"
                     yield TokenChunkEvent(delta=f"\n{out_content}\n")
@@ -441,11 +480,14 @@ class GeneralAgentHarness:
             await self.post_task_maintenance()
 
             elapsed = (datetime.datetime.now(datetime.timezone.utc) - start_time).total_seconds()
+            hit_rate = (turn_cached_tokens / turn_prompt_tokens) if turn_prompt_tokens > 0 else 0.0
             yield TurnCompletedEvent(
                 turn_index=self.governor.current_turns,
                 total_tokens=self.memory.get_total_tokens(),
                 duration_seconds=elapsed,
                 response=out_content,
+                cached_tokens=turn_cached_tokens,
+                cache_hit_rate=round(hit_rate, 4),
             )
         finally:
             self.is_running = False
@@ -503,7 +545,42 @@ class GeneralAgentHarness:
         return self.memory.compact_zone3(self.config.compaction_target_tokens)
 
     async def post_task_maintenance(self) -> None:
-        """Execute background maintenance (e.g. vector compaction)."""
+        """Execute background maintenance (knowledge harvesting and vector compaction)."""
+        # 1. Harvest explicit learnings queued during the turn
+        if hasattr(self.tools, "harvest_queue") and self.tools.harvest_queue:
+            while self.tools.harvest_queue:
+                item = self.tools.harvest_queue.pop(0)
+                try:
+                    await self.harvest_sidecar.harvest_from_context(
+                        parent_memory=self.memory,
+                        scope=item.get("scope", "project"),
+                        nature="critical_rule",
+                        topic_hint=item.get("topic"),
+                    )
+                except Exception:
+                    pass
+
+        # 2. Autonomous harvest observation via TypeSafe Jev
+        try:
+            recent_turns = self.memory.get_linear_history()[-4:]
+            if recent_turns:
+                turn_summary = "\n".join(f"{m.role}: {m.content[:200]}" for m in recent_turns)
+                state = {
+                    "workspace": self.workspace_root.name,
+                    "turn_summary": turn_summary,
+                }
+                evaluation = await self.harvest_observer.evaluate(state)
+                if evaluation.should_harvest:
+                    await self.harvest_sidecar.harvest_from_context(
+                        parent_memory=self.memory,
+                        scope=evaluation.target_scope,
+                        nature=evaluation.knowledge_nature,
+                        topic_hint=evaluation.topic_hint or None,
+                    )
+        except Exception:
+            pass
+
+        # 3. Store maintenance (vector compaction)
         if self.store is not None:
             if hasattr(self.store, "post_task_maintenance"):
                 await self.store.post_task_maintenance()

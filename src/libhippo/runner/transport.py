@@ -185,21 +185,46 @@ class OpenAIResponsesClient(ChatCompletionClient):
         thought = "\n".join(thought_parts) if thought_parts else None
         finish_reason = "function_calls" if tool_calls else "stop"
 
-        p_tokens = getattr(response.usage, "input_tokens", 0) if hasattr(response, "usage") and response.usage else 0
-        c_tokens = getattr(response.usage, "output_tokens", 0) if hasattr(response, "usage") and response.usage else 0
+        resp_usage = getattr(response, "usage", None)
+        p_tokens = getattr(resp_usage, "input_tokens", None)
+        if p_tokens is None:
+            p_tokens = getattr(resp_usage, "prompt_tokens", 0) or 0
+        c_tokens = getattr(resp_usage, "output_tokens", None)
+        if c_tokens is None:
+            c_tokens = getattr(resp_usage, "completion_tokens", 0) or 0
+
+        input_details = getattr(resp_usage, "input_tokens_details", None) or getattr(resp_usage, "prompt_tokens_details", None)
+        cached_tokens = int(getattr(input_details, "cached_tokens", 0) or 0)
+        cache_write_tokens = int(getattr(input_details, "cache_write_tokens", 0) or 0)
+
+        output_details = getattr(resp_usage, "output_tokens_details", None) or getattr(resp_usage, "completion_tokens_details", None)
+        reasoning_tokens = int(getattr(output_details, "reasoning_tokens", 0) or 0)
+
         usage = RequestUsage(prompt_tokens=p_tokens, completion_tokens=c_tokens)
+        setattr(usage, "cached_tokens", cached_tokens)
+        setattr(usage, "cache_write_tokens", cache_write_tokens)
+        setattr(usage, "reasoning_tokens", reasoning_tokens)
 
         self._actual_usage = usage
+        prev_cached = getattr(self._total_usage, "cached_tokens", 0)
+        prev_cache_write = getattr(self._total_usage, "cache_write_tokens", 0)
+        prev_reasoning = getattr(self._total_usage, "reasoning_tokens", 0)
+
         self._total_usage = RequestUsage(
             prompt_tokens=self._total_usage.prompt_tokens + p_tokens,
             completion_tokens=self._total_usage.completion_tokens + c_tokens,
         )
+        setattr(self._total_usage, "cached_tokens", prev_cached + cached_tokens)
+        setattr(self._total_usage, "cache_write_tokens", prev_cache_write + cache_write_tokens)
+        setattr(self._total_usage, "reasoning_tokens", prev_reasoning + reasoning_tokens)
+
+        is_cached = cached_tokens > 0 or getattr(response, "prompt_cache_diagnostics", None) is not None
 
         return CreateResult(
             finish_reason=finish_reason,
             content=final_content,
             usage=usage,
-            cached=getattr(response, "prompt_cache_diagnostics", None) is not None,
+            cached=is_cached,
             thought=thought,
         )
 

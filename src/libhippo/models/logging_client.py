@@ -199,12 +199,41 @@ def _log_response(
     finish_reason = getattr(result, "finish_reason", "stop")
 
     meta_parts = [f"Model: {model_name}", f"Finish: {finish_reason}"]
+    p_tokens = 0
+    c_tokens = 0
     if hasattr(result, "usage") and result.usage:
-        p_tokens = getattr(result.usage, "prompt_tokens", 0)
-        c_tokens = getattr(result.usage, "completion_tokens", 0)
+        p_tokens = getattr(result.usage, "prompt_tokens", 0) or 0
+        c_tokens = getattr(result.usage, "completion_tokens", 0) or 0
         meta_parts.append(f"Usage: prompt={p_tokens}, completion={c_tokens}")
-    if getattr(result, "cached", False):
-        meta_parts.append("Cached: True")
+
+    cached_tokens = int(
+        getattr(result, "cached_tokens", None)
+        or (getattr(result.usage, "cached_tokens", None) if hasattr(result, "usage") and result.usage else None)
+        or 0
+    )
+    cache_write_tokens = int(
+        getattr(result, "cache_write_tokens", None)
+        or (getattr(result.usage, "cache_write_tokens", None) if hasattr(result, "usage") and result.usage else None)
+        or 0
+    )
+    reasoning_tokens = int(
+        getattr(result, "reasoning_tokens", None)
+        or (getattr(result.usage, "reasoning_tokens", None) if hasattr(result, "usage") and result.usage else None)
+        or 0
+    )
+
+    if cached_tokens > 0:
+        pct = (cached_tokens / p_tokens * 100) if p_tokens > 0 else 100.0
+        meta_parts.append(f"Cache: HIT ({cached_tokens}/{p_tokens}, {pct:.1f}%)")
+    elif cache_write_tokens > 0:
+        meta_parts.append(f"Cache: WRITE ({cache_write_tokens} tokens)")
+    elif getattr(result, "cached", False):
+        meta_parts.append("Cache: HIT")
+    else:
+        meta_parts.append("Cache: MISS")
+
+    if reasoning_tokens > 0:
+        meta_parts.append(f"Reasoning: {reasoning_tokens} tokens")
 
     lines: list[str] = [
         f"{'=' * 38} [OpenAI Response{stream_tag}] {'=' * 37}",
