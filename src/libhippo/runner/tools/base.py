@@ -33,6 +33,13 @@ class BaseToolSuite:
 
     def resolve_path(self, path: str | Path | None) -> Path:
         """Resolve and validate a path inside workspace root or scratch directory."""
+        p_str = str(path or "").strip()
+        ws_name = self.workspace_root.name
+        if p_str.startswith(f"{ws_name}/"):
+            candidate = self.workspace_root / p_str[len(ws_name) + 1:]
+            if candidate.exists() and not (self.workspace_root / p_str).exists():
+                return self.sandbox.validate_path(candidate)
+
         target = self.workspace_root / (path or "")
         return self.sandbox.validate_path(target)
 

@@ -1,5 +1,5 @@
-import React, { useState, useRef, useEffect, KeyboardEvent } from "react";
-import { Send, Square, CornerDownLeft, Sparkles, Compass, FileText, Terminal } from "lucide-react";
+import React, { useState, useRef, KeyboardEvent } from "react";
+import { Send, Square, Sparkles, Compass, FileText, Terminal } from "lucide-react";
 import { useAutocomplete } from "../../hooks/useAutocomplete";
 import { CommandItem, FileItem } from "../../types/api";
 
@@ -19,7 +19,6 @@ export const InputBar: React.FC<InputBarProps> = ({
   onOpenSidecar,
 }) => {
   const [text, setText] = useState("");
-  const [steerText, setSteerText] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const autocomplete = useAutocomplete();
@@ -65,7 +64,7 @@ export const InputBar: React.FC<InputBarProps> = ({
 
   const handleSubmit = () => {
     const trimmed = text.trim();
-    if (!trimmed || isStreaming) return;
+    if (!trimmed) return;
 
     // Check for frontend slash commands
     if (trimmed.startsWith("/btw ")) {
@@ -77,16 +76,13 @@ export const InputBar: React.FC<InputBarProps> = ({
       return;
     }
 
-    onSend(trimmed);
+    if (isStreaming) {
+      onSteer(trimmed);
+    } else {
+      onSend(trimmed);
+    }
     setText("");
     autocomplete.close();
-  };
-
-  const handleSteerSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!steerText.trim()) return;
-    onSteer(steerText.trim());
-    setSteerText("");
   };
 
   return (
@@ -142,26 +138,6 @@ export const InputBar: React.FC<InputBarProps> = ({
         </div>
       )}
 
-      {/* Steer Bar (Shown during active streaming) */}
-      {isStreaming && (
-        <form onSubmit={handleSteerSubmit} className="mb-2 flex items-center gap-2 bg-slate-900/90 p-1.5 rounded border border-amber-500/30">
-          <span className="text-[11px] font-mono text-amber-400 font-semibold px-2">Mid-Turn Steer:</span>
-          <input
-            type="text"
-            placeholder="Type guidance to redirect in-flight generation (response.steer)..."
-            value={steerText}
-            onChange={(e) => setSteerText(e.target.value)}
-            className="flex-1 bg-transparent text-slate-200 placeholder:text-slate-500 text-xs outline-none"
-          />
-          <button
-            type="submit"
-            className="px-2.5 py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-[11px] font-mono font-semibold transition"
-          >
-            Steer
-          </button>
-        </form>
-      )}
-
       {/* Primary Input Container */}
       <div className="flex items-end gap-2 bg-slate-950 border border-slate-800 focus-within:border-sky-500/60 rounded-lg p-2 transition">
         <textarea
@@ -170,7 +146,11 @@ export const InputBar: React.FC<InputBarProps> = ({
           value={text}
           onChange={handleTextChange}
           onKeyDown={handleKeyDown}
-          placeholder="Ask LibHippo anything... (Type '/' for commands/skills, '@' to mention files)"
+          placeholder={
+            isStreaming
+              ? "Agent is running... Type to interrupt execution."
+              : "Ask LibHippo anything... (Type '/' for commands/skills, '@' to mention files)"
+          }
           className="flex-1 bg-transparent text-slate-100 placeholder:text-slate-500 text-xs font-sans outline-none resize-none leading-relaxed"
         />
 
@@ -183,7 +163,7 @@ export const InputBar: React.FC<InputBarProps> = ({
             <Compass className="w-4 h-4" />
           </button>
 
-          {isStreaming ? (
+          {isStreaming && (
             <button
               onClick={onInterrupt}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-rose-600 hover:bg-rose-500 text-white font-medium transition shadow-sm animate-pulse"
@@ -192,17 +172,21 @@ export const InputBar: React.FC<InputBarProps> = ({
               <Square className="w-3.5 h-3.5 fill-current" />
               <span>Stop</span>
             </button>
-          ) : (
-            <button
-              onClick={handleSubmit}
-              disabled={!text.trim()}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-sky-600 hover:bg-sky-500 disabled:opacity-40 disabled:hover:bg-sky-600 text-white font-medium transition shadow-sm"
-              title="Submit prompt (Enter)"
-            >
-              <Send className="w-3.5 h-3.5" />
-              <span>Send</span>
-            </button>
           )}
+
+          <button
+            onClick={handleSubmit}
+            disabled={!text.trim()}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded font-medium transition shadow-sm ${
+              isStreaming
+                ? "bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white"
+                : "bg-sky-600 hover:bg-sky-500 disabled:opacity-40 disabled:hover:bg-sky-600 text-white"
+            }`}
+            title={isStreaming ? "Send message to steer running agent" : "Submit prompt (Enter)"}
+          >
+            <Send className="w-3.5 h-3.5" />
+            <span>{isStreaming ? "Steer" : "Send"}</span>
+          </button>
         </div>
       </div>
     </div>

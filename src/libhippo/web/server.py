@@ -86,7 +86,7 @@ def create_app(
                 "type": "connection_established",
                 "project_id": harness.project_manager.project_id,
                 "conversation_id": harness.session.conversation_id,
-                "current_phase": harness.current_phase,
+                "is_running": harness.is_running,
                 "total_tokens": harness.memory.get_total_tokens(),
             }
             await ws.send_json(init_state)
@@ -103,11 +103,22 @@ def create_app(
 
                     if msg_type == "prompt":
                         content = payload.get("content", "")
-                        # Stream turn events to client
-                        async for event in harness.stream(content):
-                            event_dict = asdict(event) if is_dataclass(event) else event
+                        if getattr(harness, "is_running", False):
+                            result = await harness.steer(content)
+                            res_clean: Any = str(result)
+                            if isinstance(result, dict):
+                                res_clean = {
+                                    k: v if isinstance(v, (str, int, float, bool, list, dict, type(None))) else str(v)
+                                    for k, v in result.items()
+                                }
                             if not ws.closed:
-                                await ws.send_json(event_dict)
+                                await ws.send_json({"type": "steer_result", "guidance": content, "result": res_clean})
+                        else:
+                            # Stream turn events to client
+                            async for event in harness.stream(content):
+                                event_dict = asdict(event) if is_dataclass(event) else event
+                                if not ws.closed:
+                                    await ws.send_json(event_dict)
 
                     elif msg_type == "steer":
                         guidance = payload.get("guidance", "")

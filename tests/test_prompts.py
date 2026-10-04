@@ -5,6 +5,7 @@ import pytest
 from libhippo.agents.prompts import (
     BOOK_KEEPER_SYSTEM_PROMPT,
     CURATOR_SYSTEM_PROMPT,
+    HARNESS_SYSTEM_PROMPT,
     TASK_SOLVER_SYSTEM_PROMPT,
     VERIFIER_SYSTEM_PROMPT,
     get_agent_system_prompt,
@@ -12,12 +13,13 @@ from libhippo.agents.prompts import (
 
 
 def test_agent_system_prompts_exist():
-    """Verify all 4 core agent system prompts are populated and structured."""
+    """Verify all 5 core agent system prompts are populated and structured."""
     for prompt in [
         BOOK_KEEPER_SYSTEM_PROMPT,
         CURATOR_SYSTEM_PROMPT,
         VERIFIER_SYSTEM_PROMPT,
         TASK_SOLVER_SYSTEM_PROMPT,
+        HARNESS_SYSTEM_PROMPT,
     ]:
         assert isinstance(prompt, str)
         assert len(prompt) > 200
@@ -34,6 +36,7 @@ def test_get_agent_system_prompt_lookup():
     assert get_agent_system_prompt("VerifierAgent") == VERIFIER_SYSTEM_PROMPT
     assert get_agent_system_prompt("task_solver") == TASK_SOLVER_SYSTEM_PROMPT
     assert get_agent_system_prompt("TaskSolverAgent") == TASK_SOLVER_SYSTEM_PROMPT
+    assert get_agent_system_prompt("harness") == HARNESS_SYSTEM_PROMPT
 
     with pytest.raises(ValueError, match="Unknown agent role 'invalid_agent'"):
         get_agent_system_prompt("invalid_agent")

@@ -138,6 +138,21 @@ async def test_pure_python_search_file_with_gitignore(tmp_path: Path):
     res_all = await suite.search_file("Hello", no_ignore=True)
     assert "node_modules/index.js" in res_all
 
+    # Explicit search inside ignored dir should work!
+    res_in_ignored = await suite.search_file("Hello", path="node_modules")
+    assert "node_modules/index.js:1:// Hello node_modules" in res_in_ignored
+
+    # list_dir root label is ./ and ignored dirs show (ignored)
+    ld_root = await suite.list_dir()
+    assert ld_root.startswith("./\n")
+    assert "node_modules/ (ignored)" in ld_root
+    assert "node_modules/index.js" not in ld_root
+
+    # list_dir targeting ignored dir lists its contents
+    ld_ignored = await suite.list_dir(path="node_modules")
+    assert "node_modules/" in ld_ignored
+    assert "index.js" in ld_ignored
+
 
 @pytest.mark.asyncio
 async def test_modify_knowledge_tool(tmp_path: Path):

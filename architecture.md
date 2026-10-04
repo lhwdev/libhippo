@@ -48,7 +48,7 @@ Provides an execution runtime for autonomous software engineering tasks.
   - **Filesystem**: `read_file` (windowed, max 800 lines), `write_file` (targeted line/string replace), `overwrite_file`, `delete_file`.
   - **Code Exploration**: Pure Python `search_file` (hierarchical `.gitignore` parsing) and `list_dir`.
   - **Terminal & Tasks**: Sandboxed `run_command` and background `manage_task` execution.
-  - **Subagents**: `invoke_subagent` and `manage_subagents` for isolated or inheriting parallel tasks.
+  - **Subagents**: `invoke_subagent`, `shorten_tool_output`, and `manage_subagents` for parallel delegation and LLM-driven output shortening.
   - **User Interaction**: Interactive `ask_question` modal and ambient `get_status`.
 
 - **Targeted Transport Architecture (`libhippo.runner.transport`)**:

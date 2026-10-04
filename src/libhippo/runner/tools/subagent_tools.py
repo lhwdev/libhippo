@@ -71,6 +71,52 @@ class SubagentTools(BaseToolSuite):
         res = await self.subagent_manager.send_message(recipient, message)
         return {"status": "sent", "recipient": recipient, "response": res}
 
+    async def shorten_tool_output(
+        self,
+        instruction: str,
+        tool_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Fork a subagent with inherited context to carry out instruction on previous tool output and shorten it."""
+        if not self.subagent_manager:
+            raise ToolExecutionError("Subagent manager is not initialized.")
+
+        mem = getattr(self, "memory", None) or getattr(self.subagent_manager, "memory", None)
+        if not mem:
+            raise ToolExecutionError("Context memory is not available for output shortening.")
+
+        target_msg = mem.get_last_tool_output(tool_name)
+        if not target_msg:
+            raise ToolExecutionError(f"No previous tool output found to shorten (tool_name={tool_name}).")
+
+        await self.check_approval_if_needed(
+            "shorten_tool_output",
+            {"instruction": instruction, "tool_name": tool_name or target_msg.metadata.get("tool_name")},
+        )
+
+        sub_result = await self.subagent_manager.execute_task(
+            instruction=instruction,
+            role=f"Output Delegator for {target_msg.metadata.get('tool_name', 'tool')}",
+            parent_memory=mem,
+        )
+
+        compact_text = (
+            f"[Tool output shortened via subagent]\n"
+            f"Directive: {instruction}\n"
+            f"Result:\n{sub_result}"
+        )
+        mem.replace_tool_output(
+            new_content=compact_text,
+            tool_name=target_msg.metadata.get("tool_name"),
+            tool_call_id=target_msg.tool_call_id,
+        )
+
+        return {
+            "status": "shortened",
+            "instruction": instruction,
+            "tool_name": target_msg.metadata.get("tool_name"),
+            "result": sub_result,
+        }
+
     def get_tool_definitions(self) -> dict[str, ToolDefinition]:
         """Return ToolDefinition schemas for subagents."""
         return {
@@ -115,5 +161,24 @@ class SubagentTools(BaseToolSuite):
                     "required": ["recipient", "message"],
                 },
                 handler=self.send_message,
+            ),
+            "shorten_tool_output": ToolDefinition(
+                name="shorten_tool_output",
+                description="Fork a subagent to carry out an instruction on a large/verbose tool output (e.g. summarize, diagnose, or extract) and replace the bulky output in main context with the concise result.",
+                parameters_schema={
+                    "type": "object",
+                    "properties": {
+                        "instruction": {
+                            "type": "string",
+                            "description": "Specific directive for the subagent (e.g. 'Summarize failing tests', 'Diagnose type error and fix')",
+                        },
+                        "tool_name": {
+                            "type": "string",
+                            "description": "Optional name of the tool output to shorten (defaults to the most recent tool output)",
+                        },
+                    },
+                    "required": ["instruction"],
+                },
+                handler=self.shorten_tool_output,
             ),
         }

@@ -41,13 +41,6 @@ class TerminalTools(BaseToolSuite):
             is_daemon=is_daemon,
         )
 
-        # Apply output triage if command returned synchronously
-        if result.get("status") == "completed":
-            raw_out = result.get("output", "")
-            triage = OutputTriage.classify_output(command_line, raw_out)
-            result["triage"] = triage
-            result["output"] = triage["summary"]
-
         return result
 
     async def manage_task(

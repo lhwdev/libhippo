@@ -40,7 +40,7 @@ def get_agent_system_prompt(role: str) -> str:
     }
     role_key = aliases.get(clean, clean)
 
-    valid_roles = {"book_keeper", "curator", "verifier", "task_solver"}
+    valid_roles = {"book_keeper", "curator", "verifier", "task_solver", "harness"}
     if role_key not in valid_roles:
         raise ValueError(f"Unknown agent role '{role}'. Available: {sorted(valid_roles)}")
     return load_prompt_file(role_key)
@@ -57,4 +57,6 @@ def __getattr__(name: str) -> str:
         return load_prompt_file("verifier")
     if name == "TASK_SOLVER_SYSTEM_PROMPT":
         return load_prompt_file("task_solver")
+    if name == "HARNESS_SYSTEM_PROMPT":
+        return load_prompt_file("harness")
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

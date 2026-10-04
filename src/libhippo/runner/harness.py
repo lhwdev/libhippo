@@ -63,7 +63,7 @@ class GeneralAgentHarness:
     ) -> None:
         self.config = config or HarnessConfig()
         self.workspace_root = self.config.workspace_root.resolve()
-        self.current_phase: str = "alignment"
+        self.is_running: bool = False
         self._interrupt_event = asyncio.Event()
         self._is_paused: bool = False
         self._current_gen_task: asyncio.Task[Any] | None = None
@@ -146,11 +146,12 @@ class GeneralAgentHarness:
             store=self.store,
             dispatcher=self.dispatcher,
         )
-        self.registered_tools = self.tools.get_tool_definitions()
-
         # 6. Subagents & Sidecars
         self.subagents = SubagentManager(model_client=self.model_client, session=self.session)
+        self.subagents.memory = self.memory
         self.tools.subagent_manager = self.subagents
+        self.tools.memory = self.memory
+        self.registered_tools = self.tools.get_tool_definitions()
         self.sidecar = SidecarExecutor(model_client=self.model_client)
 
         # 7. Resource Discovery & Extensibility
@@ -173,14 +174,19 @@ class GeneralAgentHarness:
         if "project" in agents_rules:
             rule_texts.append(f"## Project Repository Guidelines\n{agents_rules['project']}")
 
-        combined_rules = "\n\n".join(rule_texts) if rule_texts else "Follow clean code and test-driven standards."
+        from libhippo.agents.prompts import get_agent_system_prompt
 
-        persona = (
-            "You are LibHippo's autonomous software engineering agent. "
-            "You write robust code, execute sandboxed terminal commands, "
-            "adhere strictly to repository conventions, and verify code using tests.\n\n"
-            f"{combined_rules}"
-        )
+        try:
+            base_persona = get_agent_system_prompt("harness")
+        except Exception:
+            base_persona = (
+                "You are LibHippo's autonomous software engineering agent. "
+                "You write robust code, execute sandboxed terminal commands, "
+                "adhere strictly to repository conventions, and verify code using tests."
+            )
+
+        combined_rules = "\n\n".join(rule_texts)
+        persona = f"{base_persona}\n\n{combined_rules}" if combined_rules else base_persona
         repo_profile = f"Workspace Root: {self.workspace_root.name}"
 
         tool_defs = [
@@ -249,10 +255,8 @@ class GeneralAgentHarness:
         return llm_messages
 
     def transition_phase(self, new_phase: str) -> PhaseTransitionEvent:
-        """Transition lifecycle state machine."""
-        old_phase = self.current_phase
-        self.current_phase = new_phase
-        return PhaseTransitionEvent(from_phase=old_phase, to_phase=new_phase)
+        """Legacy helper for backwards compatibility."""
+        return PhaseTransitionEvent(from_phase="idle", to_phase=new_phase)
 
     async def step(self, user_input: str) -> str:
         """Execute one conversational round collecting all streamed events."""
@@ -265,185 +269,186 @@ class GeneralAgentHarness:
         return final_answer
 
     async def stream(self, user_input: str) -> AsyncIterator[HarnessEvent]:
-        """Stream asynchronous execution events through the 5-phase harness."""
-        if self._interrupt_event.is_set():
-            self._interrupt_event.clear()
-            self._is_paused = False
+        """Stream asynchronous execution events for autonomous software engineering."""
+        if self.is_running:
+            # If already running, treat incoming turn as mid-turn steering
+            await self.steer(user_input)
+            yield TokenChunkEvent(delta=f"\n[Steered: {user_input}]\n")
+            return
 
-        start_time = datetime.datetime.now(datetime.timezone.utc)
-        self.governor.start_turn()
-
-        # Phase 1: Alignment & User Turn Injection
-        yield self.transition_phase("alignment")
-        u_msg = self.memory.append_user_turn(
-            user_content=user_input,
-            timestamp=start_time.isoformat(),
-            branch="main",
-        )
-        await self.session.append_message(u_msg)
-
-        # Evaluate Context Budgeting & Compaction
-        compaction_res = self.governor.check_context_and_compact()
-        if compaction_res["status"] == "compacted":
-            yield TokenChunkEvent(delta=f"\n[Context compacted: {compaction_res['evicted_tokens']} tokens reclaimed]\n")
-
-        # Phase 2: Planning & Execution
-        yield self.transition_phase("planning")
-        yield self.transition_phase("implementation")
-
-        tool_schemas = self.get_tool_schemas()
-        max_tool_iterations = 10
-        current_iteration = 0
-        out_content = ""
-
-        while current_iteration < max_tool_iterations:
+        self.is_running = True
+        try:
             if self._interrupt_event.is_set():
-                out_content = "[Execution interrupted by user]"
-                yield TokenChunkEvent(delta=f"\n{out_content}\n")
-                break
+                self._interrupt_event.clear()
+                self._is_paused = False
 
-            current_iteration += 1
-            llm_messages = self._build_llm_messages()
+            start_time = datetime.datetime.now(datetime.timezone.utc)
+            self.governor.start_turn()
 
-            extra_args: dict[str, Any] = {}
+            u_msg = self.memory.append_user_turn(
+                user_content=user_input,
+                timestamp=start_time.isoformat(),
+                branch="main",
+            )
+            await self.session.append_message(u_msg)
 
-            self._current_gen_task = asyncio.current_task()
-            try:
-                res = await self.model_client.create(
-                    messages=llm_messages,
-                    tools=tool_schemas,
-                    extra_create_args=extra_args,
-                )
-            except asyncio.CancelledError:
-                out_content = "[Generation cancelled by user interrupt]"
-                yield TokenChunkEvent(delta=f"\n{out_content}\n")
-                break
-            except Exception as e:
-                err_str = str(e)
-                if "reasoning_effort" in err_str and "set reasoning_effort to 'none'" in err_str:
-                    extra_args["reasoning_effort"] = "none"
-                    try:
-                        res = await self.model_client.create(
-                            messages=llm_messages,
-                            tools=tool_schemas,
-                            extra_create_args=extra_args,
-                        )
-                    except Exception as retry_err:
-                        out_content = f"Execution error: {retry_err}"
-                        yield TokenChunkEvent(delta=f"\n{out_content}\n")
-                        break
-                else:
-                    out_content = f"Execution error: {e}"
+            # Evaluate Context Budgeting & Compaction
+            compaction_res = self.governor.check_context_and_compact()
+            if compaction_res["status"] == "compacted":
+                yield TokenChunkEvent(delta=f"\n[Context compacted: {compaction_res['evicted_tokens']} tokens reclaimed]\n")
+
+            tool_schemas = self.get_tool_schemas()
+            max_tool_iterations = 10
+            current_iteration = 0
+            out_content = ""
+
+            while current_iteration < max_tool_iterations:
+                if self._interrupt_event.is_set():
+                    out_content = "[Execution interrupted by user]"
                     yield TokenChunkEvent(delta=f"\n{out_content}\n")
                     break
-            finally:
-                self._current_gen_task = None
 
-            tool_calls = None
-            if isinstance(res.content, list) and len(res.content) > 0 and all(hasattr(c, "name") for c in res.content):
-                tool_calls = res.content
-            elif hasattr(res, "tool_calls") and getattr(res, "tool_calls"):
-                tool_calls = getattr(res, "tool_calls")
+                current_iteration += 1
+                llm_messages = self._build_llm_messages()
 
-            if tool_calls:
-                tool_calls_meta = [
-                    {
-                        "id": getattr(call, "id", None) or f"call_{uuid.uuid4().hex[:8]}",
-                        "name": getattr(call, "name", ""),
-                        "arguments": getattr(call, "arguments", "{}"),
-                    }
-                    for call in tool_calls
-                ]
-                as_summary = f"[Tool calls: {', '.join(tc['name'] for tc in tool_calls_meta)}]"
-                as_msg = self.memory.append_assistant_turn(
-                    content=as_summary,
-                    tool_calls=tool_calls_meta,
-                    thought=getattr(res, "thought", None),
-                )
-                await self.session.append_message(as_msg)
+                extra_args: dict[str, Any] = {}
 
-                for tc in tool_calls_meta:
-                    call_id = tc["id"]
-                    tool_name = tc["name"]
-                    raw_args = tc["arguments"]
-                    try:
-                        args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-                        if not isinstance(args, dict):
+                self._current_gen_task = asyncio.current_task()
+                try:
+                    res = await self.model_client.create(
+                        messages=llm_messages,
+                        tools=tool_schemas,
+                        extra_create_args=extra_args,
+                    )
+                except asyncio.CancelledError:
+                    out_content = "[Generation cancelled by user interrupt]"
+                    yield TokenChunkEvent(delta=f"\n{out_content}\n")
+                    break
+                except Exception as e:
+                    err_str = str(e)
+                    if "reasoning_effort" in err_str and "set reasoning_effort to 'none'" in err_str:
+                        extra_args["reasoning_effort"] = "none"
+                        try:
+                            res = await self.model_client.create(
+                                messages=llm_messages,
+                                tools=tool_schemas,
+                                extra_create_args=extra_args,
+                            )
+                        except Exception as retry_err:
+                            out_content = f"Execution error: {retry_err}"
+                            yield TokenChunkEvent(delta=f"\n{out_content}\n")
+                            break
+                    else:
+                        out_content = f"Execution error: {e}"
+                        yield TokenChunkEvent(delta=f"\n{out_content}\n")
+                        break
+                finally:
+                    self._current_gen_task = None
+
+                tool_calls = None
+                if isinstance(res.content, list) and len(res.content) > 0 and all(hasattr(c, "name") for c in res.content):
+                    tool_calls = res.content
+                elif hasattr(res, "tool_calls") and getattr(res, "tool_calls"):
+                    tool_calls = getattr(res, "tool_calls")
+
+                if tool_calls:
+                    tool_calls_meta = [
+                        {
+                            "id": getattr(call, "id", None) or f"call_{uuid.uuid4().hex[:8]}",
+                            "name": getattr(call, "name", ""),
+                            "arguments": getattr(call, "arguments", "{}"),
+                        }
+                        for call in tool_calls
+                    ]
+                    as_summary = f"[Tool calls: {', '.join(tc['name'] for tc in tool_calls_meta)}]"
+                    as_msg = self.memory.append_assistant_turn(
+                        content=as_summary,
+                        tool_calls=tool_calls_meta,
+                        thought=getattr(res, "thought", None),
+                    )
+                    await self.session.append_message(as_msg)
+
+                    for tc in tool_calls_meta:
+                        call_id = tc["id"]
+                        tool_name = tc["name"]
+                        raw_args = tc["arguments"]
+                        try:
+                            args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                            if not isinstance(args, dict):
+                                args = {}
+                        except Exception:
                             args = {}
-                    except Exception:
-                        args = {}
 
-                    yield ToolCallStartEvent(tool_call_id=call_id, name=tool_name, arguments=args)
+                        yield ToolCallStartEvent(tool_call_id=call_id, name=tool_name, arguments=args)
 
-                    tool_def = self.registered_tools.get(tool_name)
-                    if tool_def is None:
-                        err_msg = f"Unknown tool: '{tool_name}'."
-                        yield ToolCallResultEvent(tool_call_id=call_id, name=tool_name, result=None, error=err_msg)
-                        t_msg = self.memory.append_tool_output(
-                            tool_name=tool_name,
-                            content=err_msg,
-                            tool_call_id=call_id,
-                            is_evictable=True,
-                            is_error=True,
-                        )
-                        await self.session.append_message(t_msg)
-                        continue
+                        tool_def = self.registered_tools.get(tool_name)
+                        if tool_def is None:
+                            err_msg = f"Unknown tool: '{tool_name}'."
+                            yield ToolCallResultEvent(tool_call_id=call_id, name=tool_name, result=None, error=err_msg)
+                            t_msg = self.memory.append_tool_output(
+                                tool_name=tool_name,
+                                content=err_msg,
+                                tool_call_id=call_id,
+                                is_evictable=True,
+                                is_error=True,
+                            )
+                            await self.session.append_message(t_msg)
+                            continue
 
-                    try:
-                        result = await tool_def.handler(**args)
-                        yield ToolCallResultEvent(tool_call_id=call_id, name=tool_name, result=result, error=None)
-                        result_str = str(result) if not isinstance(result, str) else result
-                        t_msg = self.memory.append_tool_output(
-                            tool_name=tool_name,
-                            content=result_str,
-                            tool_call_id=call_id,
-                            is_evictable=True,
-                            is_error=False,
-                        )
-                        await self.session.append_message(t_msg)
-                    except Exception as exc:
-                        err_msg = f"Tool execution failed: {exc}"
-                        yield ToolCallResultEvent(tool_call_id=call_id, name=tool_name, result=None, error=err_msg)
-                        t_msg = self.memory.append_tool_output(
-                            tool_name=tool_name,
-                            content=err_msg,
-                            tool_call_id=call_id,
-                            is_evictable=True,
-                            is_error=True,
-                        )
-                        await self.session.append_message(t_msg)
+                        try:
+                            result = await tool_def.handler(**args)
+                            yield ToolCallResultEvent(tool_call_id=call_id, name=tool_name, result=result, error=None)
+                            result_str = str(result) if not isinstance(result, str) else result
+                            t_msg = self.memory.append_tool_output(
+                                tool_name=tool_name,
+                                content=result_str,
+                                tool_call_id=call_id,
+                                is_evictable=True,
+                                is_error=False,
+                            )
+                            await self.session.append_message(t_msg)
+                        except Exception as exc:
+                            err_msg = f"Tool execution failed: {exc}"
+                            yield ToolCallResultEvent(tool_call_id=call_id, name=tool_name, result=None, error=err_msg)
+                            t_msg = self.memory.append_tool_output(
+                                tool_name=tool_name,
+                                content=err_msg,
+                                tool_call_id=call_id,
+                                is_evictable=True,
+                                is_error=True,
+                            )
+                            await self.session.append_message(t_msg)
 
-                compaction_res = self.governor.check_context_and_compact()
-                if compaction_res["status"] == "compacted":
-                    yield TokenChunkEvent(delta=f"\n[Context compacted: {compaction_res['evicted_tokens']} tokens reclaimed]\n")
+                    compaction_res = self.governor.check_context_and_compact()
+                    if compaction_res["status"] == "compacted":
+                        yield TokenChunkEvent(delta=f"\n[Context compacted: {compaction_res['evicted_tokens']} tokens reclaimed]\n")
 
-                continue
+                    continue
+                else:
+                    out_content = res.content if isinstance(res.content, str) else str(res.content)
+                    yield TokenChunkEvent(delta=out_content)
+
+                    as_msg = self.memory.append_assistant_turn(out_content)
+                    await self.session.append_message(as_msg)
+                    break
             else:
-                out_content = res.content if isinstance(res.content, str) else str(res.content)
-                yield TokenChunkEvent(delta=out_content)
+                if not out_content:
+                    out_content = "[Maximum tool iterations reached]"
+                    yield TokenChunkEvent(delta=f"\n{out_content}\n")
+                    as_msg = self.memory.append_assistant_turn(out_content)
+                    await self.session.append_message(as_msg)
 
-                as_msg = self.memory.append_assistant_turn(out_content)
-                await self.session.append_message(as_msg)
-                break
-        else:
-            if not out_content:
-                out_content = "[Maximum tool iterations reached]"
-                yield TokenChunkEvent(delta=f"\n{out_content}\n")
-                as_msg = self.memory.append_assistant_turn(out_content)
-                await self.session.append_message(as_msg)
+            await self.post_task_maintenance()
 
-        # Phase 4 & 5: Review & Post-Task Maintenance
-        yield self.transition_phase("review")
-        yield self.transition_phase("maintenance")
-        await self.post_task_maintenance()
-
-        elapsed = (datetime.datetime.now(datetime.timezone.utc) - start_time).total_seconds()
-        yield TurnCompletedEvent(
-            turn_index=self.governor.current_turns,
-            total_tokens=self.memory.get_total_tokens(),
-            duration_seconds=elapsed,
-            response=out_content,
-        )
+            elapsed = (datetime.datetime.now(datetime.timezone.utc) - start_time).total_seconds()
+            yield TurnCompletedEvent(
+                turn_index=self.governor.current_turns,
+                total_tokens=self.memory.get_total_tokens(),
+                duration_seconds=elapsed,
+                response=out_content,
+            )
+        finally:
+            self.is_running = False
 
     run = stream
 

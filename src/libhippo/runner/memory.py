@@ -128,6 +128,38 @@ class ContextMemory:
         self.zone2_history.append(msg)
         return msg
 
+    def get_last_tool_output(self, tool_name: str | None = None) -> ContextMessage | None:
+        """Find the most recent tool output message in Zone 2 history."""
+        for msg in reversed(self.zone2_history):
+            if msg.role == "tool":
+                if tool_name is None or msg.metadata.get("tool_name") == tool_name:
+                    return msg
+        return None
+
+    def replace_tool_output(
+        self,
+        new_content: str,
+        tool_name: str | None = None,
+        tool_call_id: str | None = None,
+    ) -> bool:
+        """Find the matching tool output message in Zone 2 history and replace its content."""
+        for msg in reversed(self.zone2_history):
+            if msg.role == "tool":
+                if tool_call_id and msg.tool_call_id == tool_call_id:
+                    msg.content = new_content
+                    msg.raw_token_count = self.count_tokens(new_content)
+                    return True
+                if tool_name and msg.metadata.get("tool_name") == tool_name:
+                    msg.content = new_content
+                    msg.raw_token_count = self.count_tokens(new_content)
+                    return True
+                if not tool_call_id and not tool_name:
+                    msg.content = new_content
+                    msg.raw_token_count = self.count_tokens(new_content)
+                    return True
+        return False
+
+
     def get_total_tokens(self) -> int:
         """Calculate total tokens currently active across Zone 1 and Zone 2."""
         z1 = sum(m.raw_token_count for m in self.zone1_prefix)

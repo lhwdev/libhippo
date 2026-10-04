@@ -108,7 +108,6 @@ async def test_web_autocomplete_apis(test_harness: GeneralAgentHarness):
         cmd_data = await cmd_resp.json()
         commands = [c["command"] for c in cmd_data["commands"]]
         assert "/btw" in commands
-        assert "/steer" in commands
         assert "/stop" in commands
         assert "/compact" in commands
 
@@ -139,7 +138,7 @@ async def test_web_session_and_knowledge_apis(test_harness: GeneralAgentHarness)
         sess_resp = await client.get("/api/session")
         assert sess_resp.status == 200
         sess_data = await sess_resp.json()
-        assert sess_data["current_phase"] == "alignment"
+        assert sess_data["is_running"] is False
         assert len(sess_data["messages"]) > 0
 
         # 2. Context compaction
@@ -194,7 +193,6 @@ async def test_websocket_event_streaming(test_harness: GeneralAgentHarness):
             except asyncio.TimeoutError:
                 break
 
-        assert any(e.get("type") == "phase_transition" for e in received_events)
         assert any(e.get("type") == "token_chunk" for e in received_events)
         assert any(e.get("type") == "turn_completed" for e in received_events)
 

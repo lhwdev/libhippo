@@ -24,7 +24,7 @@ LibHippo cleanly decouples into two distinct architectural pillars:
    - Token & workload governors with deterministic compaction.
    - Multi-zone prompt-cache memory architecture.
    - Complete toolset: file operations, pure Python code search, sandboxed terminal execution, web fetch/search, subagent delegation, and interactive user clarification.
-   - Phased workflow harness: Task Alignment $\rightarrow$ Planning $\rightarrow$ Implementation $\rightarrow$ Review & Verification $\rightarrow$ Post-Task Maintenance.
+   - Reactive, event-driven execution loop with mid-turn steering, LLM-driven tool output shortening/delegation, and background post-task maintenance.
    - The LibHippo knowledge management system integrates seamlessly into this harness as a first-class pluggable toolset.
 
 ### 1.2 Modular Engine & Client Decoupling (Backend vs. Frontend)
@@ -470,65 +470,42 @@ To prevent repetitive user approval prompts, commands must be structured for det
 
 ---
 
-## 6. Phased Harness Lifecycle & Coordination
+## 6. Reactive Execution Lifecycle & Tool Coordination
 
-The harness coordinates autonomous engineering through five explicit lifecycle phases:
+Rather than imposing a rigid 5-phase sequential state machine on every query, the harness coordinates engineering reactively:
 
 ```mermaid
-stateDiagram-v2
-    [*] --> Phase1_Alignment: User Task Submitted
-    Phase1_Alignment --> Phase2_Planning: Requirements Clear
-    Phase1_Alignment --> Phase1_Alignment: Ambiguity Detected (ask_question)
+flowchart TD
+    UserPrompt([User Prompt or Mid-Turn Steer]) --> LinearAppend[Append to Zone 2 Memory with Temporal Tag]
+    LinearAppend --> GovernorCheck[Evaluate Token Quota & Compact Zone 3 if needed]
+    GovernorCheck --> ModelCreate[Model Generation with Warm KV Cache]
     
-    Phase2_Planning --> Phase3_Implementation: Plan Approved
+    ModelCreate --> ToolCheck{Tool Calls Emitted?}
+    ToolCheck -- Yes --> ToolExec[Execute Tool: read_file / run_command / search_file]
+    ToolExec --> OutputEval{Output Size & Importance}
     
-    state Phase3_Implementation {
-        [*] --> InspectCode
-        InspectCode --> CheckKnowledge: query_knowledge
-        CheckKnowledge --> EditFiles: replace_file_content / write_to_file
-        EditFiles --> RunTests: run_command (sandboxed)
-        RunTests --> InspectCode: Test Failures
-        RunTests --> DoneCoding: Tests Pass
-    }
+    OutputEval -- Normal / High-Signal --> AppendTool[Append Output into Zone 2]
+    OutputEval -- Bulky / Cluttered --> ShortenCall[Agent Calls shorten_tool_output]
+    ShortenCall --> SubFork[Fork Subagent with Inherited Context]
+    SubFork --> SubResolve[Subagent executes directive -> Returns result]
+    SubResolve --> SwapContext[Replace bulky output in Zone 2 with subagent result]
     
-    Phase3_Implementation --> Phase4_Review: Submit Solution
+    SwapContext --> ModelCreate
+    AppendTool --> ModelCreate
     
-    state Phase4_Review {
-        [*] --> MakerCheckerAudit
-        MakerCheckerAudit --> ReviseDirective: Issues Found
-        MakerCheckerAudit --> VerificationPass: High Confidence Pass
-    }
-    
-    Phase4_Review --> Phase3_Implementation: Fix Directive (REVISE)
-    Phase4_Review --> Phase5_Maintenance: Verified (APPROVE)
-    
-    Phase5_Maintenance --> [*]: Complete & Return Response
+    ToolCheck -- No: Final Text --> StreamComplete[Stream Final Response]
+    StreamComplete --> PostTask[Post-Task Async Maintenance: Vector Compaction]
 ```
 
-### Phase 1: Task Alignment & Requirement Clarification
-- Inspects repository structure, existing conventions, and issue descriptions.
-- If requirements are underspecified or design trade-offs exist, the harness invokes `ask_question` to align with the developer before generating code.
-
-### Phase 2: Architectural Planning
-- Formulates a step-by-step implementation strategy.
-- Identifies candidate files to modify, new files to create, and potential breaking changes.
-- Issues `query_knowledge` calls to retrieve relevant project and domain standards from the mounted LibHippo knowledge namespaces.
-
-### Phase 3: Implementation & Coding
-- Edits files using precise line-addressed tools (`replace_file_content`).
-- Executes incremental builds, linter checks, and unit tests via `run_command`.
-- Tracks modified files in session working memory.
-
-### Phase 4: Review & Verification
-- Executes full test suites and static analysis tools.
-- Optionally spawns an isolated `reviewer` subagent or Maker-Checker audit.
-- If defects or deprecations are detected, loops back to Phase 3 with concrete fix directives.
-
-### Phase 5: Post-Task Maintenance
-- Runs asynchronously after the user response is delivered:
-  - Dispatches HNSW vector index compaction (`rebuild_index`) if mutation churn threshold is met.
-  - Cleans up ephemeral scratch files.
-  - Emits telemetry metrics (tokens used, cache hit ratios, tool latencies).
+### 6.1 Reactive Execution Principles
+1. **Dynamic Task Scaling**: Simple questions (reading files, checking status) execute in a single round without phase transitions. Complex refactoring tasks dynamically cycle through exploration, editing, test execution, and verification.
+2. **Seamless Mid-Turn Steering**: While the agent is reasoning or running tools, user messages automatically steer in-flight execution without tearing down connections or requiring separate commands.
+3. **LLM-Driven Output Delegation**: The agent decides whether to preserve verbose outputs in context for long-horizon planning or delegate/shorten them via `shorten_tool_output`.
+4. **Asynchronous Post-Task Maintenance**:
+   - Runs in the background after turns complete:
+     - Dispatches HNSW vector index compaction (`rebuild_index`) when mutation churn occurs.
+     - Cleans up ephemeral scratch resources.
+     - Emits telemetry metrics (tokens used, cache hit ratios, tool latencies).
 
 ---
 
@@ -821,7 +798,7 @@ class GeneralAgentHarness:
         self.zone2_history: list[ContextMessage] = []
         self.tools: dict[str, ToolDefinition] = {}
         self.skills: dict[str, SkillDefinition] = {}
-        self.current_phase: str = "alignment"
+        self.is_running: bool = False
 
     def register_tool(self, tool: ToolDefinition) -> None:
         """Register a core coding or knowledge tool into the harness."""
@@ -840,7 +817,7 @@ class GeneralAgentHarness:
         ...
 
     async def step(self, user_input: str) -> str:
-        """Execute one conversational round through the 5-phase harness."""
+        """Execute one conversational round collecting all streamed events."""
         ...
 
     async def stream(self, user_input: str) -> AsyncIterator[dict[str, Any]]:

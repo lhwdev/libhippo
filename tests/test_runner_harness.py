@@ -32,8 +32,8 @@ def make_mock_client(content: str) -> AsyncMock:
 
 
 @pytest.mark.asyncio
-async def test_harness_5_phase_lifecycle_and_events(tmp_path: Path):
-    """Test full 5-phase harness lifecycle streaming events and session persistence."""
+async def test_harness_reactive_lifecycle_and_events(tmp_path: Path):
+    """Test reactive harness lifecycle streaming events and session persistence."""
     ws_dir = tmp_path / "workspace"
     ws_dir.mkdir(parents=True)
     cfg_dir = tmp_path / "cfg"
@@ -49,15 +49,6 @@ async def test_harness_5_phase_lifecycle_and_events(tmp_path: Path):
     events = []
     async for event in harness.run("Implement a fibonacci function"):
         events.append(event)
-
-    # Check phase transitions
-    phase_events = [e for e in events if isinstance(e, PhaseTransitionEvent)]
-    phases = [p.to_phase for p in phase_events]
-    assert "alignment" in phases
-    assert "planning" in phases
-    assert "implementation" in phases
-    assert "review" in phases
-    assert "maintenance" in phases
 
     # Check token chunk streaming
     token_events = [e for e in events if isinstance(e, TokenChunkEvent)]
@@ -506,4 +497,59 @@ async def test_harness_multiple_tool_invocations_turn(tmp_path: Path):
     assert "Hello from file 2" in last_msg.content[1].content
 
 
+@pytest.mark.asyncio
+async def test_harness_shorten_tool_output(tmp_path: Path):
+    """Test shorten_tool_output delegates to subagent and replaces bulky output in context."""
+    ws_dir = tmp_path / "workspace"
+    ws_dir.mkdir(parents=True)
+    cfg_dir = tmp_path / "cfg"
 
+    config = HarnessConfig(
+        workspace_root=ws_dir,
+        user_config_dir=cfg_dir,
+    )
+    client = make_mock_client("Summary: Test failed with AssertionError at line 42.")
+    harness = GeneralAgentHarness(config=config, model_client=client)
+
+    # Simulate a bulky tool output in memory
+    bulky_log = "error: test_fail\n" * 100
+    harness.memory.append_tool_output("run_command", bulky_log, tool_call_id="call_test1")
+
+    # Call shorten_tool_output tool
+    assert "shorten_tool_output" in harness.registered_tools
+    tool_def = harness.registered_tools["shorten_tool_output"]
+    res = await tool_def.handler(instruction="Summarize the failure reason", tool_name="run_command")
+
+    assert res["status"] == "shortened"
+    assert "AssertionError at line 42" in res["result"]
+
+    # Verify memory message was replaced
+    last_tool_msg = harness.memory.get_last_tool_output("run_command")
+    assert last_tool_msg is not None
+    assert "[Tool output shortened via subagent]" in last_tool_msg.content
+    assert "AssertionError at line 42" in last_tool_msg.content
+    assert bulky_log not in last_tool_msg.content
+
+
+@pytest.mark.asyncio
+async def test_harness_stream_steering_in_flight(tmp_path: Path):
+    """Test sending input to stream while is_running automatically invokes steer."""
+    ws_dir = tmp_path / "workspace"
+    ws_dir.mkdir(parents=True)
+    cfg_dir = tmp_path / "cfg"
+
+    config = HarnessConfig(
+        workspace_root=ws_dir,
+        user_config_dir=cfg_dir,
+    )
+    client = make_mock_client("OK")
+    client.steer = AsyncMock(return_value={"status": "steered_mock"})
+    harness = GeneralAgentHarness(config=config, model_client=client)
+
+    harness.is_running = True
+    events = []
+    async for ev in harness.stream("Change direction to SQLite"):
+        events.append(ev)
+
+    assert any("Steered: Change direction to SQLite" in getattr(e, "delta", "") for e in events)
+    client.steer.assert_called_with("Change direction to SQLite")

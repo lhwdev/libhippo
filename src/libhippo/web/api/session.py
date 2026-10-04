@@ -22,7 +22,7 @@ def setup_session_routes(app: web.Application, harness: GeneralAgentHarness) -> 
         return web.json_response({
             "project_id": harness.project_manager.project_id,
             "conversation_id": harness.session.conversation_id,
-            "current_phase": harness.current_phase,
+            "is_running": getattr(harness, "is_running", False),
             "current_turns": harness.governor.current_turns,
             "max_turns": harness.config.max_turns,
             "total_tokens": harness.memory.get_total_tokens(),
@@ -51,7 +51,6 @@ def setup_session_routes(app: web.Application, harness: GeneralAgentHarness) -> 
         harness.memory.clear()
         harness.init_prefix()
         harness.governor.reset()
-        harness.current_phase = "alignment"
         harness._is_paused = False
         harness._interrupt_event.clear()
 

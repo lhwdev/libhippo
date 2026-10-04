@@ -25,13 +25,6 @@ def setup_autocomplete_routes(app: web.Application, harness: GeneralAgentHarness
                 "type": "builtin",
             },
             {
-                "command": "/steer",
-                "name": "Steer Guidance",
-                "description": "Send mid-turn steering guidance to redirect execution",
-                "syntax": "/steer <guidance>",
-                "type": "builtin",
-            },
-            {
                 "command": "/stop",
                 "name": "Interrupt / Stop",
                 "description": "Pause execution, cancel model stream, and kill active tasks",

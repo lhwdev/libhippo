@@ -5,35 +5,23 @@ import {
   Zap,
   RotateCcw,
   Minimize2,
-  CheckCircle2,
-  AlertTriangle,
   FolderGit2,
 } from "lucide-react";
-import { LifecyclePhase } from "../../types/events";
 
 interface HeaderProps {
   connected: boolean;
   projectId: string;
   conversationId: string;
-  currentPhase: LifecyclePhase;
   totalTokens: number;
+  currentPhase?: string;
   onReset: () => void;
   onCompact: () => void;
 }
-
-const PHASES: { id: LifecyclePhase; label: string }[] = [
-  { id: "alignment", label: "Alignment" },
-  { id: "planning", label: "Planning" },
-  { id: "implementation", label: "Coding" },
-  { id: "review", label: "Review" },
-  { id: "maintenance", label: "Maintenance" },
-];
 
 export const Header: React.FC<HeaderProps> = ({
   connected,
   projectId,
   conversationId,
-  currentPhase,
   totalTokens,
   onReset,
   onCompact,
@@ -82,36 +70,10 @@ export const Header: React.FC<HeaderProps> = ({
         />
       </div>
 
-      {/* Center: 5-Phase Breadcrumb Trail */}
-      <div className="hidden md:flex items-center gap-1.5 bg-slate-900/80 px-2 py-1 rounded-full border border-slate-800/80">
-        {PHASES.map((p, idx) => {
-          const isCurrent = currentPhase === p.id;
-          const isPassed = PHASES.findIndex((x) => x.id === currentPhase) > idx;
-
-          return (
-            <div key={p.id} className="flex items-center">
-              <div
-                className={`px-2.5 py-0.5 rounded-full flex items-center gap-1 transition-all ${
-                  isCurrent
-                    ? "bg-sky-500/20 text-sky-300 font-semibold border border-sky-500/40"
-                    : isPassed
-                    ? "text-emerald-400"
-                    : "text-slate-500"
-                }`}
-              >
-                {isPassed ? (
-                  <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                ) : isCurrent ? (
-                  <Activity className="w-3 h-3 text-sky-400 animate-pulse" />
-                ) : null}
-                <span>{p.label}</span>
-              </div>
-              {idx < PHASES.length - 1 && (
-                <span className="text-slate-700 mx-1">›</span>
-              )}
-            </div>
-          );
-        })}
+      {/* Center: Autonomous Agent Indicator */}
+      <div className="hidden md:flex items-center gap-1.5 bg-slate-900/60 px-3 py-1 rounded-full border border-slate-800/80 text-[11px] font-mono text-slate-400">
+        <Activity className="w-3 h-3 text-sky-400" />
+        <span>LibHippo Autonomous Agent</span>
       </div>
 
       {/* Right: Token Gauge, Autonomy Mode, Actions */}

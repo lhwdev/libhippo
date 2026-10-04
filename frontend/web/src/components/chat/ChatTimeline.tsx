@@ -44,7 +44,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
               /btw &lt;query&gt; (sidecar)
             </span>
             <span className="px-2 py-1 bg-slate-900 rounded border border-slate-800 text-slate-400">
-              /steer &lt;guidance&gt;
+              Type to interrupt agent
             </span>
             <span className="px-2 py-1 bg-slate-900 rounded border border-slate-800 text-slate-400">
               @&lt;file&gt; (mention)

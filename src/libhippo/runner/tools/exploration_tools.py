@@ -16,10 +16,12 @@ from libhippo.runner.types import ToolDefinition
 class GitIgnoreMatcher:
     """Parses and matches .gitignore rules natively in pure Python."""
 
-    def __init__(self, root_dir: Path) -> None:
+    def __init__(self, root_dir: Path, target_scope: Path | None = None) -> None:
         self.root_dir = root_dir.resolve()
+        self.target_scope = target_scope.resolve() if target_scope else self.root_dir
         self.rules: list[tuple[str, bool, bool, Path]] = []  # (pattern, is_negation, is_dir_only, base_path)
         self._load_gitignores()
+        self._scope_ignored_by_parents = self._check_scope_ignored_by_parents()
 
     def _load_gitignores(self) -> None:
         """Scan and parse all .gitignore files under root_dir."""
@@ -42,6 +44,34 @@ class GitIgnoreMatcher:
                 except OSError:
                     continue
 
+    def _check_scope_ignored_by_parents(self) -> bool:
+        """Check if target_scope itself is ignored by a .gitignore rule from an ancestor directory."""
+        if self.target_scope == self.root_dir:
+            return False
+        curr = self.target_scope
+        while curr != self.root_dir and curr != curr.parent:
+            for pattern, is_negation, is_dir_only, base_path in self.rules:
+                if not curr.is_relative_to(base_path) or curr == base_path:
+                    continue
+                try:
+                    rel = curr.relative_to(base_path).as_posix()
+                except ValueError:
+                    continue
+
+                matched = False
+                if "/" in pattern:
+                    pat = pattern.lstrip("/")
+                    if fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(rel, f"**/{pat}"):
+                        matched = True
+                else:
+                    if fnmatch.fnmatch(curr.name, pattern) or fnmatch.fnmatch(rel, f"**/{pattern}"):
+                        matched = True
+
+                if matched and not is_negation:
+                    return True
+            curr = curr.parent
+        return False
+
     def is_ignored(self, path: Path, is_dir: bool = False) -> bool:
         """Check if path is ignored by loaded gitignore rules."""
         resolved = path.resolve()
@@ -54,10 +84,18 @@ class GitIgnoreMatcher:
         if rel_to_root == ".git" or rel_to_root.startswith(".git/"):
             return True
 
+        is_inside_scope = (resolved == self.target_scope or resolved.is_relative_to(self.target_scope))
+
         ignored = False
         for pattern, is_negation, is_dir_only, base_path in self.rules:
             if is_dir_only and not is_dir:
                 continue
+
+            # If target_scope is itself an ignored folder (e.g. .venv, node_modules),
+            # ignore rules from parents above target_scope do not apply inside target_scope.
+            if self._scope_ignored_by_parents and is_inside_scope:
+                if not base_path.is_relative_to(self.target_scope):
+                    continue
 
             try:
                 rel = resolved.relative_to(base_path).as_posix()
@@ -67,12 +105,10 @@ class GitIgnoreMatcher:
             # Handle glob pattern matching
             matched = False
             if "/" in pattern:
-                # Anchored pattern
                 pat = pattern.lstrip("/")
                 if fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(rel, f"**/{pat}"):
                     matched = True
             else:
-                # Matches filename or directory at any level
                 if fnmatch.fnmatch(resolved.name, pattern) or fnmatch.fnmatch(rel, f"**/{pattern}"):
                     matched = True
 
@@ -106,7 +142,7 @@ class ExplorationTools(BaseToolSuite):
         except re.error:
             regex = re.compile(re.escape(pattern))
 
-        ignore_matcher = GitIgnoreMatcher(self.workspace_root) if not no_ignore else None
+        ignore_matcher = GitIgnoreMatcher(self.workspace_root, target_scope=target_dir) if not no_ignore else None
 
         matches: list[str] = []
         max_matches = 1000
@@ -123,7 +159,7 @@ class ExplorationTools(BaseToolSuite):
                 filtered_dirs: list[str] = []
                 for d in dirs:
                     d_path = root_path / d
-                    if not hidden and d.startswith("."):
+                    if not hidden and d.startswith(".") and not (target_dir.name.startswith(".") and d_path.is_relative_to(target_dir)):
                         continue
                     if ignore_matcher and ignore_matcher.is_ignored(d_path, is_dir=True):
                         continue
@@ -132,7 +168,7 @@ class ExplorationTools(BaseToolSuite):
 
                 # Filter and search files
                 for f in files:
-                    if not hidden and f.startswith("."):
+                    if not hidden and f.startswith(".") and not (target_dir.name.startswith(".") and (root_path / f).is_relative_to(target_dir)):
                         continue
                     if glob and not fnmatch.fnmatch(f, glob):
                         continue
@@ -150,9 +186,7 @@ class ExplorationTools(BaseToolSuite):
         if not matches:
             return "No matches found."
 
-        raw_result = "\n".join(matches)
-        triage = OutputTriage.classify_output(f"search_file {pattern}", raw_result)
-        return triage["summary"]
+        return "\n".join(matches)
 
     def _search_single_file(
         self,
@@ -191,8 +225,19 @@ class ExplorationTools(BaseToolSuite):
 
         await self.check_approval_if_needed("list_dir", {"path": path})
 
-        lines: list[str] = [f"{target_dir.name}/"]
-        self._build_tree(target_dir, "", 1, depth, show_hidden, lines)
+        if target_dir == self.workspace_root:
+            root_label = "./"
+        else:
+            try:
+                rel = target_dir.relative_to(self.workspace_root).as_posix()
+                root_label = f"{rel}/"
+            except ValueError:
+                root_label = f"{target_dir.name}/"
+
+        ignore_matcher = GitIgnoreMatcher(self.workspace_root, target_scope=target_dir)
+
+        lines: list[str] = [root_label]
+        self._build_tree(target_dir, "", 1, depth, show_hidden, lines, ignore_matcher)
         return "\n".join(lines)
 
     def _build_tree(
@@ -203,6 +248,7 @@ class ExplorationTools(BaseToolSuite):
         max_depth: int,
         show_hidden: bool,
         lines: list[str],
+        ignore_matcher: GitIgnoreMatcher,
     ) -> None:
         """Recursively construct directory tree up to max_depth."""
         if current_depth > max_depth:
@@ -213,7 +259,15 @@ class ExplorationTools(BaseToolSuite):
         except OSError:
             return
 
-        visible = [e for e in entries if show_hidden or not e.name.startswith(".")]
+        visible: list[Path] = []
+        for e in entries:
+            if not show_hidden:
+                if e.name == ".git":
+                    continue
+                if e.name.startswith(".") and not ignore_matcher.is_ignored(e, is_dir=e.is_dir()):
+                    continue
+            visible.append(e)
+
         count = len(visible)
 
         for idx, entry in enumerate(visible):
@@ -221,11 +275,20 @@ class ExplorationTools(BaseToolSuite):
             connector = "└── " if is_last else "├── "
             child_prefix = "    " if is_last else "│   "
 
-            if entry.is_dir():
-                lines.append(f"{prefix}{connector}{entry.name}/")
-                self._build_tree(entry, prefix + child_prefix, current_depth + 1, max_depth, show_hidden, lines)
+            is_dir = entry.is_dir()
+            is_ignored = ignore_matcher.is_ignored(entry, is_dir=is_dir)
+
+            if is_dir:
+                if is_ignored:
+                    lines.append(f"{prefix}{connector}{entry.name}/ (ignored)")
+                else:
+                    lines.append(f"{prefix}{connector}{entry.name}/")
+                    self._build_tree(entry, prefix + child_prefix, current_depth + 1, max_depth, show_hidden, lines, ignore_matcher)
             else:
-                lines.append(f"{prefix}{connector}{entry.name}")
+                if is_ignored:
+                    lines.append(f"{prefix}{connector}{entry.name} (ignored)")
+                else:
+                    lines.append(f"{prefix}{connector}{entry.name}")
 
     def get_tool_definitions(self) -> dict[str, ToolDefinition]:
         """Return ToolDefinition schemas for exploration tools."""
@@ -248,13 +311,13 @@ class ExplorationTools(BaseToolSuite):
             ),
             "list_dir": ToolDefinition(
                 name="list_dir",
-                description="Explore directory contents up to a specified depth.",
+                description="List directory tree structure up to depth. Displays ignored folders as '(ignored)' without recursing.",
                 parameters_schema={
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string", "description": "Path to directory"},
-                        "depth": {"type": "integer", "description": "Directory depth (default 2)"},
-                        "show_hidden": {"type": "boolean", "description": "Include hidden entries"},
+                        "path": {"type": "string", "description": "Directory path to list"},
+                        "depth": {"type": "integer", "description": "Max recursion depth (default: 2)"},
+                        "show_hidden": {"type": "boolean", "description": "Set true to show hidden dotfiles"},
                     },
                 },
                 handler=self.list_dir,

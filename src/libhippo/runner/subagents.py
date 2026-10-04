@@ -98,6 +98,79 @@ class SubagentManager:
             "result": inst.result,
         }
 
+    async def spawn(
+        self,
+        subagent_type: str,
+        prompt: str,
+        role: str,
+        context_mode: Literal["inherit", "isolated"] = "inherit",
+        model: str | None = None,
+        parent_memory: ContextMemory | None = None,
+    ) -> str:
+        """Spawn a child worker and return subagent_id."""
+        mem = parent_memory or getattr(self, "memory", None)
+        inst = await self.invoke_subagent(
+            role=role,
+            prompt=prompt,
+            context_mode=context_mode,
+            parent_memory=mem,
+        )
+        return inst.subagent_id
+
+    def list_active(self) -> list[dict[str, Any]]:
+        """List active subagents."""
+        return [
+            {
+                "subagent_id": s.subagent_id,
+                "role": s.role,
+                "status": s.status,
+                "context_mode": s.context_mode,
+            }
+            for s in self.subagents.values()
+        ]
+
+    async def kill(self, subagent_id: str) -> None:
+        """Terminate a subagent."""
+        if subagent_id in self.subagents:
+            self.subagents[subagent_id].status = "errored"
+            self.subagents[subagent_id].error = "Terminated by parent"
+
+    async def execute_task(
+        self,
+        instruction: str,
+        role: str = "Delegate Task Worker",
+        parent_memory: ContextMemory | None = None,
+    ) -> str:
+        """Execute a delegated subagent task against warm parent KV cache."""
+        mem = parent_memory or getattr(self, "memory", None)
+        inst = await self.invoke_subagent(
+            role=role,
+            prompt=instruction,
+            context_mode="inherit",
+            parent_memory=mem,
+        )
+
+        from autogen_core.models import AssistantMessage, SystemMessage, UserMessage
+
+        llm_msgs = []
+        for m in inst.messages:
+            if m["role"] == "system":
+                llm_msgs.append(SystemMessage(content=m["content"]))
+            elif m["role"] == "assistant":
+                llm_msgs.append(AssistantMessage(content=m["content"], source="assistant"))
+            else:
+                llm_msgs.append(UserMessage(content=m["content"], source="user"))
+
+        try:
+            res = await self.model_client.create(messages=llm_msgs)
+            res_text = res.content if isinstance(res.content, str) else str(res.content)
+            await self.complete_subagent(inst.subagent_id, res_text)
+            return res_text
+        except Exception as e:
+            inst.status = "errored"
+            inst.error = str(e)
+            return f"[Subagent execution error: {e}]"
+
     async def complete_subagent(self, subagent_id: str, result: str) -> None:
         """Mark subagent finished with result summary."""
         if subagent_id in self.subagents:
