@@ -107,3 +107,21 @@ def test_turn_completed_event_holds_cache_telemetry() -> None:
     )
     assert evt.cached_tokens == 1920
     assert evt.cache_hit_rate == 0.9375
+
+
+def test_log_request_and_response_includes_agent_role(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    from autogen_core.models import UserMessage
+    from libhippo.models.logging_client import _log_request, _log_response
+
+    monkeypatch.setenv("LIBHIPPO_LOG_OPENAI", "1")
+
+    mock_client = MagicMock()
+    mock_client.model = "gpt-5-nano"
+    mock_client.agent_role = "BookKeeperAgent"
+
+    with caplog.at_level(logging.INFO, logger="libhippo.openai"):
+        _log_request(mock_client, [UserMessage(content="Query index", source="user")])
+        res = CreateResult(finish_reason="stop", content="Found", usage=RequestUsage(prompt_tokens=100, completion_tokens=50), cached=False)
+        _log_response(mock_client, res)
+
+    assert "Model: gpt-5-nano [Agent: BookKeeperAgent]" in caplog.text

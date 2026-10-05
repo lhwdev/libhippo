@@ -198,6 +198,25 @@ class ContextMemory:
 
         return tokens_evicted
 
+    def prune_past_tool_outputs(self) -> int:
+        """Prune historical tool outputs from previous turns into compact Zone 3 pointers."""
+        tokens_evicted = 0
+        for msg in self.zone2_history:
+            if not msg.is_evictable or msg.zone == "zone3_compacted":
+                continue
+
+            ref_pointer = f"[Previous turn tool output: {msg.file_path_reference or 'tool_output'}]"
+            new_tokens = self.count_tokens(ref_pointer)
+            delta = msg.raw_token_count - new_tokens
+
+            if delta > 0:
+                msg.content = ref_pointer
+                msg.raw_token_count = new_tokens
+                msg.zone = "zone3_compacted"
+                tokens_evicted += delta
+
+        return tokens_evicted
+
     def get_all_messages(self) -> list[ContextMessage]:
         """Return composite message sequence (Zone 1 prefix + Zone 2 history)."""
         return list(self.zone1_prefix) + list(self.zone2_history)

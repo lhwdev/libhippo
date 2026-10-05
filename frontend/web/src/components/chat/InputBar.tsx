@@ -6,6 +6,7 @@ import { CommandItem, FileItem } from "../../types/api";
 interface InputBarProps {
   isStreaming: boolean;
   onSend: (text: string) => void;
+  onContinue?: (guidance?: string) => void;
   onInterrupt: () => void;
   onSteer: (guidance: string) => void;
   onOpenSidecar: () => void;
@@ -14,6 +15,7 @@ interface InputBarProps {
 export const InputBar: React.FC<InputBarProps> = ({
   isStreaming,
   onSend,
+  onContinue,
   onInterrupt,
   onSteer,
   onOpenSidecar,
@@ -71,6 +73,18 @@ export const InputBar: React.FC<InputBarProps> = ({
       // Direct sidecar query
       const q = trimmed.slice(5).trim();
       onOpenSidecar();
+      setText("");
+      autocomplete.close();
+      return;
+    }
+
+    if (trimmed === "/continue" || trimmed.startsWith("/continue ")) {
+      const guidance = trimmed === "/continue" ? "" : trimmed.slice(10).trim();
+      if (onContinue) {
+        onContinue(guidance);
+      } else {
+        onSend(guidance || "Continue working on the previous task.");
+      }
       setText("");
       autocomplete.close();
       return;

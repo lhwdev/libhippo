@@ -92,6 +92,8 @@ def _log_request(
         return
 
     model_name = getattr(client, "model", None) or getattr(client, "_model", None) or "openai"
+    agent_role = getattr(client, "agent_role", None)
+    agent_tag = f" [Agent: {agent_role}]" if agent_role else ""
     total_messages = len(messages)
 
     # Track system prompts logged for this client so they are only displayed on first send
@@ -120,7 +122,7 @@ def _log_request(
     stream_tag = " (stream)" if stream else ""
     lines: list[str] = [
         f"{'=' * 38} [OpenAI Request{stream_tag}] {'=' * 38}",
-        f"Model: {model_name}",
+        f"Model: {model_name}{agent_tag}",
     ]
 
     # Show system prompt(s) on first send
@@ -201,10 +203,12 @@ def _log_response(
         return
 
     model_name = getattr(client, "model", None) or getattr(client, "_model", None) or "openai"
+    agent_role = getattr(client, "agent_role", None)
+    agent_tag = f" [Agent: {agent_role}]" if agent_role else ""
     stream_tag = " (stream)" if stream else ""
     finish_reason = getattr(result, "finish_reason", "stop")
 
-    meta_parts = [f"Model: {model_name}", f"Finish: {finish_reason}"]
+    meta_parts = [f"Model: {model_name}{agent_tag}", f"Finish: {finish_reason}"]
     p_tokens = 0
     c_tokens = 0
     if hasattr(result, "usage") and result.usage:
@@ -277,10 +281,12 @@ def _log_stream_chunks_summary(
         return
 
     model_name = getattr(client, "model", None) or getattr(client, "_model", None) or "openai"
+    agent_role = getattr(client, "agent_role", None)
+    agent_tag = f" [Agent: {agent_role}]" if agent_role else ""
     full_text = "".join(chunks)
     lines: list[str] = [
         f"{'=' * 38} [OpenAI Response (stream)] {'=' * 30}",
-        f"Model: {model_name} | Chunks: {len(chunks)}",
+        f"Model: {model_name}{agent_tag} | Chunks: {len(chunks)}",
         "--- Content ---",
         full_text,
         "=" * 96,
@@ -291,8 +297,9 @@ def _log_stream_chunks_summary(
 class LoggingChatCompletionClient(ChatCompletionClient):
     """ChatCompletionClient wrapper that emits structured OpenAI request/response logs."""
 
-    def __init__(self, inner: ChatCompletionClient) -> None:
+    def __init__(self, inner: ChatCompletionClient, agent_role: str | None = None) -> None:
         self._inner = inner
+        self.agent_role = agent_role
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
@@ -384,12 +391,14 @@ class LoggingChatCompletionClient(ChatCompletionClient):
             raise
 
 
-def wrap_client_if_logging_enabled(client: Any) -> Any:
+def wrap_client_if_logging_enabled(client: Any, agent_role: str | None = None) -> Any:
     """Wrap a ChatCompletionClient with logging if enabled by environment flag."""
     if not is_openai_logging_enabled():
         return client
     if isinstance(client, LoggingChatCompletionClient):
+        if agent_role and not getattr(client, "agent_role", None):
+            client.agent_role = agent_role
         return client
     if not isinstance(client, ChatCompletionClient):
         return client
-    return LoggingChatCompletionClient(client)
+    return LoggingChatCompletionClient(client, agent_role=agent_role)

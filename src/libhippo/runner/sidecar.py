@@ -107,10 +107,22 @@ class KnowledgeHarvestSidecar:
         )
         llm_messages.append(UserMessage(content=harvest_prompt, source="harvest_sidecar"))
 
-        res = await self.model_client.create(messages=llm_messages)
+        extra_args: dict[str, Any] = {"reasoning_effort": "low"}
+        try:
+            res = await self.model_client.create(messages=llm_messages, extra_create_args=extra_args)
+        except Exception:
+            # Fallback if reasoning_effort is unsupported
+            res = await self.model_client.create(messages=llm_messages)
+
         raw_text = res.content if isinstance(res.content, str) else str(res.content)
+        cleaned = raw_text.strip()
+        if not cleaned or "NO_HARVEST" in cleaned or cleaned == "NONE":
+            return None
 
         draft = CuratorAgent.extract_markdown_draft(raw_text)
+        if "---" not in draft:
+            return None
+
         path = CuratorAgent.infer_path(draft, topic_hint or "context_learning")
         if not path.startswith(f"{scope}/"):
             clean_slug = path.split("/")[-1]

@@ -26,6 +26,7 @@ export const App: React.FC = () => {
     pendingQuestion,
     sidecarMessages,
     sendPrompt,
+    sendContinue,
     sendSteer,
     sendInterrupt,
     sendApproval,
@@ -71,6 +72,7 @@ export const App: React.FC = () => {
             <InputBar
               isStreaming={isStreaming}
               onSend={sendPrompt}
+              onContinue={sendContinue}
               onInterrupt={() => sendInterrupt("paused_by_user")}
               onSteer={sendSteer}
               onOpenSidecar={() => setActiveTab("sidecar")}

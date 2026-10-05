@@ -2,6 +2,9 @@
 Based strictly on the preceding conversation, implementation edits, error diagnoses, and verified solutions, synthesize a reusable, permanent knowledge node capturing non-obvious engineering patterns, library quirks, or repository conventions.
 Adhere strictly to the knowledge structure, guidelines, and schema defined in <KNOWLEDGE_HARVEST_SIDECAR>.
 
+CRITICAL: If the conversation trajectory contains only routine chatter, trivial lookups, or transient edits with no reusable repository conventions, framework gotchas, or permanent rules, output ONLY:
+NO_HARVEST
+
 TARGET SCOPE: {scope}
 NATURE: {nature}
 TOPIC HINT: {topic_hint}

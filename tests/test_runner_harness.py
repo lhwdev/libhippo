@@ -669,3 +669,105 @@ async def test_harness_injects_ambient_session_context_on_initial_turn(tmp_path:
     assert "Can you also list files?" in second_turn_msg.content
 
 
+@pytest.mark.asyncio
+async def test_harness_conversation_prunes_past_tool_outputs_on_normal_turn(tmp_path: Path):
+    """Verify that a normal subsequent turn prunes previous turns' bulky tool outputs."""
+    ws_dir = tmp_path / "prune_test"
+    ws_dir.mkdir(parents=True)
+    cfg_dir = tmp_path / "cfg"
+
+    config = HarnessConfig(workspace_root=ws_dir, user_config_dir=cfg_dir)
+    client = make_mock_client("Understood.")
+    harness = GeneralAgentHarness(config=config, model_client=client)
+
+    # Turn 1: user prompt + assistant tool call + tool output + assistant finish
+    async for _ in harness.stream("Inspect file"):
+        pass
+
+    # Inject a bulky tool output into Zone 2 simulating turn 1 tool execution
+    t_msg = harness.memory.append_tool_output(
+        tool_name="read_file",
+        content="line 1\nline 2\n" * 100,
+        tool_call_id="call_read_test",
+        is_evictable=True,
+    )
+    assert t_msg.zone == "zone2_linear"
+    assert "line 1" in t_msg.content
+
+    # Turn 2: regular turn (not continue)
+    async for _ in harness.stream("Now do step two"):
+        pass
+
+    # The past tool output should now be compacted/pruned
+    assert t_msg.zone == "zone3_compacted"
+    assert "[Previous turn tool output: read_file]" in t_msg.content
+    assert "line 1" not in t_msg.content
+
+
+@pytest.mark.asyncio
+async def test_harness_conversation_retains_tool_outputs_on_continue_mode(tmp_path: Path):
+    """Verify that continue mode (/continue) preserves previous tool outputs in context."""
+    ws_dir = tmp_path / "continue_test"
+    ws_dir.mkdir(parents=True)
+    cfg_dir = tmp_path / "cfg"
+
+    config = HarnessConfig(workspace_root=ws_dir, user_config_dir=cfg_dir)
+    client = make_mock_client("Understood.")
+    harness = GeneralAgentHarness(config=config, model_client=client)
+
+    # Turn 1: initial turn
+    async for _ in harness.stream("Start task"):
+        pass
+
+    # Inject tool output from turn 1
+    t_msg = harness.memory.append_tool_output(
+        tool_name="read_file",
+        content="class TargetParser:\n    pass\n",
+        tool_call_id="call_read_target",
+        is_evictable=True,
+    )
+
+    # Turn 2: continue mode with optional guidance
+    async for _ in harness.stream("please finish implementation", continue_mode=True):
+        pass
+
+    # The past tool output must NOT be pruned
+    assert t_msg.zone == "zone2_linear"
+    assert "class TargetParser:" in t_msg.content
+
+
+@pytest.mark.asyncio
+async def test_harness_harvest_sidecar_runs_in_background_without_blocking(tmp_path: Path):
+    """Verify that background harvest sidecar runs without delaying TurnCompletedEvent."""
+    ws_dir = tmp_path / "harvest_bg_test"
+    ws_dir.mkdir(parents=True)
+    cfg_dir = tmp_path / "cfg"
+
+    config = HarnessConfig(workspace_root=ws_dir, user_config_dir=cfg_dir)
+    client = make_mock_client("Done.")
+    harness = GeneralAgentHarness(config=config, model_client=client)
+
+    # Mock harvest_sidecar.harvest_from_context to verify it gets called
+    harvest_called = asyncio.Event()
+
+    async def mock_harvest(*args, **kwargs):
+        await asyncio.sleep(0.05)
+        harvest_called.set()
+        return None
+
+    harness.harvest_sidecar.harvest_from_context = mock_harvest
+
+    turn_completed = False
+    async for event in harness.stream("Perform simple task"):
+        if isinstance(event, TurnCompletedEvent):
+            turn_completed = True
+            # At the moment TurnCompletedEvent is yielded, harvest sidecar was launched as background task
+            assert not harvest_called.is_set()
+
+    assert turn_completed is True
+    # Await background sidecar task completion
+    await asyncio.wait_for(harvest_called.wait(), timeout=2.0)
+    assert harvest_called.is_set()
+
+
+

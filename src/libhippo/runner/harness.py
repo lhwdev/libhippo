@@ -7,10 +7,8 @@ import datetime
 import getpass
 import json
 import platform
-import re
 import subprocess
 import uuid
-from pathlib import Path
 from typing import Any, AsyncIterator
 
 from autogen_core import FunctionCall
@@ -38,24 +36,16 @@ from libhippo.runner.subagents import SubagentManager
 from libhippo.runner.tools import CodingToolSuite
 from libhippo.runner.transport import OpenAIResponsesWebSocketClient
 from libhippo.runner.types import (
-    ApprovalRequestEvent,
     HarnessEvent,
-    InterruptEvent,
-    ModalQuestionEvent,
     PhaseTransitionEvent,
     TokenChunkEvent,
     ToolCallResultEvent,
     ToolCallStartEvent,
-    ToolDefinition,
     TurnCompletedEvent,
 )
 from libhippo.agents.system_prompts.template import (
     assemble_harness_system_prompt,
-    format_tools_summary,
-    format_user_rules,
-    format_workspace_info,
     load_prompt_template,
-    render_prompt_template,
 )
 from libhippo.storage.mount import create_default_mounts
 from libhippo.storage.store import KnowledgeStore
@@ -124,7 +114,7 @@ class GeneralAgentHarness:
         from libhippo.models.logging_client import wrap_client_if_logging_enabled
 
         if model_client is not None:
-            self.model_client = wrap_client_if_logging_enabled(model_client)
+            self.model_client = wrap_client_if_logging_enabled(model_client, agent_role="TaskSolverAgent")
         else:
             client_kwargs: dict[str, Any] = {}
             if self.config.temperature is not None:
@@ -136,7 +126,8 @@ class GeneralAgentHarness:
                         model=self.config.model,
                         enable_http_fallback=self.config.enable_http_fallback,
                         **client_kwargs,
-                    )
+                    ),
+                    agent_role="TaskSolverAgent",
                 )
             else:
                 from libhippo.models.llm import create_chat_client
@@ -146,7 +137,8 @@ class GeneralAgentHarness:
                         "task_solver",
                         model=self.config.model,
                         **client_kwargs,
-                    )
+                    ),
+                    agent_role="TaskSolverAgent",
                 )
 
         # 4. Context Memory & Workload Governor
@@ -172,6 +164,7 @@ class GeneralAgentHarness:
 
         self.harvest_observer = KnowledgeHarvestObserver()
         self.harvest_sidecar = KnowledgeHarvestSidecar(model_client=self.model_client, store=self.store)
+        self._active_sidecar_tasks: set[asyncio.Task[Any]] = set()
 
         # 7. Resource Discovery & Extensibility
         self.skills: dict[str, SkillDefinition] = {}
@@ -283,7 +276,7 @@ class GeneralAgentHarness:
             pass
         return "main"
 
-    async def stream(self, user_input: str) -> AsyncIterator[HarnessEvent]:
+    async def stream(self, user_input: str, continue_mode: bool = False) -> AsyncIterator[HarnessEvent]:
         """Stream asynchronous execution events for autonomous software engineering."""
         if self.is_running:
             # If already running, treat incoming turn as mid-turn steering
@@ -305,6 +298,10 @@ class GeneralAgentHarness:
             now = datetime.datetime.now()
             local_str = now.strftime("%A, %Y-%m-%d %H:%M:%S")
             tz_offset = now.astimezone().strftime("%z")
+
+            # In normal conversational turns, prune past turns' bulky tool outputs from active context
+            if not continue_mode and not is_initial_turn:
+                self.memory.prune_past_tool_outputs()
 
             if is_initial_turn:
                 ambient_header = (
@@ -477,8 +474,6 @@ class GeneralAgentHarness:
                     as_msg = self.memory.append_assistant_turn(out_content)
                     await self.session.append_message(as_msg)
 
-            await self.post_task_maintenance()
-
             elapsed = (datetime.datetime.now(datetime.timezone.utc) - start_time).total_seconds()
             hit_rate = (turn_cached_tokens / turn_prompt_tokens) if turn_prompt_tokens > 0 else 0.0
             yield TurnCompletedEvent(
@@ -489,6 +484,11 @@ class GeneralAgentHarness:
                 cached_tokens=turn_cached_tokens,
                 cache_hit_rate=round(hit_rate, 4),
             )
+
+            # Trigger background maintenance sidecar without delaying turn delivery
+            bg_task = asyncio.create_task(self.post_task_maintenance())
+            self._active_sidecar_tasks.add(bg_task)
+            bg_task.add_done_callback(self._active_sidecar_tasks.discard)
         finally:
             self.is_running = False
 
@@ -536,7 +536,12 @@ class GeneralAgentHarness:
             for tid in list(self.sandbox.active_tasks.keys()):
                 asyncio.create_task(self.sandbox.manage_task("kill", task_id=tid))
 
-        # 4. Record interrupt event in memory and durable session
+        # 4. Cancel active background sidecar maintenance tasks
+        for bg_t in list(self._active_sidecar_tasks):
+            if not bg_t.done():
+                bg_t.cancel()
+
+        # 5. Record interrupt event in memory and durable session
         int_msg = self.memory.append_assistant_turn(f'<interrupt_event status="paused_by_user" reason="{reason}"/>')
         asyncio.create_task(self.session.append_message(int_msg))
 
@@ -547,9 +552,11 @@ class GeneralAgentHarness:
     async def post_task_maintenance(self) -> None:
         """Execute background maintenance (knowledge harvesting and vector compaction)."""
         # 1. Harvest explicit learnings queued during the turn
+        had_explicit = False
         if hasattr(self.tools, "harvest_queue") and self.tools.harvest_queue:
             while self.tools.harvest_queue:
                 item = self.tools.harvest_queue.pop(0)
+                had_explicit = True
                 try:
                     await self.harvest_sidecar.harvest_from_context(
                         parent_memory=self.memory,
@@ -560,25 +567,17 @@ class GeneralAgentHarness:
                 except Exception:
                     pass
 
-        # 2. Autonomous harvest observation via TypeSafe Jev
-        try:
-            recent_turns = self.memory.get_linear_history()[-4:]
-            if recent_turns:
-                turn_summary = "\n".join(f"{m.role}: {m.content[:200]}" for m in recent_turns)
-                state = {
-                    "workspace": self.workspace_root.name,
-                    "turn_summary": turn_summary,
-                }
-                evaluation = await self.harvest_observer.evaluate(state)
-                if evaluation.should_harvest:
-                    await self.harvest_sidecar.harvest_from_context(
-                        parent_memory=self.memory,
-                        scope=evaluation.target_scope,
-                        nature=evaluation.knowledge_nature,
-                        topic_hint=evaluation.topic_hint or None,
-                    )
-        except Exception:
-            pass
+        # 2. Autonomous knowledge harvest sidecar on warm KV cache
+        # Unconditionally inspect context on sidecar after turn completion
+        if not had_explicit:
+            try:
+                await self.harvest_sidecar.harvest_from_context(
+                    parent_memory=self.memory,
+                    scope="project",
+                    nature="critical_rule",
+                )
+            except Exception:
+                pass
 
         # 3. Store maintenance (vector compaction & freshness)
         if self.store is not None:

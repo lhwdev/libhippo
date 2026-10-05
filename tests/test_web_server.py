@@ -108,6 +108,7 @@ async def test_web_autocomplete_apis(test_harness: GeneralAgentHarness):
         cmd_data = await cmd_resp.json()
         commands = [c["command"] for c in cmd_data["commands"]]
         assert "/btw" in commands
+        assert "/continue" in commands
         assert "/stop" in commands
         assert "/compact" in commands
 
@@ -196,7 +197,20 @@ async def test_websocket_event_streaming(test_harness: GeneralAgentHarness):
         assert any(e.get("type") == "token_chunk" for e in received_events)
         assert any(e.get("type") == "turn_completed" for e in received_events)
 
-        # 3. Test steer over websocket
+        # 3. Test continue mode over websocket
+        await ws.send_json({"type": "continue", "content": "Keep working"})
+        continue_events = []
+        for _ in range(20):
+            try:
+                msg = await asyncio.wait_for(ws.receive_json(), timeout=2.0)
+                continue_events.append(msg)
+                if msg.get("type") == "turn_completed":
+                    break
+            except asyncio.TimeoutError:
+                break
+        assert any(e.get("type") == "turn_completed" for e in continue_events)
+
+        # 4. Test steer over websocket
         await ws.send_json({"type": "steer", "guidance": "Focus on python 3.12 syntax"})
         steer_ack = await ws.receive_json()
         assert steer_ack["type"] == "steer_result"

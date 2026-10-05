@@ -230,6 +230,24 @@ export function useWebSocket() {
     wsRef.current.send(JSON.stringify({ type: "prompt", content }));
   }, []);
 
+  const sendContinue = useCallback((guidance?: string) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    const trimmed = guidance ? guidance.trim() : "";
+    const content = trimmed || "Continue working on the previous task.";
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: `user-${Date.now()}`,
+        role: "user",
+        content: trimmed ? `/continue ${trimmed}` : "/continue",
+        timestamp: new Date().toLocaleTimeString(),
+      },
+    ]);
+    setIsStreaming(true);
+    setStreamingResponse("");
+    wsRef.current.send(JSON.stringify({ type: "continue", content }));
+  }, []);
+
   const sendSteer = useCallback((guidance: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     wsRef.current.send(JSON.stringify({ type: "steer", guidance }));
@@ -285,6 +303,7 @@ export function useWebSocket() {
     pendingQuestion,
     sidecarMessages,
     sendPrompt,
+    sendContinue,
     sendSteer,
     sendInterrupt,
     sendApproval,

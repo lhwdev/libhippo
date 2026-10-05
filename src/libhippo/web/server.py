@@ -103,6 +103,7 @@ def create_app(
 
                     if msg_type == "prompt":
                         content = payload.get("content", "")
+                        continue_mode = bool(payload.get("continue_mode", False))
                         if getattr(harness, "is_running", False):
                             result = await harness.steer(content)
                             res_clean: Any = str(result)
@@ -115,7 +116,25 @@ def create_app(
                                 await ws.send_json({"type": "steer_result", "guidance": content, "result": res_clean})
                         else:
                             # Stream turn events to client
-                            async for event in harness.stream(content):
+                            async for event in harness.stream(content, continue_mode=continue_mode):
+                                event_dict = asdict(event) if is_dataclass(event) else event
+                                if not ws.closed:
+                                    await ws.send_json(event_dict)
+
+                    elif msg_type == "continue":
+                        content = payload.get("content") or "Continue working on the previous task."
+                        if getattr(harness, "is_running", False):
+                            result = await harness.steer(content)
+                            res_clean: Any = str(result)
+                            if isinstance(result, dict):
+                                res_clean = {
+                                    k: v if isinstance(v, (str, int, float, bool, list, dict, type(None))) else str(v)
+                                    for k, v in result.items()
+                                }
+                            if not ws.closed:
+                                await ws.send_json({"type": "steer_result", "guidance": content, "result": res_clean})
+                        else:
+                            async for event in harness.stream(content, continue_mode=True):
                                 event_dict = asdict(event) if is_dataclass(event) else event
                                 if not ws.closed:
                                     await ws.send_json(event_dict)

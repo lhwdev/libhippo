@@ -25,6 +25,13 @@ def setup_autocomplete_routes(app: web.Application, harness: GeneralAgentHarness
                 "type": "builtin",
             },
             {
+                "command": "/continue",
+                "name": "Continue Mode",
+                "description": "Continue previous task without pruning past tool outputs from context",
+                "syntax": "/continue [guidance]",
+                "type": "builtin",
+            },
+            {
                 "command": "/stop",
                 "name": "Interrupt / Stop",
                 "description": "Pause execution, cancel model stream, and kill active tasks",

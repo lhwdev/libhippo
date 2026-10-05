@@ -211,7 +211,7 @@ class ModelRegistry:
         from libhippo.runner.transport import OpenAIResponsesClient
 
         client = OpenAIResponsesClient(**filtered_kwargs)
-        return wrap_client_if_logging_enabled(client)
+        return wrap_client_if_logging_enabled(client, agent_role=str(role_key) if role_key else None)
 
     def create_typesafe_client(
         self,
