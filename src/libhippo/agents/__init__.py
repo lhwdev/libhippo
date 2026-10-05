@@ -12,6 +12,7 @@ from libhippo.agents.prompts import (
     get_agent_system_prompt,
 )
 from libhippo.agents.harvest_observer import HarvestEvaluation, KnowledgeHarvestObserver
+from libhippo.agents.manager import AgentManager
 from libhippo.agents.task_solver import TaskSolverAgent
 from libhippo.agents.verifier import VerifierAgent
 
@@ -20,6 +21,7 @@ __all__ = [
     "CURATOR_SYSTEM_PROMPT",
     "TASK_SOLVER_SYSTEM_PROMPT",
     "VERIFIER_SYSTEM_PROMPT",
+    "AgentManager",
     "BaseHippoAgent",
     "BookKeeperAgent",
     "CheckerAgent",

@@ -770,4 +770,24 @@ async def test_harness_harvest_sidecar_runs_in_background_without_blocking(tmp_p
     assert harvest_called.is_set()
 
 
+@pytest.mark.asyncio
+async def test_harness_initializes_and_wires_knowledge_agents(tmp_path: Path):
+    """Verify GeneralAgentHarness initializes AgentManager and non-None curator in KnowledgeDispatcher."""
+    ws_dir = tmp_path / "agents_wiring_ws"
+    ws_dir.mkdir(parents=True)
+    cfg_dir = tmp_path / "cfg"
+
+    config = HarnessConfig(workspace_root=ws_dir, user_config_dir=cfg_dir)
+    client = make_mock_client("Done.")
+    harness = GeneralAgentHarness(config=config, model_client=client)
+
+    assert hasattr(harness, "agent_manager")
+    assert harness.agent_manager is not None
+    assert harness.dispatcher.curator is not None
+    assert harness.dispatcher.curator is harness.agent_manager.curator
+    assert harness.dispatcher.orchestrator is harness.agent_manager.orchestrator
+    assert harness.harvest_sidecar.orchestrator is harness.agent_manager.orchestrator
+
+
+
 

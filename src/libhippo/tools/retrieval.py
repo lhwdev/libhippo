@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from libhippo.models.knowledge import KnowledgeCandidate
 from libhippo.storage.store import KnowledgeStore
 
 logger = logging.getLogger(__name__)
@@ -40,13 +42,15 @@ class KnowledgeDispatcher:
         book_keeper: Any | None = None,
         curator: Any | None = None,
         checker: Any | None = None,
+        orchestrator: Any | None = None,
         threshold_low: float = 0.70,
         threshold_medium: float = 0.82,
     ) -> None:
         self.store = store
+        self.orchestrator = orchestrator
+        self.curator = curator or (orchestrator.curator if orchestrator else None)
+        self.checker = checker or (orchestrator.checker if orchestrator else None)
         self.book_keeper = book_keeper
-        self.curator = curator
-        self.checker = checker
         self.threshold_low = threshold_low
         self.threshold_medium = threshold_medium
 
@@ -201,8 +205,6 @@ class KnowledgeDispatcher:
 
         # Queue asynchronous background revalidation
         try:
-            import asyncio
-
             asyncio.create_task(self.store.modify_knowledge("revalidate", result.path))
         except Exception:  # noqa: BLE001
             pass
@@ -248,44 +250,80 @@ class KnowledgeDispatcher:
         criticality: CriticalityTier,
     ) -> KnowledgeRetrievalResult:
         """Handle miss with potential CuratorAgent scraping for MANDATORY criticality."""
-        if criticality == "mandatory" and self.curator:
-            try:
-                # Trigger CuratorAgent web scrape and draft proposal
-                curation = await self.curator.curate(query)
-                draft_md = curation.get("draft", "") if isinstance(curation, dict) else str(curation)
-                target_path = curation.get("path", f"common/web/{query.replace(' ', '_').lower()}.md") if isinstance(curation, dict) else f"common/web/{query.replace(' ', '_').lower()}.md"
-
-                # If checker is available, audit the draft
-                if self.checker and draft_md:
-                    from libhippo.models.knowledge import KnowledgeCandidate
-                    candidate = KnowledgeCandidate.from_markdown(target_path, draft_md)
-                    report = await self.checker.check(candidate)
-                    if report.verdict == "PASS":
-                        # Auto-commit routine PASS
-                        await self.store.modify_knowledge("create", target_path, draft_md)
+        if criticality == "mandatory":
+            if self.orchestrator and getattr(self.orchestrator, "curator", None):
+                try:
+                    gov_res = await self.orchestrator.curate_and_govern(topic=query)
+                    if gov_res.status == "COMMITTED":
+                        node = await self.store.get_node(gov_res.path)
+                        summary = (
+                            await self.store.read_section(gov_res.path, section="summary")
+                            if node
+                            else None
+                        )
+                        snippet = summary or (node.body[:500] if node else gov_res.message)
+                        title = node.frontmatter.title if node and node.frontmatter else gov_res.path
                         return KnowledgeRetrievalResult(
                             status="HIT",
-                            path=target_path,
-                            title=candidate.frontmatter.title if candidate.frontmatter else target_path,
-                            snippet=candidate.body[:500],
-                            confidence=0.90,
+                            path=gov_res.path,
+                            title=title,
+                            snippet=snippet,
+                            confidence=0.92,
                             effort_tier=effort,
                             criticality=criticality,
                             source="curator",
-                            curated_draft=draft_md,
+                            curated_draft=node.markdown if node else "",
+                            details={"orchestration": "maker_checker_governed"},
                         )
 
-                return KnowledgeRetrievalResult(
-                    status="MISS:MANDATORY",
-                    path=target_path,
-                    effort_tier=effort,
-                    criticality=criticality,
-                    source="curator",
-                    curated_draft=draft_md,
-                    snippet=draft_md[:500] if draft_md else f"[MISS:MANDATORY for query '{query}']",
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"CuratorAgent invocation failed: {e}")
+                    return KnowledgeRetrievalResult(
+                        status="MISS:MANDATORY",
+                        path=gov_res.path,
+                        effort_tier=effort,
+                        criticality=criticality,
+                        source="curator",
+                        curated_draft=gov_res.message,
+                        snippet=f"[MISS:MANDATORY for query '{query}': {gov_res.message}]",
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"Orchestrated curation failed: {e}")
+            elif self.curator:
+                try:
+                    # Trigger CuratorAgent web scrape and draft proposal
+                    curation = await self.curator.curate(query)
+                    draft_md = curation.get("draft", "") if isinstance(curation, dict) else str(curation)
+                    target_path = curation.get("path", f"common/web/{query.replace(' ', '_').lower()}.md") if isinstance(curation, dict) else f"common/web/{query.replace(' ', '_').lower()}.md"
+
+                    # If checker is available, audit the draft
+                    if self.checker and draft_md:
+                        candidate = KnowledgeCandidate.from_markdown(target_path, draft_md)
+                        report = await self.checker.check(candidate)
+                        if report.verdict == "PASS":
+                            # Auto-commit routine PASS
+                            await self.store.modify_knowledge("create", target_path, draft_md)
+                            return KnowledgeRetrievalResult(
+                                status="HIT",
+                                path=target_path,
+                                title=candidate.frontmatter.title if candidate.frontmatter else target_path,
+                                snippet=candidate.body[:500],
+                                confidence=0.90,
+                                effort_tier=effort,
+                                criticality=criticality,
+                                source="curator",
+                                curated_draft=draft_md,
+                            )
+
+                    return KnowledgeRetrievalResult(
+                        status="MISS:MANDATORY",
+                        path=target_path,
+                        effort_tier=effort,
+                        criticality=criticality,
+                        source="curator",
+                        curated_draft=draft_md,
+                        snippet=draft_md[:500] if draft_md else f"[MISS:MANDATORY for query '{query}']",
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"CuratorAgent invocation failed: {e}")
 
         return self._handle_miss(query, effort=effort, criticality=criticality)
 

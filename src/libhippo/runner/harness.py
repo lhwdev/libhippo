@@ -43,10 +43,14 @@ from libhippo.runner.types import (
     ToolCallStartEvent,
     TurnCompletedEvent,
 )
+from libhippo.agents.harvest_observer import KnowledgeHarvestObserver
+from libhippo.agents.manager import AgentManager
 from libhippo.agents.system_prompts.template import (
     assemble_harness_system_prompt,
     load_prompt_template,
 )
+from libhippo.models.llm import create_chat_client
+from libhippo.models.logging_client import wrap_client_if_logging_enabled
 from libhippo.storage.mount import create_default_mounts
 from libhippo.storage.store import KnowledgeStore
 from libhippo.tools.retrieval import KnowledgeDispatcher
@@ -80,9 +84,7 @@ class GeneralAgentHarness:
         # Knowledge store & dispatcher auto-initialization
         if store is not None:
             self.store = store
-            self.dispatcher = dispatcher or KnowledgeDispatcher(store=self.store)
         elif dispatcher is not None:
-            self.dispatcher = dispatcher
             self.store = dispatcher.store
         else:
             libhippo_dir = self.discovery.discover_libhippo_dir()
@@ -92,7 +94,10 @@ class GeneralAgentHarness:
             )
             cache_dir = (libhippo_dir / "cache") if libhippo_dir else (self.workspace_root / ".libhippo" / "cache")
             self.store = KnowledgeStore(mounts=mounts, cache_dir=cache_dir)
-            self.dispatcher = KnowledgeDispatcher(store=self.store)
+
+        # Knowledge Agent Manager: manages & reuses knowledge agents
+        self.agent_manager = AgentManager(store=self.store)
+        self.dispatcher = dispatcher or self.agent_manager.create_dispatcher()
 
         # 1. Project & Sandbox
         self.project_manager = ProjectManager(workspace_root=self.workspace_root, config=self.config)
@@ -111,8 +116,6 @@ class GeneralAgentHarness:
         )
 
         # 3. Model Client & Transport
-        from libhippo.models.logging_client import wrap_client_if_logging_enabled
-
         if model_client is not None:
             self.model_client = wrap_client_if_logging_enabled(model_client, agent_role="TaskSolverAgent")
         else:
@@ -130,8 +133,6 @@ class GeneralAgentHarness:
                     agent_role="TaskSolverAgent",
                 )
             else:
-                from libhippo.models.llm import create_chat_client
-
                 self.model_client = wrap_client_if_logging_enabled(
                     create_chat_client(
                         "task_solver",
@@ -160,10 +161,12 @@ class GeneralAgentHarness:
         self.tools.memory = self.memory
         self.registered_tools = self.tools.get_tool_definitions()
         self.sidecar = SidecarExecutor(model_client=self.model_client)
-        from libhippo.agents.harvest_observer import KnowledgeHarvestObserver
-
         self.harvest_observer = KnowledgeHarvestObserver()
-        self.harvest_sidecar = KnowledgeHarvestSidecar(model_client=self.model_client, store=self.store)
+        self.harvest_sidecar = KnowledgeHarvestSidecar(
+            model_client=self.model_client,
+            store=self.store,
+            orchestrator=self.agent_manager.orchestrator,
+        )
         self._active_sidecar_tasks: set[asyncio.Task[Any]] = set()
 
         # 7. Resource Discovery & Extensibility

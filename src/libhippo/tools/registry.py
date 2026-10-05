@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from libhippo.agents.checker import CheckerAgent
 from libhippo.models.knowledge import (
     HubReference,
     KnowledgeCandidate,
@@ -29,10 +30,16 @@ class ToolRegistry:
         store: KnowledgeStore,
         dispatcher: KnowledgeDispatcher | None = None,
         checker: Any | None = None,
+        agent_manager: Any | None = None,
     ) -> None:
         self.store = store
-        self.dispatcher = dispatcher or KnowledgeDispatcher(store=store, checker=checker)
-        self.checker = checker
+        self.agent_manager = agent_manager
+        if agent_manager is not None:
+            self.checker = checker or agent_manager.checker
+            self.dispatcher = dispatcher or agent_manager.create_dispatcher()
+        else:
+            self.checker = checker
+            self.dispatcher = dispatcher
 
     def get_search_knowledge_tool(self) -> Callable[..., Any]:
         """Tool: search_knowledge(query: str, namespace: str = None, top_k: int = 5)."""
@@ -97,7 +104,6 @@ class ToolRegistry:
             sibling_paths: list[str] | None = None,
         ) -> dict[str, Any]:
             if not self.checker:
-                from libhippo.agents.checker import CheckerAgent
                 self.checker = CheckerAgent()
 
             candidate = KnowledgeCandidate.from_markdown(path, content)
@@ -117,7 +123,15 @@ class ToolRegistry:
             effort: EffortTier = "medium",
             criticality: CriticalityTier = "preferred",
         ) -> dict[str, Any]:
-            result: KnowledgeRetrievalResult = await self.dispatcher.query_knowledge(
+            dispatcher = self.dispatcher
+            if not dispatcher:
+                if self.agent_manager:
+                    dispatcher = self.agent_manager.create_dispatcher()
+                else:
+                    dispatcher = KnowledgeDispatcher(store=self.store, checker=self.checker)
+                self.dispatcher = dispatcher
+
+            result: KnowledgeRetrievalResult = await dispatcher.query_knowledge(
                 query=query,
                 effort=effort,
                 criticality=criticality,

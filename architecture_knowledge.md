@@ -106,6 +106,11 @@ All model instantiations across AutoGen Chat Completion clients (OpenAI) and Typ
   - `get_model_config(role_or_name)`: Reads default agent profile and applies environment overrides (`LIBHIPPO_<ROLE>_MODEL`).
 - **Model Specification**: Supports runtime overrides via environment variables (`LIBHIPPO_<ROLE>_MODEL`).
 
+### 3.0.1 Knowledge Agent Lifecycle Manager (`libhippo.agents.manager`)
+`AgentManager` manages the lifecycle, coordination, and reuse of framework knowledge agents (`CuratorAgent`, `CheckerAgent`, `VerifierAgent`, `BookKeeperAgent`) and Maker-Checker governance orchestration (`MakerCheckerOrchestrator`).
+- **Singleton Reuse**: Instantiates and wires knowledge agents once per store, preventing redundant agent allocation across `GeneralAgentHarness`, `KnowledgeDispatcher`, and `KnowledgeHarvestSidecar`.
+- **Dispatcher Binding**: Exposes `create_dispatcher()` to supply `KnowledgeDispatcher` with pre-wired curator, checker, bookkeeper, and orchestrator instances, ensuring mandatory retrieval misses reliably trigger Maker-Checker web curation.
+
 ---
 
 ### 3.1 `TaskSolverAgent` (Task Executor)

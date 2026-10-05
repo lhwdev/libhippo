@@ -27,9 +27,9 @@ In most time, read `architecture.md` first.
 - Search for web when dealing with latest things, i.e. OpenAI models, API.
   * Do not mention legacy OpenAI models like o1; search.
 
-### Rules for Python
+### Python Rules
 
-- Put import on top, unless dynamic import is needed.
+- Never put import in the middle of code block, unless dynamic import is needed.
 - Do not overuse `inspect`; just search docs on web, or read source.
 
 ### Planning Rules

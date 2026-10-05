@@ -6,11 +6,14 @@ import pytest
 from autogen_core.models import CreateResult, RequestUsage
 
 from libhippo.agents.book_keeper import BookKeeperAgent
+from libhippo.agents.checker import CheckerAgent
 from libhippo.agents.curator import CuratorAgent
+from libhippo.agents.manager import AgentManager
 from libhippo.agents.task_solver import TaskSolverAgent
 from libhippo.agents.verifier import VerifierAgent
 from libhippo.models.audit import JevAuditReport
 from libhippo.models.knowledge import KnowledgeCandidate
+from libhippo.orchestration.maker_checker import MakerCheckerOrchestrator
 from libhippo.storage.mount import MountConfig
 from libhippo.storage.store import KnowledgeStore
 from libhippo.tools.retrieval import KnowledgeDispatcher
@@ -338,3 +341,87 @@ async def test_task_solver_mock(tmp_path):
 
         solution = await agent.solve("Implement accessible custom button component in HTML/TS")
         assert "keyboard accessible buttons" in solution
+
+
+# --- AgentManager Tests ---
+
+@pytest.mark.asyncio
+async def test_agent_manager_lifecycle_and_reuse(tmp_path):
+    """Verify AgentManager coordinates and reuses framework knowledge agents and orchestrator."""
+    async with KnowledgeStore(root_dir=tmp_path / "knowledge") as store:
+        manager = AgentManager(store=store)
+        assert manager.curator is not None
+        assert manager.checker is not None
+        assert manager.verifier is not None
+        assert manager.book_keeper is not None
+        assert manager.orchestrator is not None
+
+        # Verify orchestrator reuses the same agent instances
+        assert manager.orchestrator.curator is manager.curator
+        assert manager.orchestrator.checker is manager.checker
+        assert manager.orchestrator.verifier is manager.verifier
+
+        # Verify dispatcher is created and wired
+        dispatcher = manager.create_dispatcher()
+        assert dispatcher.curator is manager.curator
+        assert dispatcher.checker is manager.checker
+        assert dispatcher.book_keeper is manager.book_keeper
+        assert dispatcher.orchestrator is manager.orchestrator
+
+        # Reusing dispatcher returns singleton
+        assert manager.create_dispatcher() is dispatcher
+
+
+@pytest.mark.asyncio
+async def test_knowledge_dispatcher_mandatory_miss_creates_content(tmp_path):
+    """Verify KnowledgeDispatcher creates and commits new content on mandatory miss via orchestrator."""
+    async with KnowledgeStore(root_dir=tmp_path / "knowledge") as store:
+        mock_checker = AsyncMock(spec=CheckerAgent)
+        mock_checker.count_tokens.return_value = 500
+        mock_checker.check.return_value = JevAuditReport(
+            verdict="PASS",
+            size_status="optimal",
+            taxonomy_fit="optimal",
+            token_count=500,
+        )
+
+        mock_curator = AsyncMock(spec=CuratorAgent)
+        mock_curator.curate.return_value = {
+            "path": "common/web/react_actions.md",
+            "draft": """---
+title: "React Actions"
+namespace: "common"
+---
+## Summary
+React 19 Server Actions.
+## Detailed Rules
+Use useActionState.
+""",
+        }
+
+        orchestrator = MakerCheckerOrchestrator(
+            store=store,
+            checker=mock_checker,
+            curator=mock_curator,
+        )
+        dispatcher = KnowledgeDispatcher(
+            store=store,
+            orchestrator=orchestrator,
+        )
+        assert dispatcher.curator is mock_curator
+
+        res = await dispatcher.query_knowledge(
+            query="React 19 Server Actions",
+            effort="medium",
+            criticality="mandatory",
+        )
+
+        assert res.status == "HIT"
+        assert res.path == "common/web/react_actions.md"
+        assert res.source == "curator"
+        mock_curator.curate.assert_called_once()
+
+        # Node should be committed into store
+        node = await store.get_node("common/web/react_actions.md")
+        assert node is not None
+        assert "useActionState" in node.body

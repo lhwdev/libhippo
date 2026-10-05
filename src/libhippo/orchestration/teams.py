@@ -6,12 +6,15 @@ safety guardrail terminations.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from autogen_agentchat.conditions import MaxMessageTermination
 from autogen_agentchat.teams import RoundRobinGroupChat
 
-from libhippo.agents.curator import CuratorAgent
-from libhippo.agents.task_solver import TaskSolverAgent
-from libhippo.agents.verifier import VerifierAgent
+if TYPE_CHECKING:
+    from libhippo.agents.curator import CuratorAgent
+    from libhippo.agents.task_solver import TaskSolverAgent
+    from libhippo.agents.verifier import VerifierAgent
 
 
 def create_governance_team(

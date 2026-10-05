@@ -6,6 +6,9 @@ from typing import Any
 
 from autogen_core.models import AssistantMessage, ChatCompletionClient, SystemMessage, UserMessage
 
+from libhippo.agents.curator import CuratorAgent
+from libhippo.agents.manager import AgentManager
+from libhippo.agents.prompts import load_prompt_file
 from libhippo.runner.memory import ContextMemory
 
 
@@ -61,20 +64,14 @@ class KnowledgeHarvestSidecar:
         self.store = store
         self._orchestrator = orchestrator
 
+    @property
+    def orchestrator(self) -> Any:
+        return self._get_orchestrator()
+
     def _get_orchestrator(self) -> Any:
         if self._orchestrator is not None:
             return self._orchestrator
-        from libhippo.agents.checker import CheckerAgent
-        from libhippo.agents.verifier import VerifierAgent
-        from libhippo.orchestration.maker_checker import MakerCheckerOrchestrator
-
-        checker = CheckerAgent()
-        verifier = VerifierAgent(store=self.store)
-        self._orchestrator = MakerCheckerOrchestrator(
-            store=self.store,
-            checker=checker,
-            verifier=verifier,
-        )
+        self._orchestrator = AgentManager(store=self.store).orchestrator
         return self._orchestrator
 
     async def harvest_from_context(
@@ -85,8 +82,6 @@ class KnowledgeHarvestSidecar:
         topic_hint: str | None = None,
     ) -> Any:
         """Synthesize Hub/Leaf knowledge node from warm context and run Maker-Checker governance."""
-        from libhippo.agents.curator import CuratorAgent
-
         parent_messages = parent_memory.get_all_messages()
         llm_messages: list[Any] = []
         for m in parent_messages:
@@ -96,8 +91,6 @@ class KnowledgeHarvestSidecar:
                 llm_messages.append(UserMessage(content=m.content, source="user"))
             elif m.role == "assistant":
                 llm_messages.append(AssistantMessage(content=m.content, source="assistant"))
-
-        from libhippo.agents.prompts import load_prompt_file
 
         harvest_template = load_prompt_file("harvest_sidecar")
         harvest_prompt = harvest_template.format(
