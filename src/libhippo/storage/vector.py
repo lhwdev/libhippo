@@ -92,10 +92,10 @@ class VectorKnowledgeStore:
         base_meta = {
             "path": candidate.path,
             "title": fm.title,
-            "namespace": fm.namespace,
+            "namespace": candidate.namespace,
             "importance": float(fm.importance),
             "force_keep": bool(fm.force_keep),
-            "nature": fm.nature,
+            "nature": fm.nature or "",
             "status": fm.status,
         }
 

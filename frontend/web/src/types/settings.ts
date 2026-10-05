@@ -34,7 +34,6 @@ export interface SkillDefinition {
 
 export interface RuntimeConfig {
   model: string;
-  temperature: number;
   mode: "turbo" | "default" | "request_review";
   transport_mode: "websocket" | "http";
   soft_token_watermark: number;

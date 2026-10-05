@@ -50,6 +50,21 @@ async def test_read_and_search_tools(tmp_path):
         search_res = await search_tool(query="keyboard interaction accessibility")
         assert len(search_res) >= 1
         assert search_res[0]["path"] == "common/web/html/accessibility/aria_button.md"
+
+        # List knowledge hierarchy
+        list_tool = registry.get_list_knowledge_tool()
+        tree_res = await list_tool(path=".")
+        assert "knowledge/" in tree_res
+        assert "common/" in tree_res
+
+        # Lexical search
+        lex_res = await search_tool(pattern="*aria_button*")
+        assert "common/web/html/accessibility/aria_button.md" in lex_res
+
+        # Content regex search
+        content_res = await search_tool(pattern="*", content_pattern="preventDefault")
+        assert "common/web/html/accessibility/aria_button.md" in content_res
+        assert "preventDefault" in content_res
     finally:
         await populated_store.close()
 

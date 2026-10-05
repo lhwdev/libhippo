@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import re
 import shutil
@@ -9,7 +10,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Self
 
-from libhippo.models.knowledge import KnowledgeCandidate, update_markdown_version
+from libhippo.models.knowledge import (
+    KnowledgeCandidate,
+    reconcile_candidate_frontmatter,
+    update_markdown_version,
+)
 from libhippo.storage.catalog import KnowledgeCatalog
 from libhippo.storage.mount import (
     MountConfig,
@@ -388,6 +393,19 @@ class KnowledgeStore:
         virtual_path = self.mount_manager.resolve_physical_path(fs_path) or path
         candidate = KnowledgeCandidate.from_markdown(virtual_path, content)
 
+        # Silently drop agent-provided 2~4 properties and reconcile with previous disk state
+        existing_candidate = None
+        if fs_path.exists():
+            try:
+                prev_text = fs_path.read_text(encoding="utf-8")
+                existing_candidate = KnowledgeCandidate.from_markdown(virtual_path, prev_text)
+            except Exception:
+                pass
+
+        if candidate.frontmatter:
+            reconcile_candidate_frontmatter(candidate, previous_candidate=existing_candidate)
+            content = candidate.to_markdown()
+
         fetched_upstream: str | None = None
         if resolve_version and candidate.frontmatter and candidate.frontmatter.version_check:
             from libhippo.storage.freshness import FreshnessChecker
@@ -663,3 +681,144 @@ class KnowledgeStore:
             }
 
         raise ValueError(f"Unsupported modify_knowledge action: {action}")
+
+    async def list_knowledge(self, path: str = ".", max_depth: int = 2) -> str:
+        """Structural listing of knowledge namespaces and documents behaving like list_dir.
+
+        Zero curation, zero version checking, zero LLM calls.
+        """
+        lines: list[str] = []
+        if path in (".", "", "/"):
+            lines.append("knowledge/")
+            mounts = self.mount_manager.get_all_mounts()
+            for idx, m in enumerate(mounts):
+                is_last_m = idx == len(mounts) - 1
+                connector = "└── " if is_last_m else "├── "
+                child_prefix = "    " if is_last_m else "│   "
+                lines.append(f"{connector}{m.namespace_prefix}/")
+                if m.physical_path.exists() and m.physical_path.is_dir():
+                    self._build_knowledge_tree(
+                        m.physical_path,
+                        child_prefix,
+                        current_depth=1,
+                        max_depth=max_depth,
+                        lines=lines,
+                    )
+        else:
+            norm = path.strip("/.")
+            try:
+                target_phys = self.mount_manager.resolve_physical_path(norm)
+            except Exception:
+                target_phys = self.root_dir / norm
+
+            if not target_phys.exists():
+                return f"[Knowledge directory or node not found: '{path}']"
+            if target_phys.is_file():
+                return f"{norm} (file)"
+            lines.append(f"{norm}/")
+            self._build_knowledge_tree(
+                target_phys,
+                "",
+                current_depth=1,
+                max_depth=max_depth,
+                lines=lines,
+            )
+        return "\n".join(lines)
+
+    def _build_knowledge_tree(
+        self,
+        current: Path,
+        prefix: str,
+        current_depth: int,
+        max_depth: int,
+        lines: list[str],
+    ) -> None:
+        if current_depth > max_depth:
+            return
+        try:
+            entries = sorted(current.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+        except OSError:
+            return
+
+        visible = [
+            e
+            for e in entries
+            if not e.name.startswith(".") and (e.is_dir() or e.name.endswith(".md"))
+        ]
+        count = len(visible)
+        for idx, entry in enumerate(visible):
+            is_last = idx == count - 1
+            connector = "└── " if is_last else "├── "
+            child_prefix = "    " if is_last else "│   "
+            if entry.is_dir():
+                lines.append(f"{prefix}{connector}{entry.name}/")
+                self._build_knowledge_tree(
+                    entry, prefix + child_prefix, current_depth + 1, max_depth, lines
+                )
+            else:
+                lines.append(f"{prefix}{connector}{entry.name}")
+
+    async def search_knowledge(
+        self,
+        pattern: str = "*",
+        path: str = ".",
+        content_pattern: str | None = None,
+    ) -> str:
+        """Fast lexical search matching path globs and/or content regex across knowledge documents.
+
+        Zero curation, zero version checking, zero LLM calls.
+        """
+        matches: list[str] = []
+        c_regex = re.compile(content_pattern, re.IGNORECASE) if content_pattern else None
+
+        search_dirs: list[tuple[str, Path]] = []
+        if path in (".", "", "/"):
+            for m in self.mount_manager.get_all_mounts():
+                if m.physical_path.exists():
+                    search_dirs.append((m.namespace_prefix, m.physical_path))
+        else:
+            norm = path.strip("/.")
+            try:
+                phys = self.mount_manager.resolve_physical_path(norm)
+            except Exception:
+                phys = self.root_dir / norm
+            if phys.exists():
+                search_dirs.append((norm, phys))
+
+        for base_ns, root in search_dirs:
+            if root.is_file():
+                files = [root]
+            else:
+                files = [
+                    p
+                    for p in root.rglob("*.md")
+                    if not any(part.startswith(".") for part in p.parts)
+                ]
+
+            for f in sorted(files):
+                rel_parts = f.relative_to(root).as_posix() if root.is_dir() else f.name
+                virt_path = f"{base_ns}/{rel_parts}" if root.is_dir() and rel_parts != "." else base_ns
+                virt_path = virt_path.replace("//", "/")
+
+                if pattern and pattern != "*":
+                    if not fnmatch.fnmatch(virt_path, pattern) and not fnmatch.fnmatch(f.name, pattern):
+                        continue
+
+                if c_regex:
+                    try:
+                        text = f.read_text(encoding="utf-8", errors="replace")
+                    except OSError:
+                        continue
+                    file_matches = []
+                    for line_no, line in enumerate(text.splitlines(), start=1):
+                        if c_regex.search(line):
+                            file_matches.append(f"  {line_no}: {line.strip()[:150]}")
+                    if file_matches:
+                        matches.append(f"{virt_path}:\n" + "\n".join(file_matches[:10]))
+                else:
+                    matches.append(virt_path)
+
+        if not matches:
+            return "No matching knowledge documents found."
+        return "\n".join(matches)
+

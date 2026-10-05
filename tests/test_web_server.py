@@ -86,11 +86,10 @@ async def test_web_settings_apis(test_harness: GeneralAgentHarness):
 
         rt_post = await client.post(
             "/api/settings/runtime",
-            json={"mode": "turbo", "temperature": 0.5},
+            json={"mode": "turbo"},
         )
         assert rt_post.status == 200
         assert test_harness.config.mode.value == "turbo"
-        assert test_harness.config.temperature == 0.5
 
 
 @pytest.mark.asyncio

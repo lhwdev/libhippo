@@ -198,6 +198,68 @@ class ContextMemory:
 
         return tokens_evicted
 
+    def compact_zone2_summarization(self, target_tokens: int, preserve_tail_turns: int = 3) -> int:
+        """Summarize older Zone 2 conversational turns into a structured summary block when budget is exceeded."""
+        current_tokens = self.get_total_tokens()
+        if current_tokens <= target_tokens:
+            return 0
+
+        min_messages = 1 + 1 + preserve_tail_turns
+        if len(self.zone2_history) < min_messages:
+            return 0
+
+        head = self.zone2_history[0]
+        intermediate = self.zone2_history[1:-preserve_tail_turns]
+        tail = self.zone2_history[-preserve_tail_turns:]
+
+        if not intermediate:
+            return 0
+
+        summary_lines: list[str] = []
+        for msg in intermediate:
+            role = msg.role
+            raw_text = msg.content.strip()
+            if role == "user" and raw_text.startswith("<USER_PROMPT"):
+                inner = raw_text.split(">", 1)[-1]
+                inner = inner.rsplit("</USER_PROMPT>", 1)[0].strip()
+                raw_text = inner
+            snippet = raw_text[:200] + "..." if len(raw_text) > 200 else raw_text
+            summary_lines.append(f"- {role.capitalize()}: {snippet}")
+
+        ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        summary_content = (
+            f'<CONVERSATION_SUMMARY timestamp="{ts}">\n'
+            f"Summary of {len(intermediate)} earlier compacted conversation turns:\n"
+            + "\n".join(summary_lines)
+            + "\n</CONVERSATION_SUMMARY>"
+        )
+
+        summary_tokens = self.count_tokens(summary_content)
+        intermediate_tokens = sum(m.raw_token_count for m in intermediate)
+        delta = intermediate_tokens - summary_tokens
+
+        if delta <= 0:
+            return 0
+
+        summary_msg = ContextMessage(
+            role="user",
+            content=summary_content,
+            zone="zone2_linear",
+            raw_token_count=summary_tokens,
+            is_evictable=False,
+            metadata={"is_summary": True, "timestamp": ts, "compacted_turns": len(intermediate)},
+        )
+
+        self.zone2_history = [head, summary_msg] + tail
+        return delta
+
+    def compact_memory(self, target_tokens: int) -> int:
+        """Run two-phase compaction: Zone 3 tool eviction followed by Zone 2 turn summarization if needed."""
+        evicted = self.compact_zone3(target_tokens)
+        if self.get_total_tokens() > target_tokens:
+            evicted += self.compact_zone2_summarization(target_tokens)
+        return evicted
+
     def prune_past_tool_outputs(self) -> int:
         """Prune historical tool outputs from previous turns into compact Zone 3 pointers."""
         tokens_evicted = 0

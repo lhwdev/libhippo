@@ -10,6 +10,8 @@ from autogen_core.models import (
     AssistantMessage,
     ChatCompletionClient,
     CreateResult,
+    FunctionExecutionResult,
+    FunctionExecutionResultMessage,
     LLMMessage,
     ModelCapabilities,
     ModelInfo,
@@ -93,6 +95,7 @@ class MockInnerClient(ChatCompletionClient):
 
 def test_is_openai_logging_enabled_flag(monkeypatch: pytest.MonkeyPatch):
     """Verify is_openai_logging_enabled respects environment flags."""
+    monkeypatch.setattr("libhippo.models.logging_client._env_loaded", True)
     monkeypatch.delenv("LIBHIPPO_LOG_OPENAI", raising=False)
     monkeypatch.delenv("OPENAI_LOG", raising=False)
     monkeypatch.delenv("LOG_OPENAI", raising=False)
@@ -198,3 +201,41 @@ def test_logging_wrapper_disabled_by_default(monkeypatch: pytest.MonkeyPatch):
     inner = MockInnerClient()
     wrapped = wrap_client_if_logging_enabled(inner)
     assert wrapped is inner
+
+
+@pytest.mark.asyncio
+async def test_tool_output_truncation(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture):
+    """Verify tool output longer than 1500 chars is truncated in logs."""
+    monkeypatch.setenv("LIBHIPPO_LOG_OPENAI", "1")
+    inner = MockInnerClient()
+    wrapped = LoggingChatCompletionClient(inner)
+
+    long_output = "x" * 2500
+    messages = [
+        UserMessage(content="Run tool", source="user"),
+        FunctionExecutionResultMessage(
+            content=[FunctionExecutionResult(call_id="call_1", content=long_output, name="test_tool")]
+        ),
+    ]
+
+    with caplog.at_level(logging.INFO, logger="libhippo.openai"):
+        await wrapped.create(messages=messages)
+
+    log_text = caplog.text
+    assert "... [truncated 1000 characters] ..." in log_text
+
+
+def test_file_handler_logging(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    """Verify logs are written to local log file configured by LIBHIPPO_LOG_FILE."""
+    log_file = tmp_path / "test_libhippo.log"
+    monkeypatch.setenv("LIBHIPPO_LOG_FILE", str(log_file))
+    monkeypatch.setenv("LIBHIPPO_LOG_OPENAI", "1")
+    monkeypatch.setattr("libhippo.models.logging_client._file_handler_initialized", False)
+
+    from libhippo.models.logging_client import _setup_file_handler, logger
+    _setup_file_handler()
+
+    logger.info("Test log entry to file")
+    assert log_file.exists()
+    assert "Test log entry to file" in log_file.read_text(encoding="utf-8")
+

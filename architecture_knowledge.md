@@ -98,7 +98,7 @@ graph TD
 
 ### 3.0 Centralized Model Registry & Client Factory (`libhippo.models.llm`)
 All model instantiations across AutoGen Chat Completion clients (OpenAI) and TypeSafe System One (Jev) are centralized in `libhippo.models.llm`:
-- **`ModelConfig` Schema**: Standardizes `provider` (`openai` | `typesafe`), `model`, `fallback_model`, `temperature`, `reasoning_effort`, `cache_write`, `model_info` (required), and authentication headers.
+- **`ModelConfig` Schema**: Standardizes `provider` (`openai` | `typesafe`), `model`, `fallback_model`, `reasoning_effort`, `cache_write`, `model_info` (required), and authentication headers.
 - **Strict `model_info` Requirement**: AutoGen's client requires explicit `model_info` capabilities for frontier models (`gpt-6.1-sol`, `gpt-6-luna`, `gpt-5-nano`); `create_chat_client` strictly validates that `model_info` is declared either in `ModelConfig` or call arguments to eliminate implicit model capability assumptions.
 - **Factory Functions**:
   - `create_chat_client(role_or_config, ...)`: Instantiates `OpenAIChatCompletionClient` with role-specific defaults, mandatory `model_info`, and prompt caching flags.
@@ -114,7 +114,7 @@ All model instantiations across AutoGen Chat Completion clients (OpenAI) and Typ
 ---
 
 ### 3.1 `TaskSolverAgent` (Task Executor)
-- **Model & Temp**: User-Configurable.
+- **Model**: User-Configurable.
 - **Role & Interface**:
   - Issues `query_knowledge(query, effort, criticality)` calls with support for **Parallel Tool Calling**.
   - Formulates self-contained, disambiguated queries:
@@ -127,7 +127,7 @@ All model instantiations across AutoGen Chat Completion clients (OpenAI) and Typ
 - **Output**: Implementation code draft, technical summary.
 
 ### 3.2 `BookKeeperAgent` (Adaptive Librarian Subagent)
-- **Model & Temp**: `gpt-5-nano` (`temperature: 0.0`, minimal reasoning).
+- **Model**: `gpt-5-nano` (minimal reasoning).
 - **Operational Logic**:
   - **Zero-Context Sandbox**: Operates without session history; every lookup is strictly independent.
   - **Prompt Cache Write**: **DISABLED**: Stateless single-use queries avoid the cache write fee surcharge on prompts that are never re-read.
@@ -136,19 +136,30 @@ All model instantiations across AutoGen Chat Completion clients (OpenAI) and Typ
 - **Input**: `query_knowledge(query, effort="medium"|"high", criticality)`, including initial vector search candidate snippets (for `high` effort or `medium` fallback).
 - **Output**: Target markdown file path, verbatim snippet blocks, hit/miss status tags.
 
-### 3.3 `CuratorAgent` (Knowledge Draftsman)
-- **Model & Temp**: `gpt-6-luna` (`temperature: 0.1`, low reasoning).
-- **Role & Permissions**:
-  - Triggered exclusively on `MANDATORY` misses or refactoring directives from `VerifierAgent`.
+### 3.3 `CuratorAgent` & `KnowledgeHarvestSidecar` (Knowledge Draftsmen)
+- **Model**: `gpt-6-luna` (low reasoning).
+- **Operational Role & Permissions**:
+  - Triggered on `MANDATORY` misses (Curator), asynchronous background conversation learning (`KnowledgeHarvestSidecar`), or refactoring directives from `VerifierAgent`.
   - Scrapes technical specifications via `search_web` and `fetch_web`.
   - **Prompt Cache Write**: **ENABLED** during multi-turn Check → Verify refactoring loops; **DISABLED** on one-off external web scrapes.
-  - Blends official external facts with idiomatic programming patterns into knowledge markdown diffs.
-  - **Write-Protected**: Has no disk write tools; submits drafts solely to `CheckerAgent`.
-- **Input**: Missing topic descriptor, target URLs, change requests / split directives.
-- **Output**: Proposed markdown diff (addition, amendment, deprecation).
+  - Blends official external facts with idiomatic programming patterns into modular knowledge nodes.
+  - **Write-Protected from Store**: Operates strictly within temporary draft sessions (`.libhippo/drafts/<session_id>/`) and submits drafts solely to Maker-Checker governance via `commit()` or `commit_all()`.
+- **Knowledge Draftsman Tools & Protocols**:
+  - `write_knowledge(content, path=None, start_line=None, end_line=None, target=None)`:
+    - Pre-populates from store if editing an existing document.
+    - **Surgical Edit Discipline**: If `target` or `start_line`/`end_line` are specified, performs targeted surgical line replacements. If all are None, replaces the whole document (used only for initial creation or total rewrites).
+    - **Zero-LLM Sanity Checks**: Evaluates each edit immediately without LLM calls, returning diagnostics on YAML frontmatter schema compliance, token sizing bounds (500–1,000 target, 1,800 hard maximum), and markdown code block fence parity.
+  - `read_knowledge(path=None, start_line=1, end_line=None)`: Line-addressed reading of active draft (`path=None`) or existing store node (`path="common/..."`) to inspect hierarchies and avoid duplicate content.
+  - `list_knowledge(path=".", max_depth=2)`: Instant lexical tree listing of knowledge store (fast exploration, zero LLM overhead).
+  - `search_knowledge(pattern="*", path=".", content_pattern=None)`: Glob and regex text search across store nodes without curation delays.
+  - `commit(path: str)`: Finalizes and dispatches a single validated draft to Maker-Checker governance.
+  - `commit_all()`: Validates and dispatches all open session drafts (essential for multi-draft harvest sidecars).
+  - `run_command`: Executes compiler checks, linters, or syntax validators in the sandboxed workspace.
+- **Input**: Missing topic descriptor, target URLs, change requests / split directives, or conversation history.
+- **Output**: Validated knowledge node drafts submitted to `CheckerAgent`.
 
 ### 3.4 `CheckerAgent` (Primary Structural & Schema Gatekeeper)
-- **Model & Temp**: `TypeSafe Jev` (`temperature: 0.0`, deterministic typed inference).
+- **Model**: `TypeSafe Jev` (deterministic typed inference).
 - **Dual-Phase Audit**:
   - **Deterministic Local Code**: Evaluates raw token count (via `tiktoken`) and validates YAML frontmatter against Pydantic models.
   - **TypeSafe Jev Evaluation**: Assesses taxonomy fit, semantic bloatedness, dual-dimension importance (content depth and rule effectiveness), sibling coalescence, SRP coherence, and content quality (grammar & clarity, markdown formatting, practical utility).
@@ -218,7 +229,7 @@ Trigger boundary values change dynamically:
    - **Delete / Prune**: Deleted if **Importance Score** of content is low.
 
 ### 3.5 `VerifierAgent` (Knowledge Refactoring Authority)
-- **Model & Temp**: `gpt-6.1-sol` (`temperature: 0.0`, strict reasoning).
+- **Model**: `gpt-6.1-sol` (strict reasoning).
 - **Prompt Cache Write**: **ENABLED**: In the multi-turn Check → Verify refactoring context loop, turns append linearly.
 - **Escalated Hierarchy Refactoring & Gatekeeping**:
   - Invoked exclusively upon escalation from `CheckerAgent` (`ESCALATE_REFACTOR`).
@@ -237,12 +248,28 @@ Trigger boundary values change dynamically:
   1. Splitting and reorganizing `OVERSIZED` hierarchy branches.
   2. Resolving semantic deprecation conflicts.
 
-### 3.7 Context Stacking & Compaction in the Check-Verify Refactoring Loop
+### 3.7 Structured Outputs & Real-Time Observability
+- **Structured Outputs via Responses API (`json_output`)**:
+  - `BookKeeperAgent`: Strictly produces `BookKeeperLookupOutput(status, best_match, confidence, justification)`. When candidates list is empty, lookup immediately fast-bypasses LLM execution (`status="NO_CANDIDATES"`).
+  - `VerifierAgent`: Strictly produces `VerifierDirective(status, parent_hub, child_nodes, rationale, split_instructions)`.
+- **Real-Time Governance Observability (`KnowledgeAgentEvent`)**:
+  - Eliminates "blackbox" waiting periods during long-running curation and audit cycles.
+  - Emits typed events at every stage:
+    - `CuratorAgent`: `drafting` (`running` / `completed`) and `revise`.
+    - `CheckerAgent`: `audit` (`running`) and `audit_verdict` (`passed`, `escalated`, `rejected`).
+    - `VerifierAgent`: `refactor` (`running` / `completed` / `failed`).
+    - `MakerChecker`: `commit` and `merge`.
+  - **Dual Presentation**:
+    - **Progressive Stream**: Emits immediate bracketed notes into the conversational token stream (`[Knowledge: CuratorAgent drafting (completed) - ...]`).
+    - **Web UI Cards**: Transmitted over WebSocket `/ws/events` and rendered as compact collapsible `KnowledgeAgentCard` components in the timeline with expandable diagnostics and metrics.
+
+
+### 3.8 Context Stacking & Compaction in the Check-Verify Refactoring Loop
 During iterative refactoring cycles between `CheckerAgent`, `VerifierAgent`, and `CuratorAgent` (`Checker` $\rightarrow$ `Verifier` $\rightarrow$ `Curator` $\rightarrow$ `Checker` ...):
 - **Standard Linear Stacking**: Successive review rounds (Checker report $\rightarrow$ Verifier split directive $\rightarrow$ Curator child diffs $\rightarrow$ Checker re-audit) append linearly into the turn history for prompt caching across turns.
 - **Compact-on-Exceed**: When accumulated turn tokens exceed the context threshold, older conversation is compacted by well-known head-compact-tail method.
 
-### 3.8 Prompt Caching Strategies
+### 3.9 Prompt Caching Strategies
 Modern OpenAI models enforce an automatic **1,024-token prefix threshold** and charge a **1.25x cache write fee** (+25% surcharge), offset by 0.25x–0.50x read rates on cache hits. LibHippo uses three complementary caching strategies:
 1. **Stateless Sub-1k Bypass (`BookKeeperAgent`)**: Single-use lookups with lightweight system prompts and tool schemas kept under 1,024 tokens never trigger cache writes, completely avoiding the 1.25x write surcharge.
 2. **Zone 1 Static Prefix Caching (`TaskSolverAgent`, Refactoring Loop)**: In multi-turn sessions, static system prompt, tool schemas, and repository catalog summary are bundled into Zone 1 ($\ge 1,024$ tokens), written once and read at discounted rates across subsequent turns.
@@ -306,27 +333,37 @@ Within each mount point, files follow the Hub-and-Leaf pattern: every subdirecto
 - **Compaction & Rebuild (`rebuild_index`)**: Periodic rebuild to eliminate tombstone fragmentation in the HNSW vector index when mutation churn crosses a threshold (default 200 mutations). Compaction is executed **asynchronously in the background after a task run completes**, ensuring interactive task solving and user response times are never blocked by HNSW index recreation.
 
 
-### 4.5 Markdown Node Schema Example (`common/web/html/accessibility/aria_button.md`)
+### 4.5 Frontmatter Properties & 4-Tier Categorization
+
+Frontmatter properties are organized into four explicit functional tiers:
+1. **Written by Agent**:
+   - `title`: Required concise topic title.
+   - `version`: Optional version string (defaults to "1.0.0").
+   - `source`: Recommended list of authoritative documentation URLs.
+   - `version_check`: Optional upstream package or command version detector (e.g. `npm:react`, `pypi:fastapi`).
+   - `tags`: Optional list of discoverability tags.
+   - `related`: Optional list of related knowledge paths.
+2. **Classified by CheckerAgent**:
+   - `importance`: Float score (0.0 to 1.0) stamped by CheckerAgent / TypeSafe Jev.
+   - `status`: `"active"` | `"deprecated"` | `"needs_review"` governed by Checker audits. Agent drafts cannot declare or override these.
+3. **Systematically Resolved**:
+   - `namespace`: Derived dynamically from file path and mount root (e.g. `common/web.md` -> `common`). Not duplicated in frontmatter YAML.
+   - `nature`: Deprecated/eliminated; every node can contain subpages (Notion model).
+   - `last_updated`, `last_accessed`, `access_count`: Maintained systematically by the catalog engine.
+4. **Only by User**:
+   - `force_keep`: Optional boolean (`true` prevents automated renaming, splitting, or merging). Modifiable **only manually by the human user**. To prevent friction when modifying drafts, deterministic sanity checks do not reject categories 2~4 if present; instead, `reconcile_candidate_frontmatter` silently drops agent-provided values for categories 2~4 and restores the previous/actual values.
 
 ```markdown
 ---
 title: "Button Accessibility with ARIA"
-namespace: "common" # common | user | project | plugins
 version: "1.2.0"
-status: "active" # active | deprecated | needs_review
-force_keep: false # optional: true prevents automated renaming, splitting, or merging (e.g. symlinked subtrees)
-last_updated: "2026-09-28"
 source:
   - "https://www.w3.org/WAI/ARIA/apg/patterns/button/"
   - "https://github.com/w3c/aria"
-version_check: "github:w3c/aria" # optional: npm:pkg, pypi:pkg, github:owner/repo, crates:pkg, scrape:url#regex, terminal:cmd
+version_check: "github:w3c/aria"
 related:
   - "common/web/html/syntax.md"
 tags: ["html", "a11y", "aria", "button"]
-access_count: 0
-last_accessed: "2026-09-28"
-nature: "critical_rule" # foundation | critical_rule | transient_tip
-importance: 0.85 # 0.0 ~ 1.0 (Scored by CheckerAgent/Jev, retrieval tie-breaker boost)
 ---
 
 ## Summary (Coarse View)

@@ -21,6 +21,7 @@ from autogen_core.models import (
     FunctionExecutionResultMessage,
 )
 from openai import AsyncOpenAI
+from pydantic import BaseModel
 import uuid
 
 
@@ -40,6 +41,7 @@ class OpenAIResponsesClient(ChatCompletionClient):
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         self.base_url = base_url
         self.reasoning_effort = reasoning_effort
+        kwargs.pop("temperature", None)
         self.kwargs = kwargs
         self.last_response_id: str | None = None
         self._client = AsyncOpenAI(api_key=self.api_key or "mock-key", base_url=self.base_url)
@@ -252,11 +254,38 @@ class OpenAIResponsesClient(ChatCompletionClient):
         instructions, input_items = self._convert_messages(messages)
         return instructions, input_items, None
 
+    def _apply_structured_output(
+        self,
+        req_kwargs: dict[str, Any],
+        json_output: Any,
+        extra_create_args: dict[str, Any],
+    ) -> None:
+        target = (
+            json_output
+            if json_output is not None
+            else extra_create_args.get("json_output") or extra_create_args.get("response_format")
+        )
+        if target is None:
+            return
+        if isinstance(target, type) and issubclass(target, BaseModel):
+            req_kwargs["text"] = {
+                "format": {
+                    "type": "json_schema",
+                    "name": target.__name__,
+                    "strict": True,
+                    "schema": target.model_json_schema(),
+                }
+            }
+        elif isinstance(target, dict) and "type" in target:
+            req_kwargs["text"] = {"format": target}
+        elif target is True:
+            req_kwargs["text"] = {"format": {"type": "json_object"}}
+
     async def create(
         self,
         messages: Sequence[LLMMessage],
         tools: Sequence[Any] = [],
-        json_output: bool | None = None,
+        json_output: bool | type[BaseModel] | None = None,
         extra_create_args: dict[str, Any] = {},
         cancellation_token: Any | None = None,
     ) -> CreateResult:
@@ -272,19 +301,17 @@ class OpenAIResponsesClient(ChatCompletionClient):
         if formatted_tools:
             req_kwargs["tools"] = formatted_tools
 
+        self._apply_structured_output(req_kwargs, json_output, extra_create_args)
+
         effort = extra_create_args.get("reasoning_effort", self.reasoning_effort)
         if effort and effort != "none":
             req_kwargs["reasoning"] = {"effort": effort}
-
-        temp = extra_create_args.get("temperature", self.kwargs.get("temperature"))
-        if temp is not None:
-            req_kwargs["temperature"] = temp
 
         if prev_id:
             req_kwargs["previous_response_id"] = prev_id
 
         for k, v in self.kwargs.items():
-            if k not in req_kwargs and k not in ("temperature", "reasoning_effort"):
+            if k not in req_kwargs and k != "reasoning_effort":
                 req_kwargs[k] = v
 
         try:
@@ -308,7 +335,7 @@ class OpenAIResponsesClient(ChatCompletionClient):
         self,
         messages: Sequence[LLMMessage],
         tools: Sequence[Any] = [],
-        json_output: bool | None = None,
+        json_output: bool | type[BaseModel] | None = None,
         extra_create_args: dict[str, Any] = {},
         cancellation_token: Any | None = None,
     ) -> AsyncIterator[Any]:
@@ -325,19 +352,17 @@ class OpenAIResponsesClient(ChatCompletionClient):
         if formatted_tools:
             req_kwargs["tools"] = formatted_tools
 
+        self._apply_structured_output(req_kwargs, json_output, extra_create_args)
+
         effort = extra_create_args.get("reasoning_effort", self.reasoning_effort)
         if effort and effort != "none":
             req_kwargs["reasoning"] = {"effort": effort}
-
-        temp = extra_create_args.get("temperature", self.kwargs.get("temperature"))
-        if temp is not None:
-            req_kwargs["temperature"] = temp
 
         if prev_id:
             req_kwargs["previous_response_id"] = prev_id
 
         for k, v in self.kwargs.items():
-            if k not in req_kwargs and k not in ("temperature", "reasoning_effort"):
+            if k not in req_kwargs and k != "reasoning_effort":
                 req_kwargs[k] = v
 
         try:
@@ -386,6 +411,7 @@ class OpenAIResponsesWebSocketClient(ChatCompletionClient):
         self.ws_url = ws_url
         self.reasoning_effort = reasoning_effort
         self.enable_http_fallback = enable_http_fallback
+        kwargs.pop("temperature", None)
         self.kwargs = kwargs
         self._last_response_id: str | None = None
         self._is_connected: bool = False
@@ -527,12 +553,8 @@ class OpenAIResponsesWebSocketClient(ChatCompletionClient):
         if effort and effort != "none":
             create_event["reasoning"] = {"effort": effort}
 
-        temp = extra_create_args.get("temperature", self.kwargs.get("temperature"))
-        if temp is not None:
-            create_event["temperature"] = temp
-
         for k, v in self.kwargs.items():
-            if k not in create_event and k not in ("temperature", "reasoning_effort", "model"):
+            if k not in create_event and k not in ("reasoning_effort", "model"):
                 create_event[k] = v
 
         await self._connection.send(create_event)
@@ -592,12 +614,8 @@ class OpenAIResponsesWebSocketClient(ChatCompletionClient):
                 if effort and effort != "none":
                     create_event["reasoning"] = {"effort": effort}
 
-                temp = extra_create_args.get("temperature", self.kwargs.get("temperature"))
-                if temp is not None:
-                    create_event["temperature"] = temp
-
                 for k, v in self.kwargs.items():
-                    if k not in create_event and k not in ("temperature", "reasoning_effort", "model", "stream"):
+                    if k not in create_event and k not in ("reasoning_effort", "model", "stream"):
                         create_event[k] = v
 
                 await self._connection.send(create_event)

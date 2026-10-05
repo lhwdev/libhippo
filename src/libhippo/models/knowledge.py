@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from typing import Literal
+from dataclasses import dataclass, field
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field
@@ -13,23 +14,46 @@ NodeStatus = Literal["active", "deprecated", "needs_review"]
 NodeNature = Literal["foundation", "critical_rule", "transient_tip"]
 
 
+@dataclass
+class KnowledgeAgentEvent:
+    """Real-time observability event emitted during Maker-Checker curation/governance cycles."""
+
+    agent: str  # "CuratorAgent" | "CheckerAgent" | "VerifierAgent" | "BookKeeperAgent" | "MakerChecker"
+    action: str  # "drafting" | "audit" | "audit_verdict" | "refactor" | "mutation_executed" | "commit" | "merge"
+    status: str  # "running" | "completed" | "passed" | "rejected" | "escalated" | "failed"
+    target_path: str = ""
+    details: dict[str, Any] = field(default_factory=dict)
+    input_summary: str = ""
+    output_summary: str = ""
+    timestamp: str = ""
+    type: str = "knowledge_agent"
+
+
+
 class KnowledgeFrontmatter(BaseModel):
     """Frontmatter metadata schema for knowledge markdown nodes."""
 
+    # 1. Written by Agent
     title: str
-    namespace: Namespace
     version: str = "1.0.0"
+    source: list[str] = Field(default_factory=list)
+    version_check: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    related: list[str] = Field(default_factory=list)
+
+    # 2. Classified by CheckerAgent / VerifierAgent
     status: NodeStatus = "active"
-    nature: NodeNature = "foundation"
     importance: float = Field(default=0.5, ge=0.0, le=1.0)
-    force_keep: bool = False
+
+    # 3. Systematically Resolved (derived from path/disk, omitted from standard frontmatter)
+    namespace: Namespace | str | None = None
+    nature: str | None = None
     last_updated: str | None = None
     last_accessed: str | None = None
     access_count: int = 0
-    tags: list[str] = Field(default_factory=list)
-    related: list[str] = Field(default_factory=list)
-    source: list[str] = Field(default_factory=list)
-    version_check: str | None = None
+
+    # 4. User-Only (reject agent input; only set manually by user)
+    force_keep: bool = False
 
 
 class KnowledgeCandidate(BaseModel):
@@ -41,12 +65,32 @@ class KnowledgeCandidate(BaseModel):
     body: str = ""
     parse_errors: list[str] = Field(default_factory=list)
 
+    @property
+    def namespace(self) -> str:
+        """Systematically resolved namespace derived from path or physical mount."""
+        if self.frontmatter and self.frontmatter.namespace:
+            return self.frontmatter.namespace
+        parts = self.path.split("/")
+        return parts[0] if len(parts) > 1 else "common"
+
     def to_markdown(self) -> str:
         """Serialize frontmatter and body back to markdown with '---' delimiters."""
         if not self.frontmatter:
             return self.body
         fm_dict = self.frontmatter.model_dump(exclude_none=True)
-        # Exclude internal tracking or empty fields if desired, or dump standard dict
+        # Omit systematically resolved namespace and deprecated nature
+        fm_dict.pop("namespace", None)
+        fm_dict.pop("nature", None)
+        # Omit force_keep unless explicitly true (user-set)
+        if not fm_dict.get("force_keep"):
+            fm_dict.pop("force_keep", None)
+        # Omit internal access counters from frontmatter text
+        fm_dict.pop("access_count", None)
+        fm_dict.pop("last_accessed", None)
+        if fm_dict.get("importance") == 0.5:
+            # Default unclassified importance doesn't need to clutter frontmatter
+            pass
+
         yaml_str = yaml.safe_dump(fm_dict, sort_keys=False).strip()
         body_clean = self.body.strip()
         return f"---\n{yaml_str}\n---\n\n{body_clean}\n" if body_clean else f"---\n{yaml_str}\n---\n"
@@ -74,6 +118,10 @@ class KnowledgeCandidate(BaseModel):
                     body=body,
                     parse_errors=["Frontmatter YAML is not a key-value mapping"],
                 )
+
+            # Systematically resolve namespace from path if not provided
+            if "namespace" not in parsed_yaml and path:
+                parsed_yaml["namespace"] = path.split("/")[0] if "/" in path else "common"
 
             # Silent type coercions
             if "source" in parsed_yaml and isinstance(parsed_yaml["source"], str):
@@ -128,6 +176,53 @@ def normalize_frontmatter(
         candidate.markdown = candidate.to_markdown()
 
     return candidate, fixes
+
+
+def reconcile_candidate_frontmatter(
+    candidate: KnowledgeCandidate,
+    previous_candidate: KnowledgeCandidate | None = None,
+    importance: float | None = None,
+    status: NodeStatus | None = None,
+) -> KnowledgeCandidate:
+    """Silently drop agent-provided properties for categories 2-4 and replace with previous/actual values.
+
+    Categories:
+    1. Written by Agent (title, version, source, version_check, tags, related) -> preserved from candidate.
+    2. Classified by Checker (importance, status) -> replaced with actual audit value or previous value.
+    3. Systematically Resolved (namespace, nature, timestamps, counters) -> derived from path and storage.
+    4. User-Only (force_keep) -> replaced with previous value from disk (or False if new).
+    """
+    if not candidate.frontmatter:
+        return candidate
+
+    fm = candidate.frontmatter
+
+    # Category 4: User-only force_keep (replace with previous value if modifying existing)
+    if previous_candidate and previous_candidate.frontmatter:
+        fm.force_keep = previous_candidate.frontmatter.force_keep
+
+    # Category 2: Checker-classified importance & status
+    if importance is not None:
+        fm.importance = importance
+    elif previous_candidate and previous_candidate.frontmatter:
+        fm.importance = previous_candidate.frontmatter.importance
+
+    if status is not None:
+        fm.status = status
+    elif previous_candidate and previous_candidate.frontmatter:
+        fm.status = previous_candidate.frontmatter.status
+
+    # Category 3: Systematically resolved
+    fm.namespace = candidate.namespace
+    fm.nature = None
+    if previous_candidate and previous_candidate.frontmatter:
+        fm.access_count = previous_candidate.frontmatter.access_count
+        fm.last_accessed = previous_candidate.frontmatter.last_accessed
+        if previous_candidate.frontmatter.last_updated:
+            fm.last_updated = previous_candidate.frontmatter.last_updated
+
+    candidate.markdown = candidate.to_markdown()
+    return candidate
 
 
 def update_markdown_version(markdown: str, new_version: str) -> str:

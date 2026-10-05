@@ -45,6 +45,7 @@ class KnowledgeDispatcher:
         orchestrator: Any | None = None,
         threshold_low: float = 0.70,
         threshold_medium: float = 0.82,
+        on_event: Any | None = None,
     ) -> None:
         self.store = store
         self.orchestrator = orchestrator
@@ -53,6 +54,7 @@ class KnowledgeDispatcher:
         self.book_keeper = book_keeper
         self.threshold_low = threshold_low
         self.threshold_medium = threshold_medium
+        self.on_event = on_event
 
     async def query_knowledge(
         self,
@@ -96,8 +98,8 @@ class KnowledgeDispatcher:
                     source="fast_path",
                 )
                 return await self._apply_staleness_routing(res, effort="medium", criticality=criticality)
-            # Below medium threshold -> escalate to BookKeeperAgent if available
-            if self.book_keeper:
+            # Below medium threshold -> escalate to BookKeeperAgent if available and matches exist
+            if self.book_keeper and matches:
                 bk_res = await self._invoke_bookkeeper(query, candidates=matches, criticality=criticality)
                 if bk_res.status == "HIT":
                     return await self._apply_staleness_routing(bk_res, effort="medium", criticality=criticality)
@@ -108,7 +110,7 @@ class KnowledgeDispatcher:
         # 3. High Effort Tier: Vector seed match + deep BookKeeper exploration
         if effort == "high":
             matches = await self.store.search(query=query, top_k=5)
-            if self.book_keeper:
+            if self.book_keeper and matches:
                 bk_res = await self._invoke_bookkeeper(query, candidates=matches, criticality=criticality)
                 if bk_res.status == "HIT":
                     return await self._apply_staleness_routing(bk_res, effort="high", criticality=criticality)
@@ -253,7 +255,10 @@ class KnowledgeDispatcher:
         if criticality == "mandatory":
             if self.orchestrator and getattr(self.orchestrator, "curator", None):
                 try:
-                    gov_res = await self.orchestrator.curate_and_govern(topic=query)
+                    gov_res = await self.orchestrator.curate_and_govern(
+                        topic=query,
+                        on_event=self.on_event,
+                    )
                     if gov_res.status == "COMMITTED":
                         node = await self.store.get_node(gov_res.path)
                         summary = (
@@ -334,6 +339,8 @@ class KnowledgeDispatcher:
         criticality: CriticalityTier,
     ) -> KnowledgeRetrievalResult:
         """Invoke BookKeeperAgent for query expansion and cross-referencing."""
+        if not self.book_keeper or not candidates:
+            return self._handle_miss(query, effort="medium", criticality=criticality)
         try:
             bk_response = await self.book_keeper.lookup(query=query, candidates=candidates, criticality=criticality)
             if isinstance(bk_response, dict):

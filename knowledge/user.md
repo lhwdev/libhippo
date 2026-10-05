@@ -9,6 +9,6 @@ tags: ["user", "preferences"]
 nature: "foundation"
 ---
 
-# User Knowledge Hub (Level 0 Root Hub)
+# User Knowledge
 
 User-specific preferences, preferred code styles, tool configurations, and customized workflows.

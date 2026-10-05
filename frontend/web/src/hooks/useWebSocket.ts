@@ -138,6 +138,31 @@ export function useWebSocket() {
             ]);
             break;
 
+          case "knowledge_agent": {
+            setMessages((prev) => {
+              const last = prev[prev.length - 1];
+              if (last && last.role === "assistant") {
+                const current = last.knowledgeEvents || [];
+                return [
+                  ...prev.slice(0, -1),
+                  { ...last, knowledgeEvents: [...current, data] },
+                ];
+              } else {
+                return [
+                  ...prev,
+                  {
+                    id: `asst-${Date.now()}`,
+                    role: "assistant",
+                    content: "",
+                    knowledgeEvents: [data],
+                    timestamp: new Date().toLocaleTimeString(),
+                  },
+                ];
+              }
+            });
+            break;
+          }
+
           case "turn_completed":
             setIsStreaming(false);
             setTotalTokens(data.total_tokens);

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
 from autogen_agentchat.agents import AssistantAgent
 from autogen_core.models import ChatCompletionClient
+from pydantic import BaseModel, Field
 
 from libhippo.agents.base import BaseHippoAgent
 from libhippo.agents.prompts import get_agent_system_prompt
@@ -16,6 +18,22 @@ from libhippo.models.llm import create_chat_client
 from libhippo.storage.mount import ReadOnlyMountError
 from libhippo.storage.store import KnowledgeStore
 from libhippo.tools.registry import ToolRegistry
+
+
+class VerifierDirective(BaseModel):
+    """Structured response format for Verifier escalation resolution."""
+
+    status: str = Field(
+        default="REFACTOR_PLANNED",
+        description="Resolution status: MUTATION_EXECUTED, REFACTOR_PLANNED, APPROVED, REJECTED",
+    )
+    action: str = Field(
+        default="update",
+        description="Refactoring action: split, merge, update, deprecate",
+    )
+    parent_hub: str | None = Field(default=None, description="Path to parent hub if promoting or splitting")
+    children: list[dict[str, str]] = Field(default_factory=list, description="Child nodes for split")
+    rationale: str = Field(default="", description="Architectural rationale for refactoring decision")
 
 
 class VerifierAgent(AssistantAgent, BaseHippoAgent):
@@ -43,7 +61,10 @@ class VerifierAgent(AssistantAgent, BaseHippoAgent):
             tools = [
                 reg.get_modify_knowledge_tool(),
                 reg.get_read_knowledge_tool(),
+                reg.get_list_knowledge_tool(),
                 reg.get_search_knowledge_tool(),
+                reg.get_write_knowledge_tool(),
+                reg.get_run_command_tool(),
             ]
 
         AssistantAgent.__init__(
@@ -54,6 +75,7 @@ class VerifierAgent(AssistantAgent, BaseHippoAgent):
             system_message=sys_msg,
             description=description,
             max_tool_iterations=max_tool_iterations,
+            output_content_type=VerifierDirective,
         )
         BaseHippoAgent.__init__(self, name=name, description=description)
         self.store = store
@@ -82,10 +104,22 @@ class VerifierAgent(AssistantAgent, BaseHippoAgent):
         )
 
         result = await self.run(task=prompt)
-        last_message = result.messages[-1].content if result.messages else ""
-        raw_text = last_message if isinstance(last_message, str) else str(last_message)
+        last_message = result.messages[-1] if result.messages else None
 
-        parsed = self.parse_directive(raw_text)
+        if hasattr(last_message, "content") and isinstance(last_message.content, VerifierDirective):
+            obj = last_message.content
+            parsed = {
+                "status": obj.status,
+                "action": obj.action,
+                "parent_hub": obj.parent_hub or "",
+                "children": obj.children,
+                "rationale": obj.rationale,
+                "raw_response": obj.model_dump_json(),
+            }
+        else:
+            raw_text = getattr(last_message, "content", "") if last_message else ""
+            raw_text = raw_text if isinstance(raw_text, str) else str(raw_text)
+            parsed = self.parse_directive(raw_text)
 
         # If store is available and refactoring planned but not executed via tool,
         # we can verify or complete operations
@@ -154,6 +188,21 @@ class VerifierAgent(AssistantAgent, BaseHippoAgent):
     @staticmethod
     def parse_directive(text: str) -> dict[str, Any]:
         """Parse structured refactoring directive output from VerifierAgent."""
+        trimmed = text.strip()
+        if trimmed.startswith("{") and trimmed.endswith("}"):
+            try:
+                data = json.loads(trimmed)
+                return {
+                    "status": data.get("status", "REFACTOR_PLANNED"),
+                    "action": data.get("action", "update"),
+                    "parent_hub": data.get("parent_hub") or "",
+                    "children": data.get("children", []),
+                    "rationale": data.get("rationale", ""),
+                    "raw_response": text,
+                }
+            except Exception:
+                pass
+
         status_match = re.search(r"STATUS:\s*([A-Z_]+)", text)
         status = status_match.group(1).strip() if status_match else "REFACTOR_PLANNED"
 

@@ -2,17 +2,32 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
 from autogen_agentchat.agents import AssistantAgent
 from autogen_core.models import ChatCompletionClient
+from pydantic import BaseModel, Field
 
 from libhippo.agents.base import BaseHippoAgent
 from libhippo.agents.prompts import get_agent_system_prompt
 from libhippo.models.llm import create_chat_client
 from libhippo.storage.store import KnowledgeStore
-from libhippo.tools.registry import ToolRegistry
+
+
+class BookKeeperLookupOutput(BaseModel):
+    """Structured response format for BookKeeper technical retrieval."""
+
+    status: str = Field(
+        default="[MISS:FALLBACK]",
+        description="Retrieval status: [HIT], [MISS:STALE], [MISS:GAP], [MISS:FALLBACK]",
+    )
+    path: str | None = Field(default=None, description="Direct matching knowledge path if found")
+    confidence: float = Field(default=0.5, description="Confidence score between 0.0 and 1.0")
+    title: str = Field(default="", description="Title of the matched knowledge document")
+    snippet: str = Field(default="", description="Verbatim code or markdown snippet from the knowledge document")
+    rationale: str = Field(default="", description="Concise explanation for hit or miss")
 
 
 class BookKeeperAgent(AssistantAgent, BaseHippoAgent):
@@ -36,6 +51,8 @@ class BookKeeperAgent(AssistantAgent, BaseHippoAgent):
         sys_msg = system_message or get_agent_system_prompt("book_keeper")
 
         if tools is None and store is not None:
+            from libhippo.tools.registry import ToolRegistry
+
             reg = ToolRegistry(store=store)
             tools = [
                 reg.get_search_knowledge_tool(),
@@ -50,6 +67,7 @@ class BookKeeperAgent(AssistantAgent, BaseHippoAgent):
             system_message=sys_msg,
             description=description,
             max_tool_iterations=max_tool_iterations,
+            output_content_type=BookKeeperLookupOutput,
         )
         BaseHippoAgent.__init__(self, name=name, description=description)
         self.store = store
@@ -57,28 +75,67 @@ class BookKeeperAgent(AssistantAgent, BaseHippoAgent):
     async def lookup(
         self,
         query: str,
-        candidates: list[Any] | None = None,
+        candidates: list[Any],
         criticality: str = "preferred",
     ) -> dict[str, Any]:
         """Perform a stateless, zero-context lookup and parse the structured output."""
+        if not candidates:
+            return {
+                "status": "[MISS:FALLBACK]",
+                "path": None,
+                "confidence": 0.0,
+                "title": "",
+                "snippet": "",
+                "rationale": "No initial candidates provided.",
+                "raw_response": "",
+            }
+
         task_prompt = f"QUERY: {query}\nCRITICALITY: {criticality}\n"
-        if candidates:
-            task_prompt += "INITIAL_CANDIDATES:\n"
-            for c in candidates:
-                path = getattr(c, "path", str(c))
-                title = getattr(c, "title", "")
-                conf = getattr(c, "confidence", "")
-                task_prompt += f"- {path} ({title}, conf={conf})\n"
+        task_prompt += "INITIAL_CANDIDATES:\n"
+        for c in candidates:
+            path = getattr(c, "path", str(c))
+            title = getattr(c, "title", "")
+            conf = getattr(c, "confidence", "")
+            task_prompt += f"- {path} ({title}, conf={conf})\n"
 
         result = await self.run(task=task_prompt)
-        last_message = result.messages[-1].content if result.messages else ""
-        text = last_message if isinstance(last_message, str) else str(last_message)
+        last_message = result.messages[-1] if result.messages else None
 
+        if hasattr(last_message, "content") and isinstance(last_message.content, BookKeeperLookupOutput):
+            obj = last_message.content
+            return {
+                "status": obj.status,
+                "path": obj.path,
+                "confidence": obj.confidence,
+                "title": obj.title,
+                "snippet": obj.snippet,
+                "rationale": obj.rationale,
+                "raw_response": obj.model_dump_json(),
+            }
+
+        text = getattr(last_message, "content", "") if last_message else ""
+        text = text if isinstance(text, str) else str(text)
         return self.parse_output(text)
 
     @staticmethod
     def parse_output(text: str) -> dict[str, Any]:
         """Parse BookKeeperAgent's structured output format into a clean dictionary."""
+        trimmed = text.strip()
+        if trimmed.startswith("{") and trimmed.endswith("}"):
+            try:
+                data = json.loads(trimmed)
+                return {
+                    "status": data.get("status", "[MISS:FALLBACK]"),
+                    "path": data.get("path"),
+                    "confidence": float(data.get("confidence", 0.5)),
+                    "title": data.get("title", ""),
+                    "snippet": data.get("snippet", ""),
+                    "rationale": data.get("rationale", ""),
+                    "raw_response": text,
+                }
+            except Exception:
+                pass
+
         status_match = re.search(r"STATUS:\s*(\[[A-Z:]+\]|[A-Z:_]+)", text, re.IGNORECASE)
         status = status_match.group(1).strip() if status_match else "[MISS:FALLBACK]"
         if not status.startswith("[") and not status.endswith("]"):

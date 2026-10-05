@@ -6,6 +6,7 @@ import os
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+from typesafe_sdk import AsyncTypeSafeClient
 
 from libhippo.models.logging_client import wrap_client_if_logging_enabled
 
@@ -19,7 +20,6 @@ class ModelConfig(BaseModel):
     provider: ModelProvider = "openai"
     model: str
     fallback_model: str | None = None
-    temperature: float | None = None
     reasoning_effort: Literal["none", "minimal", "low", "medium", "high"] | None = None
     cache_write: bool = False
     cache_mode: Literal["auto", "explicit", "off"] = "auto"
@@ -34,9 +34,10 @@ class ModelConfig(BaseModel):
     def resolve_model_name(self) -> str:
         """Resolve effective model name using fallback if configured or in test mode."""
         use_fallback = os.getenv("LIBHIPPO_USE_FALLBACK_MODELS", "0") in ("1", "true", "True")
-        if use_fallback and self.fallback_model:
-            return self.fallback_model
-        return self.model
+        target = self.fallback_model if use_fallback and self.fallback_model else self.model
+        if self.provider == "typesafe" and target == "jev":
+            return "jev-latest"
+        return target
 
 
 DEFAULT_OPENAI_MODEL_INFO: dict[str, Any] = {
@@ -78,7 +79,6 @@ DEFAULT_AGENT_MODELS: dict[AgentRole, ModelConfig] = {
     "task_solver": ModelConfig(
         provider="openai",
         model="gpt-6.1-sol",
-        temperature=None,
         reasoning_effort="medium",
         cache_write=True,
         cache_mode="auto",
@@ -88,7 +88,6 @@ DEFAULT_AGENT_MODELS: dict[AgentRole, ModelConfig] = {
     "book_keeper": ModelConfig(
         provider="openai",
         model="gpt-5-nano",
-        temperature=0.0,
         reasoning_effort="low",
         cache_write=False,
         cache_mode="explicit",
@@ -99,7 +98,6 @@ DEFAULT_AGENT_MODELS: dict[AgentRole, ModelConfig] = {
     "curator": ModelConfig(
         provider="openai",
         model="gpt-6-luna",
-        temperature=0.1,
         reasoning_effort="medium",
         cache_write=False,
         cache_mode="explicit",
@@ -109,14 +107,12 @@ DEFAULT_AGENT_MODELS: dict[AgentRole, ModelConfig] = {
     ),
     "checker": ModelConfig(
         provider="typesafe",
-        model="jev",
-        temperature=0.0,
+        model="jev-latest",
         cache_write=False,
     ),
     "verifier": ModelConfig(
         provider="openai",
         model="gpt-6.1-sol",
-        temperature=0.0,
         reasoning_effort="high",
         cache_write=True,
         cache_mode="auto",
@@ -186,8 +182,6 @@ class ModelRegistry:
         }
         if base_url:
             kwargs["base_url"] = base_url
-        if config.temperature is not None:
-            kwargs["temperature"] = config.temperature
         if config.reasoning_effort is not None:
             kwargs["reasoning_effort"] = config.reasoning_effort
         if config.default_headers:
@@ -195,6 +189,7 @@ class ModelRegistry:
 
         kwargs.update(config.extra_kwargs)
         kwargs.update(override_kwargs)
+        kwargs.pop("temperature", None)
 
         effective_model_info = (
             override_kwargs.get("model_info")
@@ -207,9 +202,8 @@ class ModelRegistry:
 
         # Filter out None values
         filtered_kwargs = {k: v for k, v in kwargs.items() if v is not None}
-        
-        from libhippo.runner.transport import OpenAIResponsesClient
 
+        from libhippo.runner.transport import OpenAIResponsesClient # cyclic import if not placed here
         client = OpenAIResponsesClient(**filtered_kwargs)
         return wrap_client_if_logging_enabled(client, agent_role=str(role_key) if role_key else None)
 
@@ -228,8 +222,6 @@ class ModelRegistry:
             if isinstance(role_or_config, ModelConfig)
             else self.get_config(str(role_or_config))
         )
-
-        from typesafe_sdk import AsyncTypeSafeClient
 
         api_key = config.api_key or os.getenv("TYPESAFE_API_KEY")
         base_url = config.base_url or os.getenv("TYPESAFE_BASE_URL")

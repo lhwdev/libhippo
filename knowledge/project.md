@@ -9,6 +9,6 @@ tags: ["project", "libhippo", "architecture"]
 nature: "foundation"
 ---
 
-# Project Knowledge Hub (Level 0 Root Hub)
+# Project Knowledge
 
 Project-level standards, architecture specifications, API schemas, and development guidelines for LibHippo.

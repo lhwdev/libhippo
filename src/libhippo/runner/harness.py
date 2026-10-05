@@ -37,6 +37,7 @@ from libhippo.runner.tools import CodingToolSuite
 from libhippo.runner.transport import OpenAIResponsesWebSocketClient
 from libhippo.runner.types import (
     HarnessEvent,
+    KnowledgeAgentEvent,
     PhaseTransitionEvent,
     TokenChunkEvent,
     ToolCallResultEvent,
@@ -120,8 +121,6 @@ class GeneralAgentHarness:
             self.model_client = wrap_client_if_logging_enabled(model_client, agent_role="TaskSolverAgent")
         else:
             client_kwargs: dict[str, Any] = {}
-            if self.config.temperature is not None:
-                client_kwargs["temperature"] = self.config.temperature
 
             if self.config.transport_mode == "websocket":
                 self.model_client = wrap_client_if_logging_enabled(
@@ -162,10 +161,29 @@ class GeneralAgentHarness:
         self.registered_tools = self.tools.get_tool_definitions()
         self.sidecar = SidecarExecutor(model_client=self.model_client)
         self.harvest_observer = KnowledgeHarvestObserver()
+        self.on_event_broadcast: Callable[[KnowledgeAgentEvent], Any] | None = None
+        self._active_stream_queue: asyncio.Queue[KnowledgeAgentEvent] | None = None
+
+        def _on_knowledge_event(evt: KnowledgeAgentEvent) -> None:
+            if self._active_stream_queue is not None:
+                self._active_stream_queue.put_nowait(evt)
+            elif self.on_event_broadcast is not None:
+                try:
+                    res = self.on_event_broadcast(evt)
+                    if asyncio.iscoroutine(res):
+                        asyncio.create_task(res)
+                except Exception:
+                    pass
+
+        self.agent_manager.orchestrator.on_event = _on_knowledge_event
+        if self.dispatcher and hasattr(self.dispatcher, "on_event"):
+            self.dispatcher.on_event = _on_knowledge_event
+
         self.harvest_sidecar = KnowledgeHarvestSidecar(
             model_client=self.model_client,
             store=self.store,
             orchestrator=self.agent_manager.orchestrator,
+            on_event=_on_knowledge_event,
         )
         self._active_sidecar_tasks: set[asyncio.Task[Any]] = set()
 
@@ -288,6 +306,8 @@ class GeneralAgentHarness:
             return
 
         self.is_running = True
+        queue: asyncio.Queue[KnowledgeAgentEvent] = asyncio.Queue()
+        self._active_stream_queue = queue
         try:
             if self._interrupt_event.is_set():
                 self._interrupt_event.clear()
@@ -435,7 +455,22 @@ class GeneralAgentHarness:
                             continue
 
                         try:
-                            result = await tool_def.handler(**args)
+                            handler_task = asyncio.create_task(tool_def.handler(**args))
+                            while not handler_task.done():
+                                try:
+                                    k_evt = await asyncio.wait_for(queue.get(), timeout=0.08)
+                                    yield k_evt
+                                    summary = k_evt.output_summary or k_evt.input_summary
+                                    yield TokenChunkEvent(delta=f"\n[Knowledge: {k_evt.agent} {k_evt.action} ({k_evt.status}) - {summary}]\n")
+                                except asyncio.TimeoutError:
+                                    pass
+                            while not queue.empty():
+                                k_evt = queue.get_nowait()
+                                yield k_evt
+                                summary = k_evt.output_summary or k_evt.input_summary
+                                yield TokenChunkEvent(delta=f"\n[Knowledge: {k_evt.agent} {k_evt.action} ({k_evt.status}) - {summary}]\n")
+
+                            result = await handler_task
                             yield ToolCallResultEvent(tool_call_id=call_id, name=tool_name, result=result, error=None)
                             result_str = str(result) if not isinstance(result, str) else result
                             t_msg = self.memory.append_tool_output(
@@ -493,6 +528,7 @@ class GeneralAgentHarness:
             self._active_sidecar_tasks.add(bg_task)
             bg_task.add_done_callback(self._active_sidecar_tasks.discard)
         finally:
+            self._active_stream_queue = None
             self.is_running = False
 
     run = stream
@@ -549,8 +585,8 @@ class GeneralAgentHarness:
         asyncio.create_task(self.session.append_message(int_msg))
 
     def compact_context(self) -> int:
-        """Trigger explicit Zone 3 tool output eviction."""
-        return self.memory.compact_zone3(self.config.compaction_target_tokens)
+        """Trigger explicit context compaction (Zone 3 eviction and Zone 2 summarization)."""
+        return self.memory.compact_memory(self.config.compaction_target_tokens)
 
     async def post_task_maintenance(self) -> None:
         """Execute background maintenance (knowledge harvesting and vector compaction)."""

@@ -87,6 +87,18 @@ export interface SteerResultEvent {
   result: any;
 }
 
+export interface KnowledgeAgentEvent {
+  type: "knowledge_agent";
+  agent: string;
+  action: string;
+  status: string;
+  target_path: string;
+  details?: Record<string, any>;
+  input_summary?: string;
+  output_summary?: string;
+  timestamp?: string;
+}
+
 export type HarnessIncomingEvent =
   | TokenChunkEvent
   | PhaseTransitionEvent
@@ -99,7 +111,8 @@ export type HarnessIncomingEvent =
   | InterruptEvent
   | ConnectionEstablishedEvent
   | SidecarResponseEvent
-  | SteerResultEvent;
+  | SteerResultEvent
+  | KnowledgeAgentEvent;
 
 export interface ChatMessage {
   id: string;
@@ -113,4 +126,5 @@ export interface ChatMessage {
     result?: any;
     error?: string;
   }>;
+  knowledgeEvents?: KnowledgeAgentEvent[];
 }

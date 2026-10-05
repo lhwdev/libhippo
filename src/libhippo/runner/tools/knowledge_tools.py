@@ -119,6 +119,32 @@ class KnowledgeTools(BaseToolSuite):
         except Exception as e:
             raise ToolExecutionError(f"modify_knowledge failed: {e}")
 
+    async def list_knowledge(
+        self,
+        path: str = ".",
+        max_depth: int = 2,
+    ) -> str:
+        """List knowledge hierarchy tree without curation or version checking."""
+        if not self.store:
+            raise ToolExecutionError("No knowledge store available.")
+        await self.check_approval_if_needed("list_knowledge", {"path": path, "max_depth": max_depth})
+        return await self.store.list_knowledge(path=path, max_depth=max_depth)
+
+    async def search_knowledge(
+        self,
+        pattern: str = "*",
+        path: str = ".",
+        content_pattern: str | None = None,
+    ) -> str:
+        """Fast lexical and content regex search across knowledge documents."""
+        if not self.store:
+            raise ToolExecutionError("No knowledge store available.")
+        await self.check_approval_if_needed(
+            "search_knowledge",
+            {"pattern": pattern, "path": path, "content_pattern": content_pattern},
+        )
+        return await self.store.search_knowledge(pattern=pattern, path=path, content_pattern=content_pattern)
+
     def get_tool_definitions(self) -> dict[str, ToolDefinition]:
         """Return ToolDefinition schemas for knowledge subsystem operations."""
         defs: dict[str, ToolDefinition] = {}
@@ -178,6 +204,33 @@ class KnowledgeTools(BaseToolSuite):
                     "required": ["action", "path"],
                 },
                 handler=self.modify_knowledge,
+            )
+
+            defs["list_knowledge"] = ToolDefinition(
+                name="list_knowledge",
+                description="List knowledge hierarchy tree structure without curation or version checks (pure directory listing).",
+                parameters_schema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "default": ".", "description": "Knowledge namespace or subpath (e.g. '.', 'common', 'project')"},
+                        "max_depth": {"type": "integer", "default": 2, "description": "Max recursion depth"},
+                    },
+                },
+                handler=self.list_knowledge,
+            )
+
+            defs["search_knowledge"] = ToolDefinition(
+                name="search_knowledge",
+                description="Fast lexical path glob matching and optional regex search across knowledge documents (no LLM, no version check).",
+                parameters_schema={
+                    "type": "object",
+                    "properties": {
+                        "pattern": {"type": "string", "default": "*", "description": "Path glob pattern (e.g. '*react*', '*.md')"},
+                        "path": {"type": "string", "default": ".", "description": "Knowledge namespace or directory to search"},
+                        "content_pattern": {"type": "string", "description": "Optional regular expression to search within file contents"},
+                    },
+                },
+                handler=self.search_knowledge,
             )
 
         return defs

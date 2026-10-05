@@ -16,7 +16,12 @@ def load_prompt_template(name: str = "harness") -> str:
     template_path = _PROMPTS_DIR / f"{clean_name}.md"
     if not template_path.is_file():
         raise FileNotFoundError(f"Template prompt not found at {template_path}")
-    return template_path.read_text(encoding="utf-8").strip()
+    content = template_path.read_text(encoding="utf-8").strip()
+    if clean_name != "common_knowledge_spec" and "{{ common_knowledge_spec }}" in content:
+        spec_path = _PROMPTS_DIR / "common_knowledge_spec.md"
+        if spec_path.is_file():
+            content = content.replace("{{ common_knowledge_spec }}", spec_path.read_text(encoding="utf-8").strip())
+    return content
 
 
 def render_prompt_template(template: str, context: dict[str, str]) -> str:

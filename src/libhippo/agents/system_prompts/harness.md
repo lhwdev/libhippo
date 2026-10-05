@@ -80,6 +80,18 @@ The function calling API provides full parameter schemas for all tools. Below ar
 - `query_knowledge`: dispatches search across `low`, `medium`, and `high` effort tiers (`criticality="preferred"` by default). You should formulate unambiguous, self-contained search queries, in noun form.
 - `record_learning`: flag newly uncovered project conventions, non-obvious bug resolutions, or user preferences to be stored. Runs in background; does not block user interaction.
 
+<tools:harvest_guidance>
+## Knowledge Drafting & Harvesting
+
+Use these tools ONLY while drafting or updating knowledge nodes:
+- `write_knowledge(content, path?, start_line?, end_line?, target?)`: Create or surgically edit draft nodes (e.g. `project/...md`, `common/...md`). Target 500–1,000 tokens. When updating existing documents, use surgical edits (`target` or `start_line`/`end_line`) rather than full file replacements.
+- `read_knowledge(path?, start_line=1, end_line?)`: Read line-addressed slices of existing knowledge or session drafts.
+- `list_knowledge(path=".", max_depth=2)`: Browse existing knowledge directory hierarchies.
+- `search_knowledge(pattern="*", path=".", content_pattern?)`: Fast lexical or regex search across existing knowledge nodes.
+- `commit(path)`: Validate and submit a specific draft.
+- `commit_all()`: Validate and submit all open session drafts at once.
+</tools:harvest_guidance>
+
 ## Orchestration & Context Management
 - `invoke_subagent`: spawn child subagents (`inherit` or `isolated` context mode) to resolve subproblems, investigate codebases, or run parallel experiments.
   - Whenever you need to spawn one or multiple subagents to solve a task or investigate an issue, ALWAYS use `invoke_subagent`.
@@ -119,9 +131,8 @@ Knowledge nodes are valid GitHub-Flavored Markdown files with strict YAML frontm
 ```yaml
 ---
 title: "<Concise, descriptive title>"
-namespace: "project" | "common" | "user"
-status: "active" | "deprecated" | "needs_review"
-nature: "critical_rule" | "foundation" | "transient_tip"
+version: "<optional version string, defaults to 1.0.0>"
+source: ["<canonical doc url>"]
 tags: ["<tag1>", "<tag2>"]
 related: ["<optional relative or virtual path>"]
 ---
@@ -138,9 +149,6 @@ related: ["<optional relative or virtual path>"]
 <knowledge:example_leaf path="project/autogen/create_result.md">
 ---
 title: "AutoGen CreateResult Dynamic Attribute Restriction"
-namespace: "project"
-status: "active"
-nature: "critical_rule"
 tags: ["autogen", "pydantic", "telemetry"]
 ---
 
@@ -159,9 +167,6 @@ AutoGen 0.4 `CreateResult` is a strict Pydantic model and forbids dynamic attrib
 <knowledge:example_hub path="common/web/react.md">
 ---
 title: "React Core Architecture"
-namespace: "common"
-status: "active"
-nature: "foundation"
 tags: ["react", "frontend", "javascript", "ui", "declarative"]
 related:
   - "common/web/react/form.md"
@@ -180,9 +185,6 @@ React applications follow functional component architecture with unidirectional 
 <knowledge:example_leaf path="common/web/react/form.md">
 ---
 title: "React Form Handling & Actions"
-namespace: "common"
-status: "active"
-nature: "foundation"
 tags: ["react", "forms", "actions", "useActionState", "useFormStatus", "useOptimistic"]
 ---
 

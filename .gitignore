@@ -41,6 +41,7 @@ htmlcov/
 .chromadb/
 knowledge/.chromadb/
 knowledge/knowledge_catalog.db*
+.libhippo/
 
 # Local envs.
 /*.local*
@@ -48,3 +49,8 @@ knowledge/knowledge_catalog.db*
 # Node / Frontend
 node_modules/
 frontend/web/dist/
+
+# Logs
+logs/
+*.log
+

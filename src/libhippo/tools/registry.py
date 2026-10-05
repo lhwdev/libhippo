@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from libhippo.agents.checker import CheckerAgent
 from libhippo.models.knowledge import (
     HubReference,
     KnowledgeCandidate,
@@ -41,40 +40,121 @@ class ToolRegistry:
             self.checker = checker
             self.dispatcher = dispatcher
 
+    def get_list_knowledge_tool(self) -> Callable[..., Any]:
+        """Tool: list_knowledge(path: str = '.', max_depth: int = 2)."""
+        async def list_knowledge(path: str = ".", max_depth: int = 2) -> str:
+            return await self.store.list_knowledge(path=path, max_depth=max_depth)
+
+        return list_knowledge
+
     def get_search_knowledge_tool(self) -> Callable[..., Any]:
-        """Tool: search_knowledge(query: str, namespace: str = None, top_k: int = 5)."""
+        """Tool: search_knowledge(pattern='*', path='.', content_pattern=None, query=None)."""
         async def search_knowledge(
-            query: str,
+            pattern: str = "*",
+            path: str = ".",
+            content_pattern: str | None = None,
+            query: str | None = None,
             namespace: str | None = None,
             top_k: int = 5,
-        ) -> list[dict[str, Any]]:
-            results = await self.store.search(query=query, namespace=namespace, top_k=top_k)
-            return [
-                {
-                    "path": r.path,
-                    "title": r.title,
-                    "namespace": r.namespace,
-                    "snippet": r.snippet,
-                    "confidence": r.confidence,
-                    "importance": r.importance,
-                }
-                for r in results
-            ]
+            **kwargs: Any,
+        ) -> Any:
+            # If called as semantic query search (legacy / BookKeeper candidate search)
+            if query is not None and pattern == "*" and content_pattern is None and path == ".":
+                results = await self.store.search(query=query, namespace=namespace, top_k=top_k)
+                return [
+                    {
+                        "path": r.path,
+                        "title": r.title,
+                        "namespace": r.namespace,
+                        "snippet": r.snippet,
+                        "confidence": r.confidence,
+                        "importance": r.importance,
+                    }
+                    for r in results
+                ]
+            effective_pattern = pattern if pattern != "*" else (query or "*")
+            return await self.store.search_knowledge(
+                pattern=effective_pattern,
+                path=path,
+                content_pattern=content_pattern,
+            )
 
         return search_knowledge
 
     def get_read_knowledge_tool(self) -> Callable[..., Any]:
-        """Tool: read_knowledge(file_path: str, section: 'summary'|'rules'|'full')."""
+        """Tool: read_knowledge(path: str, start_line: int = 1, end_line: int | None = None)."""
         async def read_knowledge(
-            file_path: str,
+            path: str | None = None,
+            file_path: str | None = None,
+            start_line: int = 1,
+            end_line: int | None = None,
             section: SectionType = "full",
         ) -> str:
-            content = await self.store.read_section(file_path, section=section)
+            target = path or file_path
+            if not target:
+                return "[ERROR: Knowledge path must be specified]"
+            content = await self.store.read_section(target, section=section)
             if content is None:
-                return f"[ERROR: Knowledge path '{file_path}' not found]"
+                return f"[ERROR: Knowledge path '{target}' not found]"
+            if start_line > 1 or end_line is not None:
+                lines = content.splitlines()
+                s = max(1, start_line)
+                e = min(len(lines), end_line) if end_line is not None else len(lines)
+                selected = lines[s - 1 : e]
+                return "\n".join(f"{idx}: {line}" for idx, line in enumerate(selected, start=s))
             return content
 
         return read_knowledge
+
+    def get_write_knowledge_tool(self) -> Callable[..., Any]:
+        """Tool: write_knowledge(path, content, start_line=None, end_line=None, target=None)."""
+        async def write_knowledge(
+            path: str,
+            content: str,
+            start_line: int | None = None,
+            end_line: int | None = None,
+            target: str | None = None,
+        ) -> str:
+            try:
+                phys = self.store.mount_manager.resolve_physical_path(path)
+            except Exception:
+                phys = self.store.root_dir / path.strip("/")
+            current_text = phys.read_text(encoding="utf-8") if phys.exists() and phys.is_file() else ""
+            if start_line is None and end_line is None and target is None:
+                new_text = content
+            elif target is not None:
+                if target not in current_text:
+                    return f"[ERROR: Target string not found in '{path}']"
+                new_text = current_text.replace(target, content, 1)
+            else:
+                lines = current_text.splitlines()
+                s_idx = max(0, (start_line or 1) - 1)
+                e_idx = end_line if end_line is not None else len(lines)
+                lines[s_idx:e_idx] = content.splitlines()
+                new_text = "\n".join(lines) + ("\n" if current_text.endswith("\n") or not current_text else "")
+            phys.parent.mkdir(parents=True, exist_ok=True)
+            phys.write_text(new_text, encoding="utf-8")
+            return f"Successfully updated '{path}' ({len(new_text.splitlines())} lines)."
+
+        return write_knowledge
+
+    def get_run_command_tool(self) -> Callable[..., Any]:
+        """Tool: run_command(command_line: str)."""
+        async def run_command(command_line: str) -> dict[str, Any]:
+            import asyncio
+            proc = await asyncio.create_subprocess_shell(
+                command_line,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            return {
+                "exit_code": proc.returncode,
+                "stdout": stdout.decode("utf-8", errors="replace"),
+                "stderr": stderr.decode("utf-8", errors="replace"),
+            }
+
+        return run_command
 
     def get_modify_knowledge_tool(self) -> Callable[..., Any]:
         """Tool: modify_knowledge(action, path, content, metadata, extra_paths)."""
@@ -104,6 +184,8 @@ class ToolRegistry:
             sibling_paths: list[str] | None = None,
         ) -> dict[str, Any]:
             if not self.checker:
+                from libhippo.agents.checker import CheckerAgent
+
                 self.checker = CheckerAgent()
 
             candidate = KnowledgeCandidate.from_markdown(path, content)

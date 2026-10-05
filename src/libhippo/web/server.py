@@ -67,6 +67,16 @@ def create_app(
     if hasattr(harness, "tools") and harness.tools:
         harness.tools.event_callback = broadcast_tool_event
 
+    async def broadcast_knowledge_event(event: Any) -> None:
+        event_dict = asdict(event) if is_dataclass(event) else event
+        msg = json.dumps(event_dict)
+        coros = [ws.send_str(msg) for ws in list(active_websockets) if not ws.closed]
+        if coros:
+            await asyncio.gather(*coros, return_exceptions=True)
+
+    if hasattr(harness, "on_event_broadcast"):
+        harness.on_event_broadcast = broadcast_knowledge_event
+
     # 1. Register API Routes
     setup_settings_routes(app, harness)
     setup_autocomplete_routes(app, harness)

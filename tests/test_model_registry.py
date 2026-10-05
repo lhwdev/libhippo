@@ -27,20 +27,17 @@ def test_default_model_configs():
     bookkeeper_cfg = get_model_config("book_keeper")
     assert bookkeeper_cfg.model == "gpt-5-nano"
     assert bookkeeper_cfg.cache_write is False
-    assert bookkeeper_cfg.temperature == 0.0
 
     curator_cfg = get_model_config("curator")
     assert curator_cfg.model == "gpt-6-luna"
-    assert curator_cfg.temperature == 0.1
 
     verifier_cfg = get_model_config("verifier")
     assert verifier_cfg.model == "gpt-6.1-sol"
     assert verifier_cfg.cache_write is True
-    assert verifier_cfg.temperature == 0.0
 
     checker_cfg = get_model_config("checker")
     assert checker_cfg.provider == "typesafe"
-    assert checker_cfg.model == "jev"
+    assert checker_cfg.model == "jev-latest"
 
 
 def test_fallback_model_resolution(monkeypatch):

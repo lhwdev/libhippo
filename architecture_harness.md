@@ -245,13 +245,26 @@ To maximize provider KV-cache reuse (OpenAI, Anthropic, Gemini) and eliminate re
 - **Monotonic Extension**: New turns, tool arguments, and results append strictly to the tail. Existing turns are never modified or re-ordered during normal execution.
 
 ### 3.3 Zone 3: Deterministic Compaction
-When context crosses the hard compaction threshold ($\approx 80{,}000 \sim 100{,}000$ tokens), the harness scans historical tool outputs in Zone 2 from oldest to newest:
-- Replaces raw file contents or knowledge leaves with reference pointers:
-  ```text
-  [Referenced: src/libhippo/storage/store.py (lines 1-120)]
-  [Referenced: common/web/html/syntax.md (relevance: 0.92)]
-  ```
-- Retains full tool call signatures and model reasoning chains. If the agent needs to re-inspect code, it issues a targeted `read_file` slice.
+When context crosses the hard compaction threshold ($\approx 80{,}000 \sim 100{,}000$ tokens), the harness executes deterministic multi-stage compaction:
+
+1. **Stage 1 (Tool Output Eviction)**:
+   Scans historical tool outputs in Zone 2 marked `is_evictable=True` from oldest to newest:
+   - Replaces raw file contents or knowledge leaves with compact reference pointers:
+     ```text
+     [Referenced: src/libhippo/storage/store.py (lines 1-120)]
+     [Referenced: common/web/html/syntax.md (relevance: 0.92)]
+     ```
+   - Retains full tool call signatures and model reasoning chains. If the agent needs to re-inspect code, it issues a targeted `read_file` slice.
+
+2. **Stage 2 (Conversational History Summarization)**:
+   If tool output eviction is insufficient (e.g. context is dominated by non-evictable messages where `is_evictable=False`), `ContextMemory.compact_zone2_summarization()` triggers:
+   - **Head-Preserving**: Always retains the initial user intent and problem statement (Turn 0).
+   - **Tail-Preserving**: Preserves the most recent active dialogue turns (tail turns, default 3) to maintain immediate working context.
+   - **Intermediate Condensation**: Compresses intermediate conversational turns into a high-density `<CONVERSATION_SUMMARY>` XML block, retaining key decisions, attempted hypotheses, and verified outcomes while releasing token headroom.
+
+3. **Tool Output Truncation & Local Logging**:
+   - For interactive console logs, tool output is automatically truncated at 1,500 characters to prevent terminal pollution.
+   - The unclipped raw logs are simultaneously mirrored to a persistent local log file (`logs/libhippo.log` or configured via `LIBHIPPO_LOG_FILE`).
 
 ### 3.4 Turn-Level Metadata Injection (Temporal Awareness without Cache Busting)
 - **The Problem with Prefix Timestamps**: Injecting dynamic wall-clock timestamps or user session counters into the system prompt (Zone 1) changes the bitwise prefix on every turn, completely destroying prompt caching.
@@ -343,7 +356,7 @@ Does the triage router need previous conversation context?
   - **Same Model as Parent with Lowered Reasoning Effort (Optimal)**:
     - *The Problem with a Different Model*: If parent runs on `gpt-6.1-sol` (6,000 tokens of context) and dispatches to `gpt-5-nano` with full context, `gpt-5-nano` has a **cold cache**, having to ingest and cache all 6,000 tokens from scratch.
     - *The Same-Model Cache Hit*: Invoking the **same model** as the parent agent inherits the **100% warm KV-cache** of the parent's prefix. Only the new tool output (~500 lines) is processed as fresh tokens.
-    - *Dynamic Effort Downgrade*: By adjusting runtime configuration (e.g. `reasoning_effort = "low"`, `temperature = 0.0`), the triage call runs at ultra-fast speeds and minimal output tokens while retaining 100% prompt cache read discounts.
+    - *Dynamic Effort Downgrade*: By adjusting runtime configuration (e.g. `reasoning_effort = "low"`), the triage call runs at ultra-fast speeds and minimal output tokens while retaining 100% prompt cache read discounts.
   - **Stateless Small Model Alternative (`gpt-5-nano`)**:
     - If a dedicated small model is preferred, it must run **stateless** (receiving only `[Initial User Goal]` + `[Command + Error Log]`, $\le 1{,}000$ tokens), completely omitting intermediate conversational history to avoid cold-cache token bloat.
 
@@ -714,7 +727,6 @@ class HarnessConfig(BaseModel):
     """Runtime configuration for the General Coding Agent Harness."""
 
     model: str = "gpt-6.1-sol"
-    temperature: float | None = Field(default=None, ge=0.0, le=2.0) # legacy
     workspace_root: Path = Field(default_factory=Path.cwd)
     mode: ExecutionMode = ExecutionMode.DEFAULT
     soft_token_watermark: int = 60000

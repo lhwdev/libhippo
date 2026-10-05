@@ -1,7 +1,8 @@
 import React from "react";
-import { User, Bot, AlertOctagon, Terminal, Info } from "lucide-react";
+import { User, Bot, AlertOctagon, Terminal, Info, BookOpen } from "lucide-react";
 import { ChatMessage } from "../../types/events";
 import { ToolCallCard } from "./ToolCallCard";
+import { KnowledgeAgentCard } from "./KnowledgeAgentCard";
 
 interface MessageCardProps {
   message: ChatMessage;
@@ -66,6 +67,18 @@ export const MessageCard: React.FC<MessageCardProps> = ({ message }) => {
           </div>
           {message.toolCalls.map((tc) => (
             <ToolCallCard key={tc.id} toolCall={tc} />
+          ))}
+        </div>
+      )}
+
+      {message.knowledgeEvents && message.knowledgeEvents.length > 0 && (
+        <div className="mt-3 pt-2 border-t border-slate-800/80">
+          <div className="flex items-center gap-1.5 text-[11px] text-purple-400 font-mono mb-1">
+            <BookOpen className="w-3 h-3 text-purple-400" />
+            <span>Knowledge Agents ({message.knowledgeEvents.length}):</span>
+          </div>
+          {message.knowledgeEvents.map((ke, idx) => (
+            <KnowledgeAgentCard key={`ke-${idx}-${ke.agent}-${ke.action}`} event={ke} />
           ))}
         </div>
       )}

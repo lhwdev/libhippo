@@ -182,3 +182,35 @@ async def test_modify_knowledge_tool(tmp_path: Path):
         node = await store.get_node("common/test_rule.md")
         assert node is not None
         assert "Always write unit tests" in node.body
+
+
+def test_context_memory_zone2_summarization_compaction():
+    """Verify Zone 2 turn summarization when is_evictable=False messages exceed budget."""
+    mem = ContextMemory(model_name="gpt-4o")
+    mem.set_zone1_prefix(system_persona="You are a coding assistant.")
+
+    # Add multiple non-evictable turns
+    u1 = mem.append_user_turn("First request: setup backend database schema.")
+    a1 = mem.append_assistant_turn("Set up SQLite schema with users and articles tables.")
+    u2 = mem.append_user_turn("Second request: implement authentication endpoints.")
+    a2 = mem.append_assistant_turn("Implemented JWT auth endpoints in auth.py.")
+    u3 = mem.append_user_turn("Third request: add unit tests for auth.")
+    a3 = mem.append_assistant_turn("Added test_auth.py with 5 passing tests.")
+    u4 = mem.append_user_turn("Fourth request: fix edge cases in refresh token.")
+    a4 = mem.append_assistant_turn("Fixed refresh token edge cases.")
+
+    total_tokens_before = mem.get_total_tokens()
+    evicted = mem.compact_memory(target_tokens=50)
+    assert evicted > 0
+    assert mem.get_total_tokens() < total_tokens_before
+
+    # Verify head is preserved
+    assert mem.zone2_history[0] is u1
+    # Verify intermediate summary is inserted
+    summary_msg = mem.zone2_history[1]
+    assert summary_msg.metadata.get("is_summary") is True
+    assert "<CONVERSATION_SUMMARY" in summary_msg.content
+    assert "</CONVERSATION_SUMMARY>" in summary_msg.content
+    # Verify tail turns are preserved
+    assert mem.zone2_history[-1] is a4
+

@@ -49,18 +49,15 @@ def test_harvest_sidecar_prompt_template_formatting():
 
     assert "<SIDECAR:extract_knowledge>" in HARVEST_SIDECAR_PROMPT
     assert "</SIDECAR:extract_knowledge>" in HARVEST_SIDECAR_PROMPT
-    assert "<KNOWLEDGE_HARVEST_SIDECAR>" in HARVEST_SIDECAR_PROMPT
+    assert "NO_HARVEST" in HARVEST_SIDECAR_PROMPT
 
     formatted = HARVEST_SIDECAR_PROMPT.format(
         scope="common",
-        nature="critical_rule",
         topic_hint="React 19 actions",
     )
     assert "TARGET SCOPE: common" in formatted
-    assert "NATURE: critical_rule" in formatted
     assert "TOPIC HINT: React 19 actions" in formatted
-    assert 'namespace: "common"' in formatted
-    assert 'nature: "critical_rule"' in formatted
+    assert "write_knowledge" in formatted
 
 
 def test_system_prompts_template_engine(tmp_path):
@@ -102,4 +99,43 @@ def test_system_prompts_template_engine(tmp_path):
     assert "demo_workspace" in full_prompt
     assert "Strict typing" in full_prompt
     assert "`read_file`" in full_prompt
+
+
+def test_common_knowledge_spec_and_harness_separation():
+    """Verify common_knowledge_spec inclusion and separated tool prompts per harness."""
+    from libhippo.agents.prompts import (
+        COMMON_KNOWLEDGE_SPEC,
+        CURATOR_SYSTEM_PROMPT,
+        HARNESS_SYSTEM_PROMPT,
+        HARVEST_SIDECAR_PROMPT,
+        VERIFIER_SYSTEM_PROMPT,
+    )
+
+    assert "<knowledge:spec>" in COMMON_KNOWLEDGE_SPEC
+    assert "LowerTarget = 500" in COMMON_KNOWLEDGE_SPEC
+    assert "UpperTarget = 1,000" in COMMON_KNOWLEDGE_SPEC
+    assert "force_keep" not in COMMON_KNOWLEDGE_SPEC
+    assert "nature:" not in COMMON_KNOWLEDGE_SPEC
+
+    # Curator includes common spec and draftsman surgical edit guidance
+    assert "<tools:draftsman_guidance>" in CURATOR_SYSTEM_PROMPT
+    assert "write_knowledge" in CURATOR_SYSTEM_PROMPT
+    assert "read_knowledge" in CURATOR_SYSTEM_PROMPT
+    assert "commit_all" in CURATOR_SYSTEM_PROMPT
+    assert "SURGICAL EDIT DISCIPLINE" in CURATOR_SYSTEM_PROMPT
+    assert "<knowledge:spec>" in CURATOR_SYSTEM_PROMPT
+
+    # Verifier includes modify_knowledge and common spec
+    assert "<tools:verifier_guidance>" in VERIFIER_SYSTEM_PROMPT
+    assert "modify_knowledge" in VERIFIER_SYSTEM_PROMPT
+    assert "<knowledge:spec>" in VERIFIER_SYSTEM_PROMPT
+
+    # Harness includes offloaded knowledge drafting guidance
+    assert "<tools:harvest_guidance>" in HARNESS_SYSTEM_PROMPT
+
+    # Harvest sidecar is lightweight tail instruction
+    assert "<SIDECAR:extract_knowledge>" in HARVEST_SIDECAR_PROMPT
+    assert "write_knowledge" in HARVEST_SIDECAR_PROMPT
+    assert "commit_all" in HARVEST_SIDECAR_PROMPT
+
 

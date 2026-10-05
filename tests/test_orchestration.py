@@ -374,6 +374,67 @@ Use window.crypto.subtle.encrypt with AES-GCM 256.
         assert await store.get_node("common/web/crypto_aes.md") is not None
 
 
+@pytest.mark.asyncio
+async def test_maker_checker_real_time_observability_events(tmp_path):
+    """Verify that MakerCheckerOrchestrator emits KnowledgeAgentEvents at every phase."""
+    from libhippo.models.knowledge import KnowledgeAgentEvent
+
+    async with KnowledgeStore(root_dir=tmp_path / "knowledge") as store:
+        events: list[KnowledgeAgentEvent] = []
+
+        def on_event(evt: KnowledgeAgentEvent):
+            events.append(evt)
+
+        mock_checker = AsyncMock(spec=CheckerAgent)
+        mock_checker.count_tokens.return_value = 550
+        mock_checker.check.return_value = JevAuditReport(
+            verdict="PASS",
+            size_status="optimal",
+            taxonomy_fit="optimal",
+            token_count=550,
+            importance_score=0.90,
+        )
+
+        mock_curator = AsyncMock(spec=CuratorAgent)
+        mock_curator.curate.return_value = {
+            "path": "common/web/react19.md",
+            "draft": "---\ntitle: React 19\nnamespace: common\n---\n## Summary\nReact 19 Actions.",
+        }
+
+        orchestrator = MakerCheckerOrchestrator(
+            store=store,
+            checker=mock_checker,
+            curator=mock_curator,
+            on_event=on_event,
+        )
+
+        result = await orchestrator.curate_and_govern(
+            topic="React 19 Actions",
+            target_path="common/web/react19.md",
+        )
+
+        assert result.status == "COMMITTED"
+        assert len(events) >= 4
+
+        # 1. Curator drafting start & completed
+        drafting_events = [e for e in events if e.agent == "CuratorAgent" and e.action == "drafting"]
+        assert len(drafting_events) >= 2
+        assert drafting_events[0].status == "running"
+        assert drafting_events[1].status == "completed"
+
+        # 2. Checker audit start & verdict
+        checker_events = [e for e in events if e.agent == "CheckerAgent"]
+        assert any(e.action == "audit" and e.status == "running" for e in checker_events)
+        verdict_evt = next(e for e in checker_events if e.action == "audit_verdict")
+        assert verdict_evt.status == "passed"
+        assert "PASS" in verdict_evt.output_summary
+
+        # 3. MakerChecker commit
+        commit_evt = next(e for e in events if e.agent == "MakerChecker" and e.action == "commit")
+        assert commit_evt.status == "completed"
+        assert "common/web/react19.md" in commit_evt.target_path
+
+
 # --- AutoGen 0.4 Team Configuration Tests ---
 
 def test_team_assembly_and_termination():

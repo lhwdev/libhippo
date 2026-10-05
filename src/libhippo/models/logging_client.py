@@ -27,6 +27,29 @@ if not logger.handlers:
 logger.propagate = False
 
 
+_file_handler_initialized = False
+
+
+def _setup_file_handler() -> None:
+    global _file_handler_initialized
+    if _file_handler_initialized:
+        return
+    log_file = os.getenv("LIBHIPPO_LOG_FILE", "logs/libhippo.log")
+    try:
+        abs_path = os.path.abspath(log_file)
+        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+        for h in logger.handlers:
+            if isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", None) == abs_path:
+                _file_handler_initialized = True
+                return
+        fh = logging.FileHandler(abs_path, encoding="utf-8")
+        fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        logger.addHandler(fh)
+        _file_handler_initialized = True
+    except Exception:
+        pass
+
+
 def is_openai_logging_enabled() -> bool:
     """Check if OpenAI request/response logging is enabled via environment."""
     global _env_loaded
@@ -38,6 +61,7 @@ def is_openai_logging_enabled() -> bool:
         except ImportError:
             pass
         _env_loaded = True
+        _setup_file_handler()
 
     val = (
         os.getenv("LIBHIPPO_LOG_OPENAI")
@@ -46,6 +70,12 @@ def is_openai_logging_enabled() -> bool:
         or ""
     ).strip().lower()
     return val in ("1", "true", "yes", "on", "enable", "enabled")
+
+
+def _truncate_text(text: str, max_chars: int = 1500) -> str:
+    if len(text) > max_chars:
+        return text[:max_chars] + f"\n... [truncated {len(text) - max_chars} characters] ..."
+    return text
 
 
 def _format_message(msg: Any) -> tuple[str, str]:
@@ -71,7 +101,7 @@ def _format_message(msg: Any) -> tuple[str, str]:
                 parts.append(f"{part.name}({part.arguments})")
             elif hasattr(part, "call_id") and hasattr(part, "content"):
                 part_name = getattr(part, "name", "tool")
-                parts.append(f"[{part_name}:{part.call_id}] {part.content}")
+                parts.append(f"[{part_name}:{part.call_id}] {_truncate_text(str(part.content))}")
             elif hasattr(part, "content"):
                 parts.append(str(part.content))
             else:
@@ -79,6 +109,8 @@ def _format_message(msg: Any) -> tuple[str, str]:
         text = "\n".join(parts)
     else:
         text = str(content)
+        if "tool" in role.lower() or "functionexecution" in role.lower():
+            text = _truncate_text(text)
     return role, text
 
 

@@ -116,6 +116,9 @@ class InterruptEvent:
     type: str = "interrupt"
 
 
+from libhippo.models.knowledge import KnowledgeAgentEvent
+
+
 HarnessEvent = (
     TokenChunkEvent
     | ToolCallStartEvent
@@ -126,4 +129,6 @@ HarnessEvent = (
     | PhaseTransitionEvent
     | TurnCompletedEvent
     | InterruptEvent
+    | KnowledgeAgentEvent
 )
+

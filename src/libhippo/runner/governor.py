@@ -50,7 +50,7 @@ class WorkloadGovernor:
         }
 
         if total_tokens >= self.config.hard_token_limit:
-            evicted = self.memory.compact_zone3(self.config.compaction_target_tokens)
+            evicted = self.memory.compact_memory(self.config.compaction_target_tokens)
             result["status"] = "compacted"
             result["evicted_tokens"] = evicted
             result["post_compaction_tokens"] = self.memory.get_total_tokens()
