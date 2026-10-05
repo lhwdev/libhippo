@@ -163,8 +163,8 @@ class KnowledgeTools(BaseToolSuite):
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["create", "update", "split", "merge", "purge", "deprecate"],
-                            "description": "Mutation action to execute",
+                            "enum": ["create", "update", "split", "merge", "purge", "deprecate", "revalidate"],
+                            "description": "Mutation action to execute (use 'revalidate' to force check and update outdated knowledge)",
                         },
                         "path": {"type": "string", "description": "Target virtual path (e.g. project/api.md)"},
                         "content": {"type": "string", "description": "Markdown body content"},

@@ -111,6 +111,24 @@
   - **Prompt Cache Write: ENABLED**: Because multi-turn refactoring loops iteratively refine proposals across rounds, caching the linear prefix allows subsequent turns to read previous discussion at ~0.10x cached input rates, rapidly amortizing the initial 1.25x cache write fee.
   - **Compact-on-Exceed**: When accumulated tokens cross the session watermark, older intermediate proposals are collapsed into compact pointers (`[Previous Round: path, verdict, summary]`), preserving the refactoring trajectory while keeping active working context lean.
 
+### Q10. How does LibHippo check for outdated knowledge without burning LLM tokens or dirtying Git working trees?
+- **The Dilemma**:
+  - Invoking an LLM agent to scrape the web and check whether library knowledge is outdated is slow ($2\sim 5\text{s}$) and expensive.
+  - Recording 'last checked' timestamps in markdown frontmatter pollutes Git history and creates meaningless commits whenever an unchanged document is verified.
+- **The Multi-Pillar Resolution**:
+  1. **Zero-Token Deterministic Version Checking**:
+     - Upstream releases are checked directly via public package registry APIs (PyPI, npm, crates.io, GitHub Releases), HTTP regex scrapes, or sandboxed `terminal:<cmd>` execution in $<100$ms with 0 LLM calls.
+     - An LLM agent (`CuratorAgent`) is dispatched **only after** a version delta is proven by deterministic checks.
+  2. **Database-Only Verification State (`catalog_entries`)**:
+     - `last_checked_at`, `freshness_status`, and `upstream_version` are saved strictly in SQLite (`knowledge_catalog.db`). Markdown files remain untouched when knowledge is fresh, guaranteeing 0 Git churn.
+  3. **Bi-directional Cascading & Self-Healing Scoping**:
+     - Stale status in a library hub cascades to child leaves in SQLite; refreshing the parent clears child staleness (vice versa).
+     - Children do not store redundant package checks in frontmatter; `CheckerAgent` silently normalizes and drops redundant child `version_check` declarations without triggering expensive LLM retry loops.
+  4. **3-Tier Staleness Routing**:
+     - `query_knowledge` and `read_knowledge` remain pure read-only tools.
+     - Staleness maps to 3 modes: Mode A (No Fetch with advisory note for `optional`/`low`), Mode B (Stale-While-Revalidate default for `preferred`, non-blocking), and Mode C (Wait for Latest, strictly restrained to `mandatory` + `high`).
+     - Forced updates are centralized in `modify_knowledge(action="revalidate")`.
+
 ---
 
 ## 3. The BookKeeper Dilemma & 3-Tier Adaptive Retrieval

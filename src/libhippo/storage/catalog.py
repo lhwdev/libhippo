@@ -31,6 +31,7 @@ class KnowledgeCatalog:
     def __init__(self, db_path: Path | str) -> None:
         self.db_path = Path(db_path)
         self._conn: aiosqlite.Connection | None = None
+        self._initialized: bool = False
 
     async def _get_conn(self) -> aiosqlite.Connection:
         """Get or lazily create a persistent reusable SQLite connection."""
@@ -40,6 +41,8 @@ class KnowledgeCatalog:
             self._conn.row_factory = aiosqlite.Row
             await self._conn.execute("PRAGMA journal_mode = WAL;")
             await self._conn.execute("PRAGMA synchronous = NORMAL;")
+            if not self._initialized:
+                await self._init_schema(self._conn)
         return self._conn
 
     async def close(self) -> None:
@@ -47,6 +50,7 @@ class KnowledgeCatalog:
         if self._conn is not None:
             await self._conn.close()
             self._conn = None
+            self._initialized = False
 
     async def __aenter__(self) -> Self:
         await self._get_conn()
@@ -62,7 +66,12 @@ class KnowledgeCatalog:
 
     async def initialize(self) -> None:
         """Create tables and FTS5 virtual tables if they do not exist."""
-        db = await self._get_conn()
+        await self._get_conn()
+
+    async def _init_schema(self, db: aiosqlite.Connection) -> None:
+        """Execute table creation, migrations, and FTS5 virtual tables."""
+        if self._initialized:
+            return
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS catalog_entries (
@@ -80,7 +89,13 @@ class KnowledgeCatalog:
                 last_accessed TEXT,
                 last_updated TEXT,
                 tags TEXT NOT NULL,
-                related TEXT NOT NULL
+                related TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT '[]',
+                version_check TEXT,
+                last_checked_at TEXT,
+                freshness_status TEXT NOT NULL DEFAULT 'fresh',
+                upstream_version TEXT,
+                stale_reason TEXT
             )
             """
         )
@@ -94,6 +109,18 @@ class KnowledgeCatalog:
                 await db.execute("ALTER TABLE catalog_entries ADD COLUMN file_mtime REAL NOT NULL DEFAULT 0.0")
             if "content_sha256" not in existing_cols:
                 await db.execute("ALTER TABLE catalog_entries ADD COLUMN content_sha256 TEXT NOT NULL DEFAULT ''")
+            if "source" not in existing_cols:
+                await db.execute("ALTER TABLE catalog_entries ADD COLUMN source TEXT NOT NULL DEFAULT '[]'")
+            if "version_check" not in existing_cols:
+                await db.execute("ALTER TABLE catalog_entries ADD COLUMN version_check TEXT")
+            if "last_checked_at" not in existing_cols:
+                await db.execute("ALTER TABLE catalog_entries ADD COLUMN last_checked_at TEXT")
+            if "freshness_status" not in existing_cols:
+                await db.execute("ALTER TABLE catalog_entries ADD COLUMN freshness_status TEXT NOT NULL DEFAULT 'fresh'")
+            if "upstream_version" not in existing_cols:
+                await db.execute("ALTER TABLE catalog_entries ADD COLUMN upstream_version TEXT")
+            if "stale_reason" not in existing_cols:
+                await db.execute("ALTER TABLE catalog_entries ADD COLUMN stale_reason TEXT")
 
         await db.execute(
             """
@@ -109,6 +136,7 @@ class KnowledgeCatalog:
             """
         )
         await db.commit()
+        self._initialized = True
 
     async def upsert(
         self,
@@ -133,8 +161,8 @@ class KnowledgeCatalog:
                 path, title, namespace, version, status, nature,
                 importance, force_keep, file_mtime, content_sha256,
                 access_count, last_accessed, last_updated,
-                tags, related
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                tags, related, source, version_check
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(path) DO UPDATE SET
                 title=excluded.title,
                 namespace=excluded.namespace,
@@ -147,7 +175,9 @@ class KnowledgeCatalog:
                 content_sha256=excluded.content_sha256,
                 last_updated=excluded.last_updated,
                 tags=excluded.tags,
-                related=excluded.related
+                related=excluded.related,
+                source=excluded.source,
+                version_check=excluded.version_check
             """,
             (
                 candidate.path,
@@ -165,6 +195,8 @@ class KnowledgeCatalog:
                 last_updated,
                 json.dumps(fm.tags),
                 json.dumps(fm.related),
+                json.dumps(fm.source),
+                fm.version_check,
             ),
         )
 
@@ -224,6 +256,20 @@ class KnowledgeCatalog:
         await db.execute("DELETE FROM catalog_fts WHERE path = ?", (path,))
         await db.commit()
 
+    @staticmethod
+    def _format_row(row: Any) -> dict[str, Any]:
+        item = dict(row)
+        item["force_keep"] = bool(item["force_keep"])
+        item["tags"] = json.loads(item["tags"]) if isinstance(item["tags"], str) else item["tags"]
+        item["related"] = json.loads(item["related"]) if isinstance(item["related"], str) else item["related"]
+        item["source"] = json.loads(item.get("source") or "[]") if isinstance(item.get("source"), str) else (item.get("source") or [])
+        item["version_check"] = item.get("version_check")
+        item["last_checked_at"] = item.get("last_checked_at")
+        item["freshness_status"] = item.get("freshness_status") or "fresh"
+        item["upstream_version"] = item.get("upstream_version")
+        item["stale_reason"] = item.get("stale_reason")
+        return item
+
     async def get(self, path: str) -> dict[str, Any] | None:
         """Fetch node metadata by path."""
         db = await self._get_conn()
@@ -234,11 +280,7 @@ class KnowledgeCatalog:
             row = await cursor.fetchone()
             if not row:
                 return None
-            data = dict(row)
-            data["force_keep"] = bool(data["force_keep"])
-            data["tags"] = json.loads(data["tags"])
-            data["related"] = json.loads(data["related"])
-            return data
+            return self._format_row(row)
 
     async def record_access(self, path: str) -> None:
         """Increment access count and timestamp."""
@@ -284,14 +326,7 @@ class KnowledgeCatalog:
         db = await self._get_conn()
         async with db.execute(sql, params) as cursor:
             rows = await cursor.fetchall()
-            results = []
-            for row in rows:
-                item = dict(row)
-                item["force_keep"] = bool(item["force_keep"])
-                item["tags"] = json.loads(item["tags"])
-                item["related"] = json.loads(item["related"])
-                results.append(item)
-            return results
+            return [self._format_row(row) for row in rows]
 
     async def list_nodes(
         self,
@@ -309,11 +344,89 @@ class KnowledgeCatalog:
         db = await self._get_conn()
         async with db.execute(sql, params) as cursor:
             rows = await cursor.fetchall()
-            results = []
-            for row in rows:
-                item = dict(row)
-                item["force_keep"] = bool(item["force_keep"])
-                item["tags"] = json.loads(item["tags"])
-                item["related"] = json.loads(item["related"])
-                results.append(item)
-            return results
+            return [self._format_row(row) for row in rows]
+
+    async def update_freshness(
+        self,
+        path: str,
+        freshness_status: str = "fresh",
+        last_checked_at: str | None = None,
+        upstream_version: str | None = None,
+        stale_reason: str | None = None,
+        cascade_children: bool = True,
+    ) -> None:
+        """Update freshness check results and bi-directionally sync children."""
+        now_str = last_checked_at or datetime.now(UTC).isoformat()
+        db = await self._get_conn()
+
+        await db.execute(
+            """
+            UPDATE catalog_entries
+            SET freshness_status = ?,
+                last_checked_at = ?,
+                upstream_version = COALESCE(?, upstream_version),
+                stale_reason = ?
+            WHERE path = ?
+            """,
+            (freshness_status, now_str, upstream_version, stale_reason, path),
+        )
+
+        if cascade_children:
+            prefix = (path[:-3] if path.endswith(".md") else path) + "/%"
+            if freshness_status == "stale":
+                child_reason = f"parent_stale:{path}"
+                await db.execute(
+                    """
+                    UPDATE catalog_entries
+                    SET freshness_status = 'stale',
+                        last_checked_at = ?,
+                        upstream_version = COALESCE(?, upstream_version),
+                        stale_reason = ?
+                    WHERE path LIKE ?
+                    """,
+                    (now_str, upstream_version, child_reason, prefix),
+                )
+            elif freshness_status == "fresh":
+                await db.execute(
+                    """
+                    UPDATE catalog_entries
+                    SET freshness_status = 'fresh',
+                        last_checked_at = ?,
+                        stale_reason = NULL
+                    WHERE path LIKE ? AND (stale_reason LIKE 'parent_stale:%' OR stale_reason IS NULL)
+                    """,
+                    (now_str, prefix),
+                )
+
+        await db.commit()
+
+    async def list_nodes_for_freshness(
+        self,
+        limit: int = 3,
+        interval_seconds: float = 604800.0,
+    ) -> list[dict[str, Any]]:
+        """List eligible library/framework nodes due for freshness check.
+
+        Selects active nodes with version_check or in common namespace with sources,
+        ordered by oldest checked (or never checked) first.
+        """
+        now = datetime.now(UTC).timestamp()
+        cutoff_iso = datetime.fromtimestamp(now - interval_seconds, UTC).isoformat()
+
+        sql = """
+            SELECT * FROM catalog_entries
+            WHERE status = 'active'
+              AND (
+                version_check IS NOT NULL
+                OR (namespace = 'common' AND source != '[]')
+              )
+              AND (last_checked_at IS NULL OR last_checked_at <= ?)
+            ORDER BY
+              CASE WHEN last_checked_at IS NULL THEN 0 ELSE 1 END,
+              last_checked_at ASC
+            LIMIT ?
+        """
+        db = await self._get_conn()
+        async with db.execute(sql, (cutoff_iso, limit)) as cursor:
+            rows = await cursor.fetchall()
+            return [self._format_row(row) for row in rows]

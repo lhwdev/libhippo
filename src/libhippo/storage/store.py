@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Self
 
-from libhippo.models.knowledge import KnowledgeCandidate
+from libhippo.models.knowledge import KnowledgeCandidate, update_markdown_version
 from libhippo.storage.catalog import KnowledgeCatalog
 from libhippo.storage.mount import (
     MountConfig,
@@ -19,7 +19,7 @@ from libhippo.storage.mount import (
 from libhippo.storage.vector import VectorKnowledgeStore
 
 SectionType = Literal["summary", "rules", "full"]
-KnowledgeAction = Literal["create", "update", "split", "merge", "purge"]
+KnowledgeAction = Literal["create", "update", "split", "merge", "purge", "revalidate"]
 
 
 def extract_sections(markdown: str) -> tuple[str, str]:
@@ -247,9 +247,18 @@ class KnowledgeStore:
         return False
 
     async def post_task_maintenance(self) -> dict[str, Any]:
-        """Asynchronous post-task maintenance hook to defragment vector store in background."""
+        """Asynchronous post-task maintenance hook to defragment vector store and check freshness."""
         rebuilt = await self.maybe_rebuild_index()
-        return {"rebuilt": rebuilt, "mutation_count": self.vector_store.mutation_count}
+        from libhippo.storage.freshness import FreshnessChecker
+
+        checker = getattr(self, "freshness_checker", None) or FreshnessChecker()
+        batch_res = await checker.check_batch_freshness(self, limit=3)
+        return {
+            "rebuilt": rebuilt,
+            "mutation_count": self.vector_store.mutation_count,
+            "freshness_checked": len(batch_res),
+            "freshness_results": [r.path for r in batch_res],
+        }
 
     compact_if_needed = post_task_maintenance
 
@@ -327,33 +336,76 @@ class KnowledgeStore:
 
         await self.catalog.record_access(candidate.path)
 
+        meta_banner = ""
+        if candidate.frontmatter:
+            fm = candidate.frontmatter
+            entry = await self.catalog.get(candidate.path) or {}
+            is_web_fetched = (
+                fm.namespace == "common"
+                or bool(fm.source)
+                or bool(fm.version_check)
+                or bool(entry.get("source"))
+            )
+            if is_web_fetched:
+                last_updated = (entry.get("last_updated") or fm.last_updated or "unknown")[:10]
+                last_checked = (entry.get("last_checked_at") or "never")[:10]
+                version = entry.get("version") or fm.version or "1.0.0"
+                freshness = entry.get("freshness_status") or "fresh"
+                sources = entry.get("source") or fm.source or []
+                sources_str = ", ".join(sources) if sources else "none"
+                meta_banner = (
+                    f"[Knowledge Metadata | version: {version} | last_updated: {last_updated} | "
+                    f"last_checked: {last_checked} | status: {freshness} | source: {sources_str}]\n\n"
+                )
+
         if section == "full":
-            return candidate.markdown
+            return f"{meta_banner}{candidate.markdown}"
 
         summary, rules = extract_sections(candidate.body)
         if section == "summary":
-            return summary or candidate.body
+            return f"{meta_banner}{summary or candidate.body}"
         elif section == "rules":
-            return rules or candidate.body
-        return candidate.markdown
+            return f"{meta_banner}{rules or candidate.body}"
+        return f"{meta_banner}{candidate.markdown}"
 
     async def save_node(
         self,
         path: str,
         content: str,
         sync_index: bool = True,
+        resolve_version: bool = True,
     ) -> KnowledgeCandidate:
-        """Save a knowledge document to disk and synchronize catalog and vector index."""
+        """Save a knowledge document to disk and synchronize catalog and vector index.
+
+        If version_check exists in frontmatter and resolve_version is True,
+        fetches the upstream version from that specification/URL and overwrites
+        the frontmatter version before saving to disk.
+        """
         self.mount_manager.check_writable(path)
         fs_path, _ = self.mount_manager.resolve_virtual_path(path)
         fs_path.parent.mkdir(parents=True, exist_ok=True)
+
+        virtual_path = self.mount_manager.resolve_physical_path(fs_path) or path
+        candidate = KnowledgeCandidate.from_markdown(virtual_path, content)
+
+        fetched_upstream: str | None = None
+        if resolve_version and candidate.frontmatter and candidate.frontmatter.version_check:
+            from libhippo.storage.freshness import FreshnessChecker
+
+            checker = getattr(self, "freshness_checker", None) or FreshnessChecker()
+            upstream_version, _ = await checker.fetch_upstream_version(
+                candidate.frontmatter.version_check,
+                candidate.frontmatter.source,
+            )
+            if upstream_version:
+                content = update_markdown_version(content, upstream_version)
+                candidate = KnowledgeCandidate.from_markdown(virtual_path, content)
+                fetched_upstream = upstream_version
+
         fs_path.write_text(content, encoding="utf-8")
 
         st = fs_path.stat()
         sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
-
-        virtual_path = self.mount_manager.resolve_physical_path(fs_path) or path
-        candidate = KnowledgeCandidate.from_markdown(virtual_path, content)
 
         if sync_index and candidate.frontmatter:
             summary, rules = extract_sections(candidate.body)
@@ -365,6 +417,19 @@ class KnowledgeStore:
                 content_sha256=sha,
             )
             self.vector_store.upsert(candidate, summary=summary, rules=rules)
+
+            if fetched_upstream:
+                from datetime import UTC, datetime
+
+                now_iso = datetime.now(UTC).isoformat()
+                await self.catalog.update_freshness(
+                    path=virtual_path,
+                    freshness_status="fresh",
+                    upstream_version=fetched_upstream,
+                    last_checked_at=now_iso,
+                    stale_reason=None,
+                    cascade_children=True,
+                )
 
         return candidate
 
@@ -482,12 +547,18 @@ class KnowledgeStore:
             self.mount_manager.check_writable(ep)
 
         if action in ("create", "update"):
+            if not content and action == "update":
+                existing_node = await self.get_node(path)
+                if existing_node:
+                    content = existing_node.markdown
+
             candidate = await self.save_node(path, content, sync_index=True)
             return {
                 "status": "success",
                 "action": action,
                 "path": candidate.path,
                 "title": candidate.frontmatter.title if candidate.frontmatter else "",
+                "version": candidate.frontmatter.version if candidate.frontmatter else "",
             }
 
         elif action == "split":
@@ -541,6 +612,54 @@ class KnowledgeStore:
                 "action": "purge",
                 "path": path,
                 "quarantined_to": deprecated_path,
+            }
+
+        elif action == "revalidate":
+            from libhippo.storage.freshness import FreshnessChecker
+
+            checker = getattr(self, "freshness_checker", None) or FreshnessChecker()
+            freshness_res = await checker.check_node_freshness(path=path, store=self, force=True)
+
+            curator = getattr(self, "curator", None)
+            if freshness_res.status == "stale" and curator:
+                try:
+                    curation = await curator.curate(
+                        topic_or_query=f"{path} version {freshness_res.upstream_version}",
+                        target_path=path,
+                    )
+                    draft = curation.get("draft") if isinstance(curation, dict) else str(curation)
+                    if draft:
+                        await self.save_node(path, draft, sync_index=True)
+                        from datetime import UTC, datetime
+
+                        now_str = datetime.now(UTC).isoformat()
+                        await self.catalog.update_freshness(
+                            path=path,
+                            freshness_status="fresh",
+                            last_checked_at=now_str,
+                            upstream_version=freshness_res.upstream_version,
+                            stale_reason=None,
+                            cascade_children=True,
+                        )
+                        return {
+                            "status": "success",
+                            "action": "revalidate",
+                            "path": path,
+                            "revalidation": "updated",
+                            "old_version": freshness_res.current_version,
+                            "new_version": freshness_res.upstream_version,
+                        }
+                except Exception as e:  # noqa: BLE001
+                    pass
+
+            return {
+                "status": "success",
+                "action": "revalidate",
+                "path": path,
+                "revalidation": freshness_res.status,
+                "current_version": freshness_res.current_version,
+                "upstream_version": freshness_res.upstream_version,
+                "message": freshness_res.message,
             }
 
         raise ValueError(f"Unsupported modify_knowledge action: {action}")

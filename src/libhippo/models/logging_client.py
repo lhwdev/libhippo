@@ -17,11 +17,7 @@ from autogen_core.models import (
     RequestUsage,
 )
 
-from libhippo.runner.env import load_env_hierarchy
-
-# Ensure env files (including .env.development.local) are loaded
-load_env_hierarchy()
-
+_env_loaded = False
 logger = logging.getLogger("libhippo.openai")
 logger.setLevel(logging.INFO)
 if not logger.handlers:
@@ -33,6 +29,16 @@ logger.propagate = False
 
 def is_openai_logging_enabled() -> bool:
     """Check if OpenAI request/response logging is enabled via environment."""
+    global _env_loaded
+    if not _env_loaded:
+        try:
+            from libhippo.runner.env import load_env_hierarchy
+
+            load_env_hierarchy()
+        except ImportError:
+            pass
+        _env_loaded = True
+
     val = (
         os.getenv("LIBHIPPO_LOG_OPENAI")
         or os.getenv("OPENAI_LOG")

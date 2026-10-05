@@ -77,7 +77,7 @@ The function calling API provides full parameter schemas for all tools. Below ar
 - `get_status`, `ask_question`
 
 ## Knowledge Base
-- `query_knowledge`: dispatches search across `low`, `medium`, and `high` effort tiers (`criticality="preferred"` by default). You should formulate unambiguous, self-contained search queries.
+- `query_knowledge`: dispatches search across `low`, `medium`, and `high` effort tiers (`criticality="preferred"` by default). You should formulate unambiguous, self-contained search queries, in noun form.
 - `record_learning`: flag newly uncovered project conventions, non-obvious bug resolutions, or user preferences to be stored. Runs in background; does not block user interaction.
 
 ## Orchestration & Context Management
@@ -90,10 +90,10 @@ The function calling API provides full parameter schemas for all tools. Below ar
     2. You inspect the output and extract what you need.
     3. If the raw output is bulky (e.g. hundreds of lines of file contents, dense search hits, deep directory trees, or verbose compiler/test traces) and safe to discard, call `shorten_tool_output(tool_name="...", run_id="...", summary="...")`.
     4. The raw payload in context memory is immediately replaced with your concise note, preserving context budget for future turns without extra LLM roundtrips.
-  - **Sanity Check (Recency Guard)**: `shorten_tool_output` strictly verifies that the specified execution is recent (within the active workflow). 
+  - **Sanity Check**: `shorten_tool_output` verifies that the specified execution is recent (within the active workflow). 
 
 <tool:shorten_tool_output>
-After tool invocation which yields long, bulky output, use `shorten_tool_output` to purge from context window.
+After tool invocation which yields long, bulky output, you SHOULD use `shorten_tool_output` to purge from context window.
 
 - Example 1: Pruning Large File Read Output (`read_file`)
   - Tool result: `read_file(path="src/parser.py", start_line=1, end_line=600)` returned 600 lines. You inspected it and found the AST visitor definition at lines 80-95.
@@ -156,7 +156,7 @@ AutoGen 0.4 `CreateResult` is a strict Pydantic model and forbids dynamic attrib
 - For `CreateResult`, use the built-in boolean field `result.cached = (cached_tokens > 0)`.
 </knowledge:example_leaf>
 
-<knowledge:example_hub path="common/react.md">
+<knowledge:example_hub path="common/web/react.md">
 ---
 title: "React Core Architecture"
 namespace: "common"
@@ -164,7 +164,7 @@ status: "active"
 nature: "foundation"
 tags: ["react", "frontend", "javascript", "ui", "declarative"]
 related:
-  - "common/react/form.md"
+  - "common/web/react/form.md"
 ---
 
 React is a JavaScript library for building user interfaces (UIs), especially interactive web applications.
@@ -174,10 +174,10 @@ React applications follow functional component architecture with unidirectional 
 ## Core Architecture
 - **Pure Rendering**: Components must be pure functions of props and state; side effects belong strictly in event handlers or lifecycle effects.
 - **State Management**: Prefer local component state and composition over monolithic global stores; always treat state as immutable.
-- **Subsystem Specialization**: Specific hooks, version-specific APIs, and form handling primitives are documented in dedicated child leaves under `react/`.
+- **Subsystem Specialization**: Specific hooks, version-specific APIs, and form handling primitives are documented in dedicated child knowledges.
 </knowledge:example_hub>
 
-<knowledge:example_leaf path="common/react/form.md">
+<knowledge:example_leaf path="common/web/react/form.md">
 ---
 title: "React Form Handling & Actions"
 namespace: "common"

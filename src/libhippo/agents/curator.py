@@ -63,7 +63,10 @@ class CuratorAgent(AssistantAgent, BaseHippoAgent):
             prompt += f"ADDITIONAL_CONTEXT:\n{context}\n"
 
         prompt += (
-            "\nProduce the full GitHub-Flavored Markdown file including strict YAML frontmatter, "
+            "\nFollow the 3-stage curation protocol:\n"
+            "1. Search & Discover technical documentation.\n"
+            "2. Filter to authoritative sources (official docs, canonical repo, package index); discard tutorials and blog aggregators.\n"
+            "3. Produce the full GitHub-Flavored Markdown file including strict YAML frontmatter (with 'source: [...]' and 'version_check: ...' if a library hub), "
             "Summary (Coarse View), and Detailed Rules & Edge Cases (Fine View)."
         )
 

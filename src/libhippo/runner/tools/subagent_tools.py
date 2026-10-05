@@ -133,9 +133,9 @@ class SubagentTools(BaseToolSuite):
 
         old_tokens = target_msg.raw_token_count
         if summary:
-            compact_text = f"[Tool output of {actual_tool} shortened]"
+            compact_text = f"[Tool output of {actual_tool} discarded/shortened by agent: {summary}]"
         else:
-            compact_text = f"[Tool output of {actual_tool} discarded]"
+            compact_text = f"[Tool output of {actual_tool} discarded by agent]"
 
         old_lines = target_msg.content.count("\n") + 1
         target_msg.content = compact_text
@@ -147,6 +147,7 @@ class SubagentTools(BaseToolSuite):
             "tool_name": actual_tool,
             "run_id": actual_run_id,
             "summary": summary,
+            "result": compact_text,
             "old_lines": old_lines,
             "reclaimed_tokens": reclaimed_tokens,
         }

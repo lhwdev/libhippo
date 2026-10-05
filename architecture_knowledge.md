@@ -307,10 +307,14 @@ Within each mount point, files follow the Hub-and-Leaf pattern: every subdirecto
 ---
 title: "Button Accessibility with ARIA"
 namespace: "common" # common | user | project | plugins
-version: "WAI-ARIA 1.2"
+version: "1.2.0"
 status: "active" # active | deprecated | needs_review
 force_keep: false # optional: true prevents automated renaming, splitting, or merging (e.g. symlinked subtrees)
 last_updated: "2026-09-28"
+source:
+  - "https://www.w3.org/WAI/ARIA/apg/patterns/button/"
+  - "https://github.com/w3c/aria"
+version_check: "github:w3c/aria" # optional: npm:pkg, pypi:pkg, github:owner/repo, crates:pkg, scrape:url#regex, terminal:cmd
 related:
   - "common/web/html/syntax.md"
 tags: ["html", "a11y", "aria", "button"]
@@ -328,6 +332,28 @@ Use native `<button>` whenever possible. Only use `role="button"` on `<div>` wit
 - Add aria-pressed for toggle buttons.
 ```
 
+### 4.6 Automated Freshness Verification & Bi-directional Cascading
+To detect outdated library specifications without burning LLM tokens:
+1. **Source & Version Tracking**:
+   - `source: list[str]`: Canonical documentation roots, GitHub repositories, or package registries (filtered to authoritative primary sources).
+   - `version_check: str`: Declarative check targets (`npm:react`, `pypi:fastapi`, `github:owner/repo`, `terminal:cmd`). Only defined on library/framework hubs; omitted on broad category hubs and child leaves.
+2. **Database-Only Verification State (`catalog_entries`)**:
+   - `last_checked_at` (TEXT ISO timestamp), `freshness_status` (`fresh` | `stale` | `error`), `upstream_version` (TEXT), and `stale_reason` (TEXT) are stored **strictly in the local SQLite catalog, never in frontmatter**. Checking fresh documents generates zero git diffs.
+3. **Bi-directional Cascading & Dynamic Inheritance**:
+   - When a parent package hub is marked stale, all child leaves (`parent/%`) in SQLite are marked stale (`stale_reason = 'parent_stale:<parent>'`).
+   - When a parent is refreshed, child stale flags are cleared automatically (vice-versa).
+   - At query time, child nodes without their own `version_check` dynamically inherit parent freshness.
+4. **Deterministic Checkers ($0 Tokens, <100ms)**:
+   - Evaluates upstream releases using PyPI, npm, crates.io, GitHub Releases APIs, HTTP scrapes, or sandboxed `terminal:<cmd>` execution with SemVer comparisons.
+   - Runs on a 7-day TTL cooldown during background `post_task_maintenance()`.
+5. **Metadata Visibility on Read**:
+   - `read_knowledge` and `query_knowledge` prepend a metadata header banner on web-fetched knowledge (`[Knowledge Metadata | version: ... | last_updated: ... | last_checked: ... | status: ... | source: ...]`).
+6. **Forced Revalidation via `modify_knowledge`**:
+   - `query_knowledge` and `read_knowledge` remain strictly pure read tools.
+   - Explicit forced updates/checks are executed via `modify_knowledge(action="revalidate", path="...")`.
+7. **Upstream Version Overwrite on Modification**:
+   - Whenever a knowledge node defining `version_check` is modified or created (via `modify_knowledge` or `save_node`), LibHippo queries the upstream URL/specification and overwrites the frontmatter `version` with the latest fetched version before saving to disk.
+   - The node and its child leaves are marked `fresh` in the catalog with zero manual version bumping needed.
 
 ---
 
@@ -336,13 +362,13 @@ Use native `<button>` whenever possible. Only use `role="button"` on `<div>` wit
 ### 5.1 Tool Registry Overview
 | Tool Name | Caller | Input Arguments | Functional Description |
 | :--- | :--- | :--- | :--- |
-| **`query_knowledge`** | `TaskSolverAgent` | `query: str`, `effort: "low"\|"medium"\|"high"`, `criticality: "mandatory"\|"preferred"\|"optional"` | Dispatches query across the 3 effort tiers using importance-aware confidence scoring, returning raw snippets or librarian synthesis. |
+| **`query_knowledge`** | `TaskSolverAgent` | `query: str`, `effort: "low"\|"medium"\|"high"`, `criticality: "mandatory"\|"preferred"\|"optional"` | Dispatches query across 3 effort tiers with metadata visibility and 3-tier staleness routing (No Fetch, Stale-While-Revalidate, Wait for Latest). |
 | **`record_learning`** | `TaskSolverAgent` | `topic: str`, `insight: str`, `scope: "project"\|"common"\|"user"` | Explicitly queues an empirical learning, gotcha, or preference for asynchronous sidecar audit and commitment. |
 | **`search_knowledge`** | `BookKeeperAgent` | `query: str`, `namespace: str = None`, `top_k: int = 5` | Searches local vector store and FTS5 catalog for candidate nodes, returning file paths and similarity scores. |
-| **`read_knowledge`** | `TaskSolverAgent`, `BookKeeperAgent` | `file_path: str`, `section: "summary"\|"rules"\|"full"` | Reads the specified section from knowledge markdown document without as-is. |
-| **`audit_knowledge`** | `CheckerAgent`<br>*(TypeSafe Jev)* | `path: str`, `content: str`, `parent_path: str`, `sibling_paths: list[str]` | Executes structural audit (taxonomy fit, sizing hysteresis, importance scoring, SRP coherence, sibling coalescence, YAML schema), returning `JevAuditReport`. |
-| **`fetch_web`**, **`search_web`** | `CuratorAgent` | `search_query: str`, `doc_url: str = None` | Conducts targeted searches against official documentation domains and scrapes technical specifications. |
-| **`modify_knowledge`** | `VerifierAgent`<br>*(Sole Authority, auto-approved on Checker PASS)* | `action: "create"\|"update"\|"split"\|"merge"\|"purge"`, `path: str`, `content: str`, `metadata: dict`, `extra_paths: list[str] = None` | Atomically commits markdown changes, directory creations, or split/merge refactoring to the local filesystem and synchronizes the vector index. |
+| **`read_knowledge`** | `TaskSolverAgent`, `BookKeeperAgent` | `file_path: str`, `section: "summary"\|"rules"\|"full"` | Reads specified section from knowledge markdown with prepended metadata banner for web-fetched nodes (pure read, no side-effects). |
+| **`audit_knowledge`** | `CheckerAgent`<br>*(TypeSafe Jev)* | `path: str`, `content: str`, `parent_path: str`, `sibling_paths: list[str]` | Executes structural audit, semantic kind classification, and silent frontmatter normalization. |
+| **`fetch_web`**, **`search_web`** | `CuratorAgent` | `search_query: str`, `doc_url: str = None` | Conducts targeted searches against official documentation domains and scrapes technical specifications following 3-stage protocol. |
+| **`modify_knowledge`** | `VerifierAgent`<br>*(Sole Authority, auto-approved on Checker PASS)* | `action: "create"\|"update"\|"split"\|"merge"\|"purge"\|"revalidate"`, `path: str`, `content: str`, `metadata: dict`, `extra_paths: list[str] = None` | Atomically commits markdown changes, directory refactoring, or triggers forced revalidation and fresh upstream curation. |
 
 
 ### 5.2 Tool `query_knowledge` Specification
@@ -357,6 +383,12 @@ async def query_knowledge(
     criticality: Literal["mandatory", "preferred", "optional"] = "preferred",
 ) -> KnowledgeRetrievalResult
 ```
+
+#### 5.2.1 3-Tier Staleness Routing
+When a retrieved document is flagged as stale (`freshness_status == "stale"`):
+- **Mode A: No Fetch** (`criticality="optional"` or `effort="low"`): Returns current document with an advisory note (`[NOTICE: Outdated (upstream v{up} vs doc v{cur}). Query with higher criticality to update]`). 0 web calls, <50ms latency.
+- **Mode B: Stale-While-Revalidate** (`criticality="preferred"` default, or `mandatory` with low/med effort): Returns current document immediately so interactive turns are never blocked, while dispatching an asynchronous background update task (`CuratorAgent` + Maker-Checker).
+- **Mode C: Wait for Latest** (`criticality="mandatory"` and `effort="high"`): Strictly restrained. Blocks retrieval to run `CuratorAgent` revalidation, commit the fresh node, and return up-to-date facts.
 
 #### 5.2.1 3-Tier Effort
 `effort` is defined:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, AsyncGenerator
+from typing import TYPE_CHECKING, Any, AsyncGenerator
 
 from autogen_agentchat.agents import AssistantAgent
 from autogen_core.models import ChatCompletionClient
@@ -11,11 +11,13 @@ from libhippo.agents.base import BaseHippoAgent
 from libhippo.agents.prompts import get_agent_system_prompt
 from libhippo.models.llm import create_chat_client
 from libhippo.runner.config import HarnessConfig
-from libhippo.runner.harness import GeneralAgentHarness
 from libhippo.runner.types import HarnessEvent, TurnCompletedEvent
 from libhippo.storage.store import KnowledgeStore
 from libhippo.tools.registry import ToolRegistry
 from libhippo.tools.retrieval import KnowledgeDispatcher
+
+if TYPE_CHECKING:
+    from libhippo.runner.harness import GeneralAgentHarness
 
 
 class TaskSolverAgent(AssistantAgent, BaseHippoAgent):
@@ -64,6 +66,8 @@ class TaskSolverAgent(AssistantAgent, BaseHippoAgent):
         if harness is not None:
             self.harness = harness
         elif harness_config is not None:
+            from libhippo.runner.harness import GeneralAgentHarness
+
             self.harness = GeneralAgentHarness(
                 config=harness_config,
                 model_client=client,

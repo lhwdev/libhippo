@@ -15,14 +15,16 @@ Maintains living, audited engineering knowledge across agent sessions.
 
 - **Storage (`libhippo.storage`)**:
   - Cascading tree namespaces: `project/` (repository rules), `common/` (shared idioms), `user/` (preferences), `plugins/` (external tools).
-  - Markdown files serve as the human-auditable source of truth.
+  - Markdown files serve as the human-auditable source of truth (`source`, `version_check`).
   - Local vector store (SQLite-vec / ChromaDB) accelerates coarse/fine semantic queries.
   - Hub (summaries) and Leaf (detailed rules) layout eliminates runtime summarization costs.
+  - Automated Freshness Checker: SQLite-tracked `last_checked_at` and `freshness_status` without git churn; zero-token deterministic registry/terminal checking; bi-directional parent/child cascading.
 - **3-Tier Adaptive Retrieval (`query_knowledge`)**:
   - `effort=low`: Vector/FTS search ($\tau \ge 0.70$). Returns immediately on miss without LLM calls.
   - `effort=medium`: Vector search ($\tau \ge 0.82$), escalates to stateless `BookKeeperAgent` lookup on miss.
   - `effort=high`: Broad vector seed + deep `BookKeeperAgent` exploration. Falls back to web research if criticality is mandatory.
   - `criticality`: `mandatory` (obligatory curation on miss), `preferred` (fallback to model weights, 0 web calls), `optional` (fail fast).
+  - **Staleness Routing**: `optional`/`low` (No Fetch with advisory), `preferred` (Stale-While-Revalidate in background), `mandatory` + `high` (Wait for Latest). Forced updates centralized in `modify_knowledge(action="revalidate")`.
 
 - **Agents Orchestration**: `GraphFlow`
   - `TaskSolverAgent` is related to general agent harness.

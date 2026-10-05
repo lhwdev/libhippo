@@ -186,10 +186,33 @@ class CheckerAgent(BaseHippoAgent):
         """Audit a candidate knowledge node against taxonomy, sizing, and schema."""
         context = context or KnowledgeContext()
 
+        # Step 0: Frontmatter silent normalization (auto-fix)
+        parent_vc = context.parent.version_check if context.parent else None
+        from libhippo.models.knowledge import normalize_frontmatter
+
+        norm_path = candidate.path.replace("\\", "/").strip("/")
+        # Category hubs like common/web.md, common/python.md
+        is_cat_hub = norm_path.count("/") == 1 and norm_path.endswith(".md")
+        candidate, _ = normalize_frontmatter(
+            candidate,
+            parent_version_check=parent_vc,
+            is_category_hub=is_cat_hub,
+        )
+
         # Step 1: Token counting & syntax validation
         raw_tokens = self.count_tokens(candidate.markdown)
         schema_errors = list(candidate.parse_errors)
         content_errors: list[str] = []
+
+        # Validate version_check format if present
+        if candidate.frontmatter and candidate.frontmatter.version_check:
+            vc = candidate.frontmatter.version_check.strip()
+            valid_prefixes = ("npm:", "pypi:", "github:", "crates:", "scrape:", "terminal:")
+            if not any(vc.startswith(p) for p in valid_prefixes) and "/" not in vc:
+                schema_errors.append(
+                    f"Invalid version_check '{vc}'. Expected format: npm:<pkg>, pypi:<pkg>, "
+                    f"github:<owner>/<repo>, crates:<crate>, scrape:<url>#<regex>, or terminal:<cmd>"
+                )
 
         # Deterministic markdown syntax check: unmatched code fences
         if candidate.markdown.count("```") % 2 != 0:

@@ -580,9 +580,12 @@ class GeneralAgentHarness:
         except Exception:
             pass
 
-        # 3. Store maintenance (vector compaction)
+        # 3. Store maintenance (vector compaction & freshness)
         if self.store is not None:
-            if hasattr(self.store, "post_task_maintenance"):
-                await self.store.post_task_maintenance()
-            elif hasattr(self.store, "compact_if_needed"):
-                await self.store.compact_if_needed()
+            try:
+                if hasattr(self.store, "post_task_maintenance"):
+                    await self.store.post_task_maintenance()
+                elif hasattr(self.store, "compact_if_needed"):
+                    await self.store.compact_if_needed()
+            except Exception:
+                logger.warning("Error during post_task_maintenance", exc_info=True)

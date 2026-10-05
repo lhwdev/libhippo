@@ -56,13 +56,13 @@ class KnowledgeDispatcher:
         effort: EffortTier = "medium",
         criticality: CriticalityTier = "preferred",
     ) -> KnowledgeRetrievalResult:
-        """Execute 3-tier adaptive retrieval with confidence scoring and criticality routing."""
+        """Execute 3-tier adaptive retrieval with confidence scoring, metadata visibility, and staleness routing."""
         # 1. Low Effort Tier: Fast local vector/FTS search, strict cutoff
         if effort == "low":
             matches = await self.store.search(query=query, top_k=1)
             if matches and matches[0].confidence >= self.threshold_low:
                 top = matches[0]
-                return KnowledgeRetrievalResult(
+                res = KnowledgeRetrievalResult(
                     status="HIT",
                     path=top.path,
                     title=top.title,
@@ -72,6 +72,7 @@ class KnowledgeDispatcher:
                     criticality=criticality,
                     source="fast_path",
                 )
+                return await self._apply_staleness_routing(res, effort="low", criticality=criticality)
             # Low effort fails fast without LLM invocation
             return self._handle_miss(query, effort="low", criticality=criticality)
 
@@ -80,7 +81,7 @@ class KnowledgeDispatcher:
             matches = await self.store.search(query=query, top_k=3)
             if matches and matches[0].confidence >= self.threshold_medium:
                 top = matches[0]
-                return KnowledgeRetrievalResult(
+                res = KnowledgeRetrievalResult(
                     status="HIT",
                     path=top.path,
                     title=top.title,
@@ -90,11 +91,12 @@ class KnowledgeDispatcher:
                     criticality=criticality,
                     source="fast_path",
                 )
+                return await self._apply_staleness_routing(res, effort="medium", criticality=criticality)
             # Below medium threshold -> escalate to BookKeeperAgent if available
             if self.book_keeper:
                 bk_res = await self._invoke_bookkeeper(query, candidates=matches, criticality=criticality)
                 if bk_res.status == "HIT":
-                    return bk_res
+                    return await self._apply_staleness_routing(bk_res, effort="medium", criticality=criticality)
 
             # BookKeeper missed or not provided
             return await self._handle_miss_async(query, effort="medium", criticality=criticality)
@@ -105,12 +107,12 @@ class KnowledgeDispatcher:
             if self.book_keeper:
                 bk_res = await self._invoke_bookkeeper(query, candidates=matches, criticality=criticality)
                 if bk_res.status == "HIT":
-                    return bk_res
+                    return await self._apply_staleness_routing(bk_res, effort="high", criticality=criticality)
 
             # Direct fallback to top vector match if good confidence
             if matches and matches[0].confidence >= self.threshold_low:
                 top = matches[0]
-                return KnowledgeRetrievalResult(
+                res = KnowledgeRetrievalResult(
                     status="HIT",
                     path=top.path,
                     title=top.title,
@@ -120,10 +122,92 @@ class KnowledgeDispatcher:
                     criticality=criticality,
                     source="fast_path",
                 )
+                return await self._apply_staleness_routing(res, effort="high", criticality=criticality)
 
             return await self._handle_miss_async(query, effort="high", criticality=criticality)
 
         return self._handle_miss(query, effort=effort, criticality=criticality)
+
+    async def _apply_staleness_routing(
+        self,
+        result: KnowledgeRetrievalResult,
+        effort: EffortTier,
+        criticality: CriticalityTier,
+    ) -> KnowledgeRetrievalResult:
+        """Route retrieved knowledge based on staleness and criticality/effort parameters."""
+        if result.status != "HIT" or not result.path:
+            return result
+
+        entry = await self.store.catalog.get(result.path)
+        if not entry:
+            return result
+
+        freshness_status = entry.get("freshness_status", "fresh")
+        upstream = entry.get("upstream_version")
+        current = entry.get("version", "1.0.0")
+
+        # Metadata banner for web-fetched knowledge
+        meta_banner = ""
+        is_web_fetched = (
+            entry.get("namespace") == "common"
+            or bool(entry.get("source"))
+            or bool(entry.get("version_check"))
+        )
+        if is_web_fetched:
+            last_up = (entry.get("last_updated") or "unknown")[:10]
+            last_chk = (entry.get("last_checked_at") or "never")[:10]
+            srcs = entry.get("source") or []
+            srcs_str = ", ".join(srcs) if srcs else "none"
+            meta_banner = (
+                f"[Knowledge Metadata | version: {current} | last_updated: {last_up} | "
+                f"last_checked: {last_chk} | status: {freshness_status} | source: {srcs_str}]\n\n"
+            )
+
+        if freshness_status != "stale":
+            result.snippet = f"{meta_banner}{result.snippet}"
+            return result
+
+        # Document is STALE. Apply 3-tier routing:
+        # Mode C: Wait for latest (mandatory + high)
+        if criticality == "mandatory" and effort == "high":
+            try:
+                reval_res = await self.store.modify_knowledge("revalidate", result.path)
+                if reval_res.get("revalidation") == "updated":
+                    updated_node = await self.store.get_node(result.path)
+                    new_snippet = updated_node.body[:500] if updated_node else result.snippet
+                    result.snippet = f"[NOTICE: Node was refreshed from upstream v{upstream}]\n\n{new_snippet}"
+                    result.details["staleness_action"] = "waited_and_updated"
+                    return result
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"Wait-for-latest revalidation failed for {result.path}: {e}")
+
+        # Mode A: No fetch (optional OR low effort)
+        if criticality == "optional" or effort == "low":
+            advisory = (
+                f"[NOTICE: This knowledge is outdated (upstream v{upstream or 'newer'} vs doc v{current}). "
+                f"Query with higher criticality/effort or use modify_knowledge(action='revalidate') to update.]\n\n"
+            )
+            result.snippet = f"{meta_banner}{advisory}{result.snippet}"
+            result.details["staleness_action"] = "no_fetch_advisory"
+            return result
+
+        # Mode B: Stale-While-Revalidate (preferred default, or mandatory with low/med effort)
+        notice = (
+            f"[NOTICE: This knowledge is outdated (upstream v{upstream or 'newer'} vs doc v{current}). "
+            f"Background revalidation queued; using current version for now.]\n\n"
+        )
+        result.snippet = f"{meta_banner}{notice}{result.snippet}"
+        result.details["staleness_action"] = "stale_while_revalidate"
+
+        # Queue asynchronous background revalidation
+        try:
+            import asyncio
+
+            asyncio.create_task(self.store.modify_knowledge("revalidate", result.path))
+        except Exception:  # noqa: BLE001
+            pass
+
+        return result
 
     def _handle_miss(
         self,
