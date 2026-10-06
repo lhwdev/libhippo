@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -20,7 +21,7 @@ class VectorSearchResult:
     title: str
     namespace: str
     section: str
-    snippet: str
+    content: str
     cosine_sim: float
     importance: float
     confidence: float
@@ -97,7 +98,24 @@ class VectorKnowledgeStore:
             "force_keep": bool(fm.force_keep),
             "nature": fm.nature or "",
             "status": fm.status,
+            "tags": ", ".join(fm.tags) if fm.tags else "",
         }
+
+        if fm.title.strip():
+            ids.append(f"{candidate.path}#title")
+            documents.append(fm.title.strip())
+            metadatas.append({**base_meta, "section": "title"})
+
+        if fm.tags:
+            ids.append(f"{candidate.path}#keywords")
+            documents.append(f"Title: {fm.title}\nKeywords: {', '.join(fm.tags)}")
+            metadatas.append({**base_meta, "section": "keywords"})
+            for i, tag in enumerate(fm.tags):
+                tag_clean = tag.strip()
+                if tag_clean:
+                    ids.append(f"{candidate.path}#tag_{i}")
+                    documents.append(tag_clean)
+                    metadatas.append({**base_meta, "section": "tag"})
 
         if summary.strip():
             ids.append(f"{candidate.path}#summary")
@@ -136,14 +154,17 @@ class VectorKnowledgeStore:
         namespace: str | None = None,
         top_k: int = 5,
         alpha: float = 0.08,
+        w_content: float = 0.60,
+        w_title: float = 0.25,
+        w_tag: float = 0.15,
     ) -> list[VectorSearchResult]:
-        """Perform similarity search with importance-blended confidence scoring."""
+        """Perform similarity search with weighted sum of title, tag, and content cosine similarities."""
         count = self.collection.count()
         if count == 0:
             return []
 
         where_clause = {"namespace": namespace} if namespace else None
-        n_results = min(count, max(top_k * 2, 1))
+        n_results = min(count, max(top_k * 6, 12))
 
         kwargs: dict[str, Any] = {
             "query_texts": [query],
@@ -156,37 +177,92 @@ class VectorKnowledgeStore:
         if not res or not res["ids"] or not res["ids"][0]:
             return []
 
-        results: list[VectorSearchResult] = []
-        best_per_path: dict[str, VectorSearchResult] = {}
-
         ids = res["ids"][0]
         distances = res["distances"][0] if res["distances"] else [0.0] * len(ids)
         documents = res["documents"][0] if res["documents"] else [""] * len(ids)
         metadatas = res["metadatas"][0] if res["metadatas"] else [{}] * len(ids)
 
+        # Aggregate vector matches by document path
+        path_matches: dict[str, dict[str, Any]] = {}
+
         for chunk_id, dist, doc, meta in zip(ids, distances, documents, metadatas):
-            # Chroma cosine distance is in [0, 2]; cosine similarity = max(0, 1 - dist)
             cosine_sim = max(0.0, min(1.0, 1.0 - float(dist)))
-            importance = float(meta.get("importance", 0.5))
+            path = str(meta.get("path", chunk_id.split("#")[0]))
+            section = str(meta.get("section", "full"))
 
-            # Importance-aware confidence formula: (1 - alpha) * cos_sim + alpha * importance
-            confidence = round((1.0 - alpha) * cosine_sim + alpha * importance, 4)
+            if path not in path_matches:
+                path_matches[path] = {
+                    "title": str(meta.get("title", "")),
+                    "namespace": str(meta.get("namespace", "common")),
+                    "importance": float(meta.get("importance", 0.5)),
+                    "title_sim": None,
+                    "tag_sim": None,
+                    "content_sim": None,
+                    "content_doc": "",
+                    "content_section": "full",
+                    "best_sim": -1.0,
+                    "best_doc": doc,
+                    "best_section": section,
+                }
 
-            item = VectorSearchResult(
-                path=str(meta.get("path", chunk_id.split("#")[0])),
-                title=str(meta.get("title", "")),
-                namespace=str(meta.get("namespace", "common")),
-                section=str(meta.get("section", "full")),
-                snippet=doc,
-                cosine_sim=round(cosine_sim, 4),
-                importance=importance,
-                confidence=confidence,
+            entry = path_matches[path]
+            if cosine_sim > entry["best_sim"]:
+                entry["best_sim"] = cosine_sim
+                entry["best_doc"] = doc
+                entry["best_section"] = section
+
+            if section == "title":
+                entry["title_sim"] = max(entry["title_sim"] or 0.0, cosine_sim)
+            elif section in ("tag", "keywords"):
+                entry["tag_sim"] = max(entry["tag_sim"] or 0.0, cosine_sim)
+            elif section in ("summary", "rules", "full"):
+                if entry["content_sim"] is None or cosine_sim > entry["content_sim"]:
+                    entry["content_sim"] = cosine_sim
+                    entry["content_doc"] = doc
+                    entry["content_section"] = section
+
+        results: list[VectorSearchResult] = []
+        for path, data in path_matches.items():
+            content_sim = data["content_sim"]
+            title_sim = data["title_sim"]
+            tag_sim = data["tag_sim"]
+
+            # Weighted sum over vector-matched components (title, tag, content)
+            active_weights = 0.0
+            weighted_score = 0.0
+
+            if content_sim is not None:
+                weighted_score += w_content * content_sim
+                active_weights += w_content
+
+            if title_sim is not None:
+                weighted_score += w_title * title_sim
+                active_weights += w_title
+
+            if tag_sim is not None:
+                weighted_score += w_tag * tag_sim
+                active_weights += w_tag
+
+            combined_sim = (weighted_score / active_weights) if active_weights > 0 else (data["best_sim"] if data["best_sim"] >= 0 else 0.0)
+
+            importance = data["importance"]
+            confidence = min(1.0, round((1.0 - alpha) * combined_sim + alpha * importance, 4))
+
+            chosen_doc = data["content_doc"] or data["best_doc"]
+            chosen_section = data["content_section"] if data["content_doc"] else data["best_section"]
+
+            results.append(
+                VectorSearchResult(
+                    path=path,
+                    title=data["title"],
+                    namespace=data["namespace"],
+                    section=chosen_section,
+                    content=chosen_doc,
+                    cosine_sim=round(combined_sim, 4),
+                    importance=importance,
+                    confidence=confidence,
+                )
             )
 
-            # Deduplicate by path, keeping highest confidence chunk for each document
-            if item.path not in best_per_path or item.confidence > best_per_path[item.path].confidence:
-                best_per_path[item.path] = item
-
-        results = list(best_per_path.values())
         results.sort(key=lambda x: x.confidence, reverse=True)
         return results[:top_k]

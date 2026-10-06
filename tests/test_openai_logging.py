@@ -222,7 +222,7 @@ async def test_tool_output_truncation(monkeypatch: pytest.MonkeyPatch, caplog: p
         await wrapped.create(messages=messages)
 
     log_text = caplog.text
-    assert "... [truncated 1000 characters] ..." in log_text
+    assert "... [truncated 1500 characters] ..." in log_text
 
 
 def test_file_handler_logging(monkeypatch: pytest.MonkeyPatch, tmp_path):

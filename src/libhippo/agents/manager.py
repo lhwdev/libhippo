@@ -14,7 +14,11 @@ from libhippo.agents.curator import CuratorAgent
 from libhippo.agents.verifier import VerifierAgent
 from libhippo.orchestration.maker_checker import MakerCheckerOrchestrator
 from libhippo.storage.store import KnowledgeStore
-from libhippo.tools.retrieval import KnowledgeDispatcher
+from libhippo.tools.retrieval import (
+    DEFAULT_THRESHOLD_LOW,
+    DEFAULT_THRESHOLD_MEDIUM,
+    KnowledgeDispatcher,
+)
 
 
 class AgentManager:
@@ -47,8 +51,8 @@ class AgentManager:
 
     def create_dispatcher(
         self,
-        threshold_low: float = 0.70,
-        threshold_medium: float = 0.82,
+        threshold_low: float = DEFAULT_THRESHOLD_LOW,
+        threshold_medium: float = DEFAULT_THRESHOLD_MEDIUM,
     ) -> KnowledgeDispatcher:
         """Create or return singleton KnowledgeDispatcher wired to this manager's agents and orchestrator."""
         if self._dispatcher is None:

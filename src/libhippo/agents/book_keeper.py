@@ -28,21 +28,24 @@ class BookKeeperLookupOutput(BaseModel):
     path: str | None = Field(default=None, description="Direct matching knowledge path if found")
     confidence: float = Field(default=0.5, description="Confidence score between 0.0 and 1.0")
     title: str = Field(default="", description="Title of the matched knowledge document")
-    snippet: str = Field(default="", description="Verbatim code or markdown snippet from the knowledge document")
+    keywords: list[str] = Field(
+        default_factory=list,
+        description="Key search keywords and phrases connecting query to document",
+    )
     rationale: str = Field(default="", description="Concise explanation for hit or miss")
 
 
 class BookKeeperAgent(AssistantAgent, BaseHippoAgent):
     """Adaptive retrieval specialist running in a stateless zero-context sandbox.
 
-    Expand queries, cross-reference knowledge documents, and extract verbatim
-    rule snippets without semantic paraphrasing.
+    Expand queries, cross-reference knowledge documents, and extract relevant search
+    keywords for confidence boosting.
     """
 
     def __init__(
         self,
         name: str = "BookKeeperAgent",
-        description: str = "Locates authoritative technical rules and returns verbatim snippets.",
+        description: str = "Locates authoritative technical rules and extracts search keywords for confidence boosting.",
         model_client: ChatCompletionClient | None = None,
         store: KnowledgeStore | None = None,
         tools: list[Any] | None = None,
@@ -87,7 +90,7 @@ class BookKeeperAgent(AssistantAgent, BaseHippoAgent):
                 "path": None,
                 "confidence": 0.0,
                 "title": "",
-                "snippet": "",
+                "keywords": [],
                 "rationale": "No initial candidates provided.",
                 "raw_response": "",
             }
@@ -110,7 +113,7 @@ class BookKeeperAgent(AssistantAgent, BaseHippoAgent):
                 "path": obj.path,
                 "confidence": obj.confidence,
                 "title": obj.title,
-                "snippet": obj.snippet,
+                "keywords": obj.keywords,
                 "rationale": obj.rationale,
                 "raw_response": obj.model_dump_json(),
             }
@@ -126,12 +129,15 @@ class BookKeeperAgent(AssistantAgent, BaseHippoAgent):
         if trimmed.startswith("{") and trimmed.endswith("}"):
             try:
                 data = json.loads(trimmed)
+                raw_kw = data.get("keywords", [])
+                if isinstance(raw_kw, str):
+                    raw_kw = [k.strip() for k in raw_kw.split(",") if k.strip()]
                 return {
                     "status": data.get("status", "[MISS:FALLBACK]"),
                     "path": data.get("path"),
                     "confidence": float(data.get("confidence", 0.5)),
                     "title": data.get("title", ""),
-                    "snippet": data.get("snippet", ""),
+                    "keywords": raw_kw,
                     "rationale": data.get("rationale", ""),
                     "raw_response": text,
                 }
@@ -156,14 +162,10 @@ class BookKeeperAgent(AssistantAgent, BaseHippoAgent):
         if title.upper() == "NONE":
             title = ""
 
-        snippet = ""
-        snippet_match = re.search(r"SNIPPET:\s*```(?:markdown)?\s*\n(.*?)\n```", text, re.DOTALL)
-        if snippet_match:
-            snippet = snippet_match.group(1).strip()
-        else:
-            snip_alt = re.search(r"SNIPPET:\s*\n?(.*?)(?=RATIONALE:|$)", text, re.DOTALL)
-            if snip_alt:
-                snippet = snip_alt.group(1).strip()
+        keywords = []
+        kw_match = re.search(r"KEYWORDS:\s*([^\n\r]+)", text)
+        if kw_match:
+            keywords = [k.strip() for k in kw_match.group(1).split(",") if k.strip()]
 
         rat_match = re.search(r"RATIONALE:\s*([^\n\r]+)", text)
         rationale = rat_match.group(1).strip() if rat_match else ""
@@ -173,7 +175,7 @@ class BookKeeperAgent(AssistantAgent, BaseHippoAgent):
             "path": path,
             "confidence": confidence,
             "title": title,
-            "snippet": snippet,
+            "keywords": keywords,
             "rationale": rationale,
             "raw_response": text,
         }

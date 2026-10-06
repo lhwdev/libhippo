@@ -18,13 +18,17 @@ CriticalityTier = Literal["mandatory", "preferred", "optional"]
 RetrievalStatus = Literal["HIT", "MISS:FALLBACK", "MISS:MANDATORY", "MISS:OPTIONAL"]
 
 
+DEFAULT_THRESHOLD_LOW: float = 0.68
+DEFAULT_THRESHOLD_MEDIUM: float = 0.80
+
+
 class KnowledgeRetrievalResult(BaseModel):
     """Result of query_knowledge dispatched across effort tiers and criticality routing."""
 
     status: RetrievalStatus = "HIT"
     path: str | None = None
     title: str = ""
-    snippet: str = ""
+    content: str = ""
     confidence: float = 0.0
     effort_tier: EffortTier = "medium"
     criticality: CriticalityTier = "preferred"
@@ -43,8 +47,8 @@ class KnowledgeDispatcher:
         curator: Any | None = None,
         checker: Any | None = None,
         orchestrator: Any | None = None,
-        threshold_low: float = 0.50,
-        threshold_medium: float = 0.70,
+        threshold_low: float = DEFAULT_THRESHOLD_LOW,
+        threshold_medium: float = DEFAULT_THRESHOLD_MEDIUM,
         on_event: Any | None = None,
     ) -> None:
         self.store = store
@@ -68,11 +72,12 @@ class KnowledgeDispatcher:
             matches = await self.store.search(query=query, top_k=1)
             if matches and matches[0].confidence >= self.threshold_low:
                 top = matches[0]
+                full_content = await self.store.read_section(top.path, section="full") or top.content
                 res = KnowledgeRetrievalResult(
                     status="HIT",
                     path=top.path,
                     title=top.title,
-                    snippet=top.snippet,
+                    content=full_content,
                     confidence=top.confidence,
                     effort_tier="low",
                     criticality=criticality,
@@ -87,11 +92,12 @@ class KnowledgeDispatcher:
             matches = await self.store.search(query=query, top_k=3)
             if matches and matches[0].confidence >= self.threshold_medium:
                 top = matches[0]
+                full_content = await self.store.read_section(top.path, section="full") or top.content
                 res = KnowledgeRetrievalResult(
                     status="HIT",
                     path=top.path,
                     title=top.title,
-                    snippet=top.snippet,
+                    content=full_content,
                     confidence=top.confidence,
                     effort_tier="medium",
                     criticality=criticality,
@@ -118,11 +124,12 @@ class KnowledgeDispatcher:
             # Direct fallback to top vector match if good confidence
             if matches and matches[0].confidence >= self.threshold_low:
                 top = matches[0]
+                full_content = await self.store.read_section(top.path, section="full") or top.content
                 res = KnowledgeRetrievalResult(
                     status="HIT",
                     path=top.path,
                     title=top.title,
-                    snippet=top.snippet,
+                    content=full_content,
                     confidence=top.confidence,
                     effort_tier="high",
                     criticality=criticality,
@@ -170,7 +177,7 @@ class KnowledgeDispatcher:
             )
 
         if freshness_status != "stale":
-            result.snippet = f"{meta_banner}{result.snippet}"
+            result.content = f"{meta_banner}{result.content}"
             return result
 
         # Document is STALE. Apply 3-tier routing:
@@ -180,8 +187,8 @@ class KnowledgeDispatcher:
                 reval_res = await self.store.modify_knowledge("revalidate", result.path)
                 if reval_res.get("revalidation") == "updated":
                     updated_node = await self.store.get_node(result.path)
-                    new_snippet = updated_node.body[:500] if updated_node else result.snippet
-                    result.snippet = f"[NOTICE: Node was refreshed from upstream v{upstream}]\n\n{new_snippet}"
+                    new_content = updated_node.markdown if updated_node else result.content
+                    result.content = f"[NOTICE: Node was refreshed from upstream v{upstream}]\n\n{new_content}"
                     result.details["staleness_action"] = "waited_and_updated"
                     return result
             except Exception as e:  # noqa: BLE001
@@ -193,7 +200,7 @@ class KnowledgeDispatcher:
                 f"[NOTICE: This knowledge is outdated (upstream v{upstream or 'newer'} vs doc v{current}). "
                 f"Query with higher criticality/effort or use modify_knowledge(action='revalidate') to update.]\n\n"
             )
-            result.snippet = f"{meta_banner}{advisory}{result.snippet}"
+            result.content = f"{meta_banner}{advisory}{result.content}"
             result.details["staleness_action"] = "no_fetch_advisory"
             return result
 
@@ -202,7 +209,7 @@ class KnowledgeDispatcher:
             f"[NOTICE: This knowledge is outdated (upstream v{upstream or 'newer'} vs doc v{current}). "
             f"Background revalidation queued; using current version for now.]\n\n"
         )
-        result.snippet = f"{meta_banner}{notice}{result.snippet}"
+        result.content = f"{meta_banner}{notice}{result.content}"
         result.details["staleness_action"] = "stale_while_revalidate"
 
         # Queue asynchronous background revalidation
@@ -226,7 +233,7 @@ class KnowledgeDispatcher:
                 effort_tier=effort,
                 criticality=criticality,
                 source="none",
-                snippet=f"[MISS:OPTIONAL: No high-confidence knowledge found for query '{query}']",
+                content=f"[MISS:OPTIONAL: No high-confidence knowledge found for query '{query}']",
             )
         elif criticality == "mandatory":
             return KnowledgeRetrievalResult(
@@ -234,7 +241,7 @@ class KnowledgeDispatcher:
                 effort_tier=effort,
                 criticality=criticality,
                 source="none",
-                snippet=f"[MISS:MANDATORY: Critical knowledge missing for query '{query}']",
+                content=f"[MISS:MANDATORY: Critical knowledge missing for query '{query}']",
             )
         else:
             return KnowledgeRetrievalResult(
@@ -242,7 +249,7 @@ class KnowledgeDispatcher:
                 effort_tier=effort,
                 criticality=criticality,
                 source="none",
-                snippet=f"[MISS:FALLBACK: Proceed with internal model knowledge for query '{query}']",
+                content=f"[MISS:FALLBACK: Proceed with internal model knowledge for query '{query}']",
             )
 
     async def _handle_miss_async(
@@ -261,18 +268,18 @@ class KnowledgeDispatcher:
                     )
                     if gov_res.status == "COMMITTED":
                         node = await self.store.get_node(gov_res.path)
-                        summary = (
-                            await self.store.read_section(gov_res.path, section="summary")
+                        full_content = (
+                            await self.store.read_section(gov_res.path, section="full")
                             if node
                             else None
                         )
-                        snippet = summary or (node.body[:500] if node else gov_res.message)
+                        content = full_content or (node.markdown if node else gov_res.message)
                         title = node.frontmatter.title if node and node.frontmatter else gov_res.path
                         return KnowledgeRetrievalResult(
                             status="HIT",
                             path=gov_res.path,
                             title=title,
-                            snippet=snippet,
+                            content=content,
                             confidence=0.92,
                             effort_tier=effort,
                             criticality=criticality,
@@ -288,7 +295,7 @@ class KnowledgeDispatcher:
                         criticality=criticality,
                         source="curator",
                         curated_draft=gov_res.message,
-                        snippet=f"[MISS:MANDATORY for query '{query}': {gov_res.message}]",
+                        content=f"[MISS:MANDATORY for query '{query}': {gov_res.message}]",
                     )
                 except Exception as e:  # noqa: BLE001
                     logger.warning(f"Orchestrated curation failed: {e}")
@@ -310,7 +317,7 @@ class KnowledgeDispatcher:
                                 status="HIT",
                                 path=target_path,
                                 title=candidate.frontmatter.title if candidate.frontmatter else target_path,
-                                snippet=candidate.body[:500],
+                                content=candidate.markdown,
                                 confidence=0.90,
                                 effort_tier=effort,
                                 criticality=criticality,
@@ -325,7 +332,7 @@ class KnowledgeDispatcher:
                         criticality=criticality,
                         source="curator",
                         curated_draft=draft_md,
-                        snippet=draft_md[:500] if draft_md else f"[MISS:MANDATORY for query '{query}']",
+                        content=draft_md if draft_md else f"[MISS:MANDATORY for query '{query}']",
                     )
                 except Exception as e:  # noqa: BLE001
                     logger.warning(f"CuratorAgent invocation failed: {e}")
@@ -350,11 +357,25 @@ class KnowledgeDispatcher:
                         "MISS:MANDATORY" if "MANDATORY" in status_str else "MISS:FALLBACK"
                     )
                 )
+                hit_path = bk_response.get("path")
+                full_content = ""
+                if hit_path and status_tag == "HIT":
+                    # Boost future search confidence for this query and keywords
+                    keywords = list(bk_response.get("keywords") or [])
+                    clean_q = query.strip()
+                    if clean_q and clean_q not in keywords:
+                        keywords.append(clean_q)
+                    try:
+                        await self.store.improve_search_confidence(hit_path, keywords=keywords)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(f"Failed to improve search confidence for {hit_path}: {e}")
+                    full_content = await self.store.read_section(hit_path, section="full") or ""
+
                 return KnowledgeRetrievalResult(
                     status=status_tag,
-                    path=bk_response.get("path"),
+                    path=hit_path,
                     title=bk_response.get("title", ""),
-                    snippet=bk_response.get("snippet", ""),
+                    content=full_content,
                     confidence=float(bk_response.get("confidence", 0.85)),
                     effort_tier="medium",
                     criticality=criticality,

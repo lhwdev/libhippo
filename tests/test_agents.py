@@ -40,10 +40,7 @@ STATUS: [HIT]
 PATH: common/web/html/button.md
 CONFIDENCE: 0.95
 TITLE: Button Accessibility Rules
-SNIPPET:
-```markdown
-Use native button elements for keyboard accessibility.
-```
+KEYWORDS: button, keyboard accessibility, native button
 RATIONALE: Directly answers button interaction guidelines.
 """
     parsed_hit = BookKeeperAgent.parse_output(hit_text)
@@ -51,7 +48,7 @@ RATIONALE: Directly answers button interaction guidelines.
     assert parsed_hit["path"] == "common/web/html/button.md"
     assert parsed_hit["confidence"] == 0.95
     assert parsed_hit["title"] == "Button Accessibility Rules"
-    assert "native button elements" in parsed_hit["snippet"]
+    assert "keyboard accessibility" in parsed_hit["keywords"]
     assert "Directly answers" in parsed_hit["rationale"]
 
     miss_text = """
@@ -59,9 +56,7 @@ STATUS: [MISS:MANDATORY]
 PATH: NONE
 CONFIDENCE: 0.0
 TITLE: NONE
-SNIPPET:
-```markdown
-```
+KEYWORDS: 
 RATIONALE: No custom crypto encryption standard found in repository.
 """
     parsed_miss = BookKeeperAgent.parse_output(miss_text)

@@ -370,7 +370,7 @@ Use window.crypto.subtle.encrypt with AES-GCM 256.
         assert result.status == "HIT"
         assert result.source == "curator"
         assert result.path == "common/web/crypto_aes.md"
-        assert "AES-GCM" in result.snippet
+        assert "AES-GCM" in result.content
         assert await store.get_node("common/web/crypto_aes.md") is not None
 
 

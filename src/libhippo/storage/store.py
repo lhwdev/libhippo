@@ -61,7 +61,7 @@ class KnowledgeQueryResult:
     title: str
     namespace: str
     section: str
-    snippet: str
+    content: str
     confidence: float
     importance: float
     force_keep: bool = False
@@ -519,7 +519,7 @@ class KnowledgeStore:
                     title=vr.title,
                     namespace=vr.namespace,
                     section=vr.section,
-                    snippet=vr.snippet,
+                    content=vr.content,
                     confidence=vr.confidence,
                     importance=vr.importance,
                 )
@@ -535,7 +535,7 @@ class KnowledgeStore:
                         title=fts["title"],
                         namespace=fts["namespace"],
                         section="full",
-                        snippet=fts.get("summary") or fts["title"],
+                        content=fts.get("summary") or fts["title"],
                         confidence=round(0.50 + 0.10 * float(fts["importance"]), 4),
                         importance=float(fts["importance"]),
                         force_keep=bool(fts.get("force_keep", False)),
@@ -543,6 +543,25 @@ class KnowledgeStore:
                 )
 
         return results
+
+    async def improve_search_confidence(
+        self,
+        path: str,
+        keywords: list[str],
+    ) -> bool:
+        """Persist newly identified search keywords into document frontmatter tags and update vector index."""
+        if not keywords:
+            return False
+        candidate = await self.get_node(path)
+        if not candidate or not candidate.frontmatter:
+            return False
+        existing_tags = set(candidate.frontmatter.tags)
+        new_tags = [k.strip() for k in keywords if k.strip() and k.strip() not in existing_tags]
+        if not new_tags:
+            return False
+        candidate.frontmatter.tags.extend(new_tags)
+        await self.save_node(path, candidate.to_markdown(), sync_index=True)
+        return True
 
     async def modify_knowledge(
         self,

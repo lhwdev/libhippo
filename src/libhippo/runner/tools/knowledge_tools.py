@@ -85,7 +85,7 @@ class KnowledgeTools(BaseToolSuite):
                 "query": query,
                 "path": res.path,
                 "title": res.title,
-                "snippet": res.snippet,
+                "content": res.content,
                 "confidence": res.confidence,
                 "effort_tier": res.effort_tier,
                 "criticality": res.criticality,
@@ -97,7 +97,7 @@ class KnowledgeTools(BaseToolSuite):
                 "status": "success",
                 "query": query,
                 "retrieved_nodes": [
-                    {"path": n.path, "snippet": n.snippet, "confidence": n.confidence}
+                    {"path": n.path, "content": n.content, "confidence": n.confidence}
                     for n in nodes
                 ],
             }

@@ -110,11 +110,11 @@ async def test_query_knowledge_medium_and_bookkeeper_escalation(tmp_path):
             "status": "[HIT]",
             "path": "common/web/html/accessibility/aria_button.md",
             "title": "Button Accessibility with ARIA",
-            "snippet": "Expanded rules for keyboard buttons.",
+            "keywords": ["keydown", "Enter", "handler"],
             "confidence": 0.88,
         }
 
-        # Set threshold_medium high (0.95) to force escalation to BookKeeper
+        # Set threshold_medium high (0.99) to force escalation to BookKeeper
         dispatcher = KnowledgeDispatcher(
             store=populated_store,
             book_keeper=mock_bookkeeper,
@@ -129,6 +129,7 @@ async def test_query_knowledge_medium_and_bookkeeper_escalation(tmp_path):
         )
         assert res["status"] == "HIT"
         assert res["source"] == "book_keeper"
+        assert "Button Accessibility with ARIA" in res["content"]
         mock_bookkeeper.lookup.assert_called_once()
     finally:
         await populated_store.close()
@@ -240,4 +241,95 @@ async def test_web_tools(monkeypatch):
     # 5. fetch_web on invalid or unreachable host returns handled error string
     fetch_err = await fetch_web("http://unreachable.nonexistent.domain.local/doc", timeout=1.0)
     assert "[ERROR:" in fetch_err
+
+
+@pytest.mark.asyncio
+async def test_vector_search_title_boosting(tmp_path):
+    """Verify that vector search boosts confidence when query matches document title."""
+    store = KnowledgeStore(root_dir=tmp_path / "knowledge")
+    await store.initialize()
+    try:
+        await store.save_node(
+            "common/react.md",
+            """---
+title: "React"
+namespace: "common"
+importance: 0.80
+---
+## Summary
+A JavaScript library for building user interfaces.
+## Detailed Rules
+Use functional components and hooks.
+""",
+        )
+
+        results = await store.search(query="react", top_k=1)
+        assert len(results) >= 1
+        assert results[0].path == "common/react.md"
+        # Confidence on "react" should comfortably clear threshold_medium (0.72) due to title boost
+        assert results[0].confidence >= 0.85
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_bookkeeper_keyword_confidence_boosting(tmp_path):
+    """Verify BookKeeper HIT boosts keywords so subsequent search hits fast-path."""
+    store = KnowledgeStore(root_dir=tmp_path / "knowledge")
+    await store.initialize()
+    try:
+        await store.save_node(
+            "common/web/components/dialog.md",
+            """---
+title: "Modal Dialog Patterns"
+namespace: "common"
+importance: 0.70
+tags: ["dialog", "modal"]
+---
+## Summary
+Guidelines for accessible modal dialogs.
+## Detailed Rules
+Manage focus trap and handle keyboard navigation.
+""",
+        )
+
+        mock_bookkeeper = AsyncMock()
+        mock_bookkeeper.lookup.return_value = {
+            "status": "[HIT]",
+            "path": "common/web/components/dialog.md",
+            "title": "Modal Dialog Patterns",
+            "keywords": ["focus trap escape key listener", "esc key dismiss"],
+            "confidence": 0.90,
+        }
+
+        dispatcher = KnowledgeDispatcher(
+            store=store,
+            book_keeper=mock_bookkeeper,
+            threshold_medium=0.72,
+        )
+
+        query = "focus trap escape key listener"
+
+        # 1. First query misses fast-path and escalates to BookKeeper
+        first_res = await dispatcher.query_knowledge(query=query, effort="medium")
+        assert first_res.status == "HIT"
+        assert first_res.source == "book_keeper"
+        assert "Modal Dialog Patterns" in first_res.content
+        assert mock_bookkeeper.lookup.call_count == 1
+
+        # Verify keywords were persisted to frontmatter tags
+        updated_node = await store.get_node("common/web/components/dialog.md")
+        assert updated_node is not None
+        assert "focus trap escape key listener" in updated_node.frontmatter.tags
+
+        # 2. Second query for the same term now hits fast-path directly!
+        second_res = await dispatcher.query_knowledge(query=query, effort="medium")
+        assert second_res.status == "HIT"
+        assert second_res.source == "fast_path"
+        assert second_res.confidence >= 0.72
+        # Mock BookKeeper was NOT called again!
+        assert mock_bookkeeper.lookup.call_count == 1
+    finally:
+        await store.close()
+
 

@@ -131,10 +131,10 @@ All model instantiations across AutoGen Chat Completion clients (OpenAI) and Typ
 - **Operational Logic**:
   - **Zero-Context Sandbox**: Operates without session history; every lookup is strictly independent.
   - **Prompt Cache Write**: **DISABLED**: Stateless single-use queries avoid the cache write fee surcharge on prompts that are never re-read.
-  - **Zero Re-summarization**: Extracts and returns **raw content** from knowledge tree.
-  - **Query Expansion**: Decomposes natural language symptoms, checks synonyms, evaluates cross-references, and outputs tags (`[HIT]`, `[MISS:MANDATORY]`, `[MISS:FALLBACK]`).
-- **Input**: `query_knowledge(query, effort="medium"|"high", criticality)`, including initial vector search candidate snippets (for `high` effort or `medium` fallback).
-- **Output**: Target markdown file path, verbatim snippet blocks, hit/miss status tags.
+  - **Zero Re-summarization**: Returns full document as-is.
+  - **Query Expansion & Confidence Boosting**: Decomposes natural language symptoms, checks synonyms, evaluates cross-references, outputs tags (`[HIT]`, `[MISS:MANDATORY]`, `[MISS:FALLBACK]`), and identifies search `keywords` to boost future retrieval confidence (persisted to frontmatter `tags` and vector `#keywords`).
+- **Input**: `query_knowledge(query, effort="medium"|"high", criticality)`, including candidate nodes from vector search.
+- **Output**: Target markdown file path, confidence score, keywords, hit/miss status tags.
 
 ### 3.3 `CuratorAgent` & `KnowledgeHarvestSidecar` (Knowledge Draftsmen)
 - **Model**: `gpt-6-luna` (low reasoning).
@@ -251,7 +251,7 @@ Trigger boundary values change dynamically:
 
 ### 3.7 Structured Outputs & Real-Time Observability
 - **Structured Outputs via Responses API (`json_output`)**:
-  - `BookKeeperAgent`: Strictly produces `BookKeeperLookupOutput(status, best_match, confidence, justification)`. When candidates list is empty, lookup immediately fast-bypasses LLM execution (`status="NO_CANDIDATES"`).
+  - `BookKeeperAgent`: Strictly produces `BookKeeperLookupOutput(status, path, confidence, title, keywords, rationale)`. When candidates list is empty and no local matches exist, lookup returns `status="[MISS:FALLBACK]"`.
   - `VerifierAgent`: Strictly produces `VerifierDirective(status, parent_hub, child_nodes, rationale, split_instructions)`.
 - **Real-Time Governance Observability (`KnowledgeAgentEvent`)**:
   - Eliminates "blackbox" waiting periods during long-running curation and audit cycles.
@@ -417,9 +417,6 @@ To detect outdated library specifications without burning LLM tokens:
 ### 5.2 Tool `query_knowledge` Specification
 
 ```python
-threshold_low = 0.70
-threshold_medium = 0.82
-
 async def query_knowledge(
     query: str,
     effort: Literal["low", "medium", "high"] = "medium",
@@ -435,14 +432,14 @@ When a retrieved document is flagged as stale (`freshness_status == "stale"`):
 
 #### 5.2.1 3-Tier Effort
 `effort` is defined:
-- low: Local Vector/FTS search. Returns raw snippets if `confidence >= threshold_low`, otherwise immediately returns `[MISS:FALLBACK]` (no LLM invocation).
-- medium: Optimistic fast path. Returns raw snippets if `confidence >= threshold_medium`. Otherwise escalates to `BookKeeperAgent` (LLM) for query expansion and cross-referencing.
-- high: After single-vector matching, invokes `BookKeeperAgent` for deep multi-hop synthesis and query decomposition.
+- low: Local Vector/FTS search. Returns full document `content` if `confidence >= threshold_low`, otherwise immediately returns `[MISS:FALLBACK]` (no LLM invocation).
+- medium: Optimistic fast path. Returns full document `content` if `confidence >= threshold_medium`. Otherwise escalates to `BookKeeperAgent` (LLM) for query expansion and cross-referencing. On BookKeeper HIT, identified keywords are stored to boost future confidence.
+- high: After vector matching, invokes `BookKeeperAgent` for deep multi-hop exploration and query decomposition.
 
-#### 5.2.2 Importance-Aware Retrieval Scoring: `confidence`
+#### 5.2.2 Importance-Aware & Title-Boosted Retrieval Scoring: `confidence`
 - **Formula**:
-  $$\text{Confidence} = (1 - \alpha) \cdot \text{Sim}_{\text{cosine}} + \alpha \cdot \text{Score}_{\text{importance}} \quad (\alpha = 0.08)$$
-- **Design Intent**: Relevance remains dominant ($\alpha = 0.08$). Importance provides a subtle boost so foundational standards and security rules win tie-breakers over obscure edge cases and clear confidence gates ($\tau_{\text{low}} = 0.70, \tau_{\text{med}} = 0.82$).
+  $$\text{Confidence} = \min\left(1.0, (1 - \alpha) \cdot \text{Sim}_{\text{cosine}} + \alpha \cdot \text{Score}_{\text{importance}} + \text{Boost}_{\text{title}} + \text{Boost}_{\text{tag}}\right) \quad (\alpha = 0.08)$$
+- **Design Intent**: Relevance remains dominant ($\alpha = 0.08$). Importance provides a subtle boost. $\text{Boost}_{\text{title}}$ and $\text{Boost}_{\text{tag}}$ boost matches against `#title` and `#tag` chunks, ensuring direct fast-path hits clear the configured thresholds ($\tau_{\text{low}}, \tau_{\text{med}}$). Default thresholds are maintained solely in `libhippo.tools.retrieval`.
 
 #### 5.2.3 3-Tier Query Criticality
 1. **`MANDATORY`**: Strict security rules or API constraints $\rightarrow$ Retrieval miss triggers `CuratorAgent` web scraping.

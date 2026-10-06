@@ -295,8 +295,8 @@ Hooks rules.
         criticality="optional",
     )
     assert res_a.status == "HIT"
-    assert "This knowledge is outdated" in res_a.snippet
-    assert "Query with higher criticality/effort" in res_a.snippet
+    assert "This knowledge is outdated" in res_a.content
+    assert "Query with higher criticality/effort" in res_a.content
 
     # Mode B: Stale-While-Revalidate (preferred criticality, medium effort)
     res_b = await dispatcher.query_knowledge(
@@ -305,7 +305,7 @@ Hooks rules.
         criticality="preferred",
     )
     assert res_b.status == "HIT"
-    assert "Background revalidation queued" in res_b.snippet
+    assert "Background revalidation queued" in res_b.content
 
     # Mode C: Wait for latest (mandatory criticality, high effort)
     with patch.object(FreshnessChecker, "fetch_npm_version", new=AsyncMock(return_value="19.1.0")):

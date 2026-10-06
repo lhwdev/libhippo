@@ -51,19 +51,19 @@ class AdaptiveRetrievalWorkflow:
                 if gov_res.status == "COMMITTED":
                     # Read back committed node from store
                     node = await self.dispatcher.store.get_node(gov_res.path)
-                    summary = (
-                        await self.dispatcher.store.read_section(gov_res.path, section="summary")
+                    full_content = (
+                        await self.dispatcher.store.read_section(gov_res.path, section="full")
                         if node
                         else None
                     )
-                    snippet = summary or (node.body[:500] if node else gov_res.message)
+                    content = full_content or (node.markdown if node else gov_res.message)
                     title = node.frontmatter.title if node and node.frontmatter else gov_res.path
 
                     return KnowledgeRetrievalResult(
                         status="HIT",
                         path=gov_res.path,
                         title=title,
-                        snippet=snippet,
+                        content=content,
                         confidence=0.90,
                         effort_tier=effort,
                         criticality=criticality,
@@ -74,7 +74,7 @@ class AdaptiveRetrievalWorkflow:
                     return KnowledgeRetrievalResult(
                         status="MISS:MANDATORY",
                         path=gov_res.path,
-                        snippet=f"[MISS:MANDATORY: Curation failed ({gov_res.status}) - {gov_res.message}]",
+                        content=f"[MISS:MANDATORY: Curation failed ({gov_res.status}) - {gov_res.message}]",
                         effort_tier=effort,
                         criticality=criticality,
                         source="curator",

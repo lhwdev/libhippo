@@ -61,7 +61,7 @@ class ToolRegistry:
                     "path": r.path,
                     "title": r.title,
                     "namespace": r.namespace,
-                    "snippet": r.snippet,
+                    "content": r.content,
                     "confidence": r.confidence,
                     "importance": r.importance,
                 }
