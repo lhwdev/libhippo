@@ -539,18 +539,46 @@ class KnowledgeStore:
         self,
         path: str,
         keywords: list[str],
+        remove_tags: list[str] | None = None,
     ) -> bool:
         """Persist newly identified search keywords into document frontmatter tags and update vector index."""
-        if not keywords:
-            return False
         candidate = await self.get_node(path)
         if not candidate or not candidate.frontmatter:
             return False
-        existing_tags = set(candidate.frontmatter.tags)
-        new_tags = [k.strip() for k in keywords if k.strip() and k.strip() not in existing_tags]
-        if not new_tags:
+
+        from libhippo.models.knowledge import MAX_TAGS, normalize_tags
+
+        changed = False
+        current_tags = list(candidate.frontmatter.tags)
+
+        # 1. Strictly restricted removal of previous tags
+        if remove_tags:
+            remove_targets = [r.strip().lower() for r in remove_tags if r.strip()][:2]
+            for target in remove_targets:
+                if len(current_tags) <= 1:
+                    break
+                for idx, t in enumerate(current_tags):
+                    if t.strip().lower() == target:
+                        current_tags.pop(idx)
+                        changed = True
+                        break
+
+        # 2. Addition of new keywords up to MAX_TAGS
+        if keywords:
+            existing_set = {t.strip().lower() for t in current_tags}
+            for k in keywords:
+                clean_k = k.strip().lower()
+                if clean_k and clean_k not in existing_set:
+                    if len(current_tags) >= MAX_TAGS:
+                        break
+                    current_tags.append(clean_k)
+                    existing_set.add(clean_k)
+                    changed = True
+
+        if not changed:
             return False
-        candidate.frontmatter.tags.extend(new_tags)
+
+        candidate.frontmatter.tags = normalize_tags(current_tags)
         await self.save_node(path, candidate.to_markdown(), sync_index=True)
         return True
 

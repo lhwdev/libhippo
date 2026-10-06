@@ -31,6 +31,8 @@ class CodingToolSuite(
 ):
     """Unified, production-grade tool registry coordinating file, terminal, exploration, and knowledge tools."""
 
+    _tool_definitions: dict[str, ToolDefinition] | None = None
+
     def __init__(
         self,
         workspace_root: Path,
@@ -72,9 +74,6 @@ class CodingToolSuite(
             store=store,
             dispatcher=dispatcher,
         )
-
-
-    _tool_definitions: dict[str, ToolDefinition] | None
 
     @property
     def tools(self) -> dict[str, ToolDefinition]:

@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import tiktoken
-import yaml
+from ruamel.yaml import YAML
 
 from libhippo.storage.store import KnowledgeStore
 
@@ -44,7 +44,8 @@ def run_draft_sanity_checks(markdown: str) -> dict[str, Any]:
     else:
         raw_yaml = fm_match.group(1)
         try:
-            parsed = yaml.safe_load(raw_yaml)
+            yaml_parser = YAML(typ="safe")
+            parsed = yaml_parser.load(raw_yaml)
             if not isinstance(parsed, dict):
                 errors.append("Frontmatter must be a valid YAML dictionary.")
             else:
@@ -81,6 +82,15 @@ def run_draft_sanity_checks(markdown: str) -> dict[str, Any]:
                         f"Scrape version_check '{vc}' does not specify a regex delimiter ('#' or '|'). "
                         "Defaulting to 'v?([0-9]+\\.[0-9]+(?:\\.[0-9]+)?)'."
                     )
+
+        # Validate tags format and count
+        if "tags" in frontmatter_dict:
+            raw_tags = frontmatter_dict["tags"]
+            if isinstance(raw_tags, list) and len(raw_tags) > 10:
+                warnings.append(
+                    f"Frontmatter contains {len(raw_tags)} tags, exceeding maximum of 10. "
+                    "Tags will be capped at 10."
+                )
 
     # 2. Token count check
     try:
@@ -177,6 +187,28 @@ class KnowledgeDraftSession:
             self.orchestrator = MakerCheckerOrchestrator(store=self.store)
             return self.orchestrator
         return None
+
+    def _check_missing_related(self, related_paths: list[str]) -> list[str]:
+        """Identify related paths that do not exist in active session drafts or knowledge store."""
+        missing: list[str] = []
+        for r in related_paths:
+            clean_r = str(r).strip()
+            if not clean_r:
+                continue
+            norm_r = self._normalize_path(clean_r)
+            if norm_r in self.drafts and self.drafts[norm_r].exists():
+                continue
+            if self.store:
+                try:
+                    phys, _ = self.store.mount_manager.resolve_virtual_path(norm_r)
+                    if phys.exists() and phys.is_file():
+                        continue
+                except KeyError:
+                    pass
+                except Exception:  # noqa: BLE001
+                    pass
+            missing.append(clean_r)
+        return missing
 
     async def _get_candidate_paths(self) -> list[str]:
         """Collect available knowledge paths from active drafts and mounted storage."""
@@ -305,6 +337,22 @@ class KnowledgeDraftSession:
         # Run deterministic sanity checks immediately
         checks = run_draft_sanity_checks(new_text)
 
+        # Non-blocking warning for hallucinated related documents
+        related_raw = checks.get("frontmatter", {}).get("related", [])
+        if isinstance(related_raw, str):
+            related_list = [r.strip() for r in related_raw.split(",") if r.strip()]
+        elif isinstance(related_raw, list):
+            related_list = [str(r).strip() for r in related_raw if str(r).strip()]
+        else:
+            related_list = []
+
+        missing_related = self._check_missing_related(related_list)
+        for m in missing_related:
+            checks["warnings"].append(
+                f"Related document '{m}' does not exist in knowledge store or active drafts. "
+                "'related' must only reference existing documents (or be empty)."
+            )
+
         lines_list = new_text.splitlines()
         lines_count = len(lines_list)
         res_lines = [f"Successfully updated draft '{norm}' ({lines_count} lines)."]
@@ -416,6 +464,27 @@ class KnowledgeDraftSession:
                 "warnings": checks["warnings"],
             }
 
+        # Hard error rejection for hallucinated related documents
+        related_raw = checks.get("frontmatter", {}).get("related", [])
+        if isinstance(related_raw, str):
+            related_list = [r.strip() for r in related_raw.split(",") if r.strip()]
+        elif isinstance(related_raw, list):
+            related_list = [str(r).strip() for r in related_raw if str(r).strip()]
+        else:
+            related_list = []
+
+        missing_related = self._check_missing_related(related_list)
+        if missing_related:
+            return {
+                "status": "error",
+                "message": (
+                    f"Draft '{norm}' failed validation: related document(s) {missing_related} "
+                    "do not exist in knowledge store or active drafts. 'related' must only reference existing documents (or be empty)."
+                ),
+                "errors": [f"Non-existent related document: '{m}'" for m in missing_related],
+                "warnings": checks["warnings"],
+            }
+
         orch = self._get_orchestrator()
         if orch:
             logger.info("Submitting draft '%s' to Maker-Checker governance loop", norm)
@@ -479,7 +548,21 @@ class KnowledgeDraftSession:
             if not checks["passed"]:
                 failed[norm] = checks["errors"]
             else:
-                validated[norm] = content
+                related_raw = checks.get("frontmatter", {}).get("related", [])
+                if isinstance(related_raw, str):
+                    related_list = [r.strip() for r in related_raw.split(",") if r.strip()]
+                elif isinstance(related_raw, list):
+                    related_list = [str(r).strip() for r in related_raw if str(r).strip()]
+                else:
+                    related_list = []
+                missing_related = self._check_missing_related(related_list)
+                if missing_related:
+                    failed[norm] = [
+                        f"Non-existent related document: '{m}' ('related' must only reference existing documents or be empty)"
+                        for m in missing_related
+                    ]
+                else:
+                    validated[norm] = content
 
         if failed:
             return {

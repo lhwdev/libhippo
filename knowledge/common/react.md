@@ -9,15 +9,8 @@ source:
 - https://react.dev/reference/rsc/server-components
 - https://react.dev/reference/react-dom/client/createRoot
 version_check: npm:react
-tags:
-- javascript
-- frontend
-- ui
-- library
-related:
-- common/javascript
-- common/typescript
-- common/web-accessibility
+tags: ["javascript", "frontend", "ui", "react", "jsx", "state", "props"]
+related: []
 status: active
 importance: 0.76
 ---

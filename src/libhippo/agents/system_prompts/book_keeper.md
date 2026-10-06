@@ -35,4 +35,5 @@ PATH: <relative_path_to_markdown_file_or_NONE>
 CONFIDENCE: <float_between_0.0_and_1.0>
 TITLE: <title_of_knowledge_node_or_NONE>
 KEYWORDS: <comma-separated list of keywords and search terms connecting query to document>
+REMOVE_TAGS: <optional comma-separated list of at most 2 obsolete, misleading, or redundant existing tags to prune>
 RATIONALE: <Brief 1-sentence technical explanation of why this node resolves the query>

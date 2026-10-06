@@ -149,12 +149,12 @@ All model instantiations across AutoGen Chat Completion clients (OpenAI) and Typ
     - Pre-populates from store if editing an existing document.
     - **Namespace Validation**: Strictly enforces virtual knowledge paths without `.md` extension rooted at registered mounts (`project/`, `common/`, `user/`, `plugins/`), rejecting `knowledge/` or unrecognized namespaces immediately.
     - **Surgical Edit Discipline**: If `target` or `start_line`/`end_line` are specified, performs targeted surgical line replacements. If all are None, replaces the whole document (used only for initial creation or total rewrites).
-    - **Zero-LLM Sanity Checks**: Evaluates each edit immediately without LLM calls, returning diagnostics on YAML frontmatter schema compliance, token sizing bounds (500–1,000 target, 1,800 hard maximum), and markdown code block fence parity.
+    - **Sanity Checks**: Evaluates each edit immediately without LLM calls, returning diagnostics on YAML frontmatter schema compliance, token sizing bounds (500–1,000 target, 1,800 hard maximum), markdown code block fence parity, and warnings if `related` references non-existent document.
   - `read_knowledge(path=None, start_line=1, end_line=None)`: Line-addressed reading of active draft (`path=None`) or existing store node (`path="common/..."`) to inspect hierarchies and avoid duplicate content.
   - `list_knowledge(path=".", max_depth=2)`: Instant lexical tree listing of knowledge store (fast exploration, zero LLM overhead, showing mount roots without fictitious `knowledge/` prefix).
   - `search_knowledge(pattern="*", path=".", content_pattern=None)`: Glob and regex text search across store nodes without curation delays.
-  - `commit(path: str)`: Finalizes and executes immediate Maker-Checker governance commit (`CheckerAgent` audit $\rightarrow$ `VerifierAgent` escalation if required $\rightarrow$ store disk save). Returns clean verdict/error status without echoing draft content. Upon success, halts further draftsman agent turns.
-  - `commit_all()`: Validates and executes Maker-Checker governance for all open session drafts, terminating upon success.
+  - `commit(path: str)`: Finalizes and executes immediate Maker-Checker governance commit (`CheckerAgent` audit $\rightarrow$ `VerifierAgent` escalation if required $\rightarrow$ store disk save). //Rrejects unresolvable `related` document links. Returns clean verdict/error status without echoing draft content. Upon success, halts further draftsman agent turns.
+  - `commit_all()`: Validates and executes Maker-Checker governance for all open session drafts), terminating upon success.
   - `run_command`: Executes compiler checks, linters, or syntax validators in the sandboxed workspace.
 - **Input**: Missing topic descriptor, target URLs, change requests / split directives, or conversation history.
 - **Output**: Validated knowledge node drafts audited and committed to `KnowledgeStore`.
@@ -342,7 +342,7 @@ Frontmatter properties are organized into four explicit functional tiers:
    - `version`: Optional version string (defaults to "1.0.0").
    - `source`: Recommended list of authoritative documentation URLs.
    - `version_check`: Optional upstream package or command version detector (e.g. `npm:react`, `pypi:fastapi`).
-   - `tags`: Optional list of discoverability tags.
+   - `tags`: Optional list of discoverability tags. Evaluated for bloat and noise in `CheckerAgent` on draft.
    - `related`: Optional list of related knowledge paths.
 2. **Classified by CheckerAgent**:
    - `importance`: Float score (0.0 to 1.0) stamped by CheckerAgent / TypeSafe Jev.
@@ -353,6 +353,12 @@ Frontmatter properties are organized into four explicit functional tiers:
    - `last_updated`, `last_accessed`, `access_count`: Maintained systematically by the catalog engine.
 4. **Only by User**:
    - `force_keep`: Optional boolean (`true` prevents automated renaming, splitting, or merging). Modifiable **only manually by the human user**. To prevent friction when modifying drafts, deterministic sanity checks do not reject categories 2~4 if present; instead, `reconcile_candidate_frontmatter` silently drops agent-provided values for categories 2~4 and restores the previous/actual values.
+
+#### 4.5.1 Tag Regulation & BookKeeper Pruning
+To prevent keyword bloat across long-running sessions:
+- **Hard Cap**: Document frontmatter enforces a strict ceiling of `MAX_TAGS = 10`, automatically lowercased and deduplicated.
+- **CheckerAgent Jev Filter**: Audits candidate tags with `tag_quality`, rejecting low-signal or generic tag lists.
+- **Strict BookKeeper Pruning**: `improve_search_confidence` can prune at most 2 obsolete or misleading tags per lookup, strictly restricted to high-confidence hits and never leaving a document tagless (minimum 1 tag retained).
 
 ```markdown
 ---

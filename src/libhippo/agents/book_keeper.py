@@ -32,6 +32,10 @@ class BookKeeperLookupOutput(BaseModel):
         default_factory=list,
         description="Key search keywords and phrases connecting query to document",
     )
+    remove_tags: list[str] = Field(
+        default_factory=list,
+        description="Strictly restricted: up to 2 misleading or obsolete existing frontmatter tags to remove",
+    )
     rationale: str = Field(default="", description="Concise explanation for hit or miss")
 
 
@@ -114,6 +118,7 @@ class BookKeeperAgent(AssistantAgent, BaseHippoAgent):
                 "confidence": obj.confidence,
                 "title": obj.title,
                 "keywords": obj.keywords,
+                "remove_tags": getattr(obj, "remove_tags", []),
                 "rationale": obj.rationale,
                 "raw_response": obj.model_dump_json(),
             }
@@ -132,12 +137,16 @@ class BookKeeperAgent(AssistantAgent, BaseHippoAgent):
                 raw_kw = data.get("keywords", [])
                 if isinstance(raw_kw, str):
                     raw_kw = [k.strip() for k in raw_kw.split(",") if k.strip()]
+                raw_rem = data.get("remove_tags", [])
+                if isinstance(raw_rem, str):
+                    raw_rem = [r.strip() for r in raw_rem.split(",") if r.strip()]
                 return {
                     "status": data.get("status", "[MISS:FALLBACK]"),
                     "path": data.get("path"),
                     "confidence": float(data.get("confidence", 0.5)),
                     "title": data.get("title", ""),
                     "keywords": raw_kw,
+                    "remove_tags": raw_rem,
                     "rationale": data.get("rationale", ""),
                     "raw_response": text,
                 }
@@ -167,6 +176,11 @@ class BookKeeperAgent(AssistantAgent, BaseHippoAgent):
         if kw_match:
             keywords = [k.strip() for k in kw_match.group(1).split(",") if k.strip()]
 
+        remove_tags = []
+        rem_match = re.search(r"REMOVE_TAGS:\s*([^\n\r]+)", text)
+        if rem_match:
+            remove_tags = [k.strip() for k in rem_match.group(1).split(",") if k.strip()]
+
         rat_match = re.search(r"RATIONALE:\s*([^\n\r]+)", text)
         rationale = rat_match.group(1).strip() if rat_match else ""
 
@@ -176,6 +190,7 @@ class BookKeeperAgent(AssistantAgent, BaseHippoAgent):
             "confidence": confidence,
             "title": title,
             "keywords": keywords,
+            "remove_tags": remove_tags,
             "rationale": rationale,
             "raw_response": text,
         }

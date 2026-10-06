@@ -5,11 +5,10 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
 
-import yaml
+from ruamel.yaml import YAML
 
-from libhippo.runner.config import GlobalMcpConfig, HarnessConfig, McpServerConfig, SkillDefinition
+from libhippo.runner.config import GlobalMcpConfig, HarnessConfig, SkillDefinition
 from libhippo.runner.env import load_env_hierarchy
 
 
@@ -81,7 +80,11 @@ class ResourceDiscovery:
         if match:
             frontmatter_raw = match.group(1)
             body = match.group(2).strip()
-            data = yaml.safe_load(frontmatter_raw) or {}
+            try:
+                yaml_parser = YAML(typ="safe")
+                data = yaml_parser.load(frontmatter_raw) or {}
+            except Exception:  # noqa: BLE001
+                data = {}
         else:
             data = {}
             body = content.strip()

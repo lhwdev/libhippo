@@ -2,16 +2,43 @@
 
 from __future__ import annotations
 
+import io
 import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
+from ruamel.yaml import YAML
+from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 
 Namespace = Literal["common", "user", "project", "plugins"]
 NodeStatus = Literal["active", "deprecated", "needs_review"]
 NodeNature = Literal["foundation", "critical_rule", "transient_tip"]
+
+MAX_TAGS = 10
+
+
+def create_yaml_parser() -> YAML:
+    """Instantiate a configured ruamel.yaml instance."""
+    yaml_parser = YAML()
+    yaml_parser.preserve_quotes = True
+    yaml_parser.indent(mapping=2, sequence=4, offset=2)
+    return yaml_parser
+
+
+def normalize_tags(tags: list[str], max_tags: int = MAX_TAGS) -> list[str]:
+    """Normalize tags: lowercase, strip, deduplicate, and enforce hard cap."""
+    seen: set[str] = set()
+    res: list[str] = []
+    for t in tags:
+        cleaned = t.strip().lower()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            res.append(cleaned)
+            if len(res) >= max_tags:
+                break
+    return res
 
 
 @dataclass
@@ -64,6 +91,7 @@ class KnowledgeCandidate(BaseModel):
     frontmatter: KnowledgeFrontmatter | None = None
     body: str = ""
     parse_errors: list[str] = Field(default_factory=list)
+    _raw_frontmatter: Any = PrivateAttr(default=None)
 
     @property
     def namespace(self) -> str:
@@ -77,28 +105,72 @@ class KnowledgeCandidate(BaseModel):
         """Serialize frontmatter and body back to markdown with '---' delimiters."""
         if not self.frontmatter:
             return self.body
-        fm_dict = self.frontmatter.model_dump(exclude_none=True)
-        # Omit systematically resolved namespace and deprecated nature
-        fm_dict.pop("namespace", None)
-        fm_dict.pop("nature", None)
-        # Omit force_keep unless explicitly true (user-set)
-        if not fm_dict.get("force_keep"):
-            fm_dict.pop("force_keep", None)
-        # Omit internal access counters from frontmatter text
-        fm_dict.pop("access_count", None)
-        fm_dict.pop("last_accessed", None)
-        if fm_dict.get("importance") == 0.5:
-            # Default unclassified importance doesn't need to clutter frontmatter
-            pass
 
-        yaml_str = yaml.safe_dump(fm_dict, sort_keys=False).strip()
+        yaml_parser = create_yaml_parser()
+        if isinstance(self._raw_frontmatter, CommentedMap):
+            fm_data = self._raw_frontmatter
+        else:
+            fm_data = CommentedMap()
+
+        fm = self.frontmatter
+        fm_data["title"] = fm.title
+        if fm.version:
+            fm_data["version"] = fm.version
+        elif "version" in fm_data:
+            del fm_data["version"]
+
+        if fm.source:
+            source_seq = CommentedSeq(fm.source)
+            source_seq.fa.set_block_style()
+            fm_data["source"] = source_seq
+        else:
+            fm_data["source"] = []
+
+        if fm.version_check:
+            fm_data["version_check"] = fm.version_check
+        elif "version_check" in fm_data:
+            del fm_data["version_check"]
+
+        norm_tags = normalize_tags(fm.tags)
+        tags_seq = CommentedSeq([DoubleQuotedScalarString(t) for t in norm_tags])
+        tags_seq.fa.set_flow_style()
+        fm_data["tags"] = tags_seq
+
+        if fm.related:
+            rel_seq = CommentedSeq(fm.related)
+            rel_seq.fa.set_block_style()
+            fm_data["related"] = rel_seq
+        else:
+            fm_data["related"] = []
+
+        if (fm.status and fm.status != "active") or "status" in fm_data:
+            fm_data["status"] = fm.status
+
+        if fm.importance != 0.5 or ("importance" in fm_data and fm_data["importance"] != 0.5):
+            fm_data["importance"] = fm.importance
+
+        if fm.force_keep:
+            fm_data["force_keep"] = True
+        elif "force_keep" in fm_data:
+            del fm_data["force_keep"]
+
+        # Omit systematically resolved namespace and deprecated nature
+        fm_data.pop("namespace", None)
+        fm_data.pop("nature", None)
+        fm_data.pop("access_count", None)
+        fm_data.pop("last_accessed", None)
+        fm_data.pop("last_updated", None)
+
+        buf = io.StringIO()
+        yaml_parser.dump(fm_data, buf)
+        yaml_str = buf.getvalue().strip()
         body_clean = self.body.strip()
         return f"---\n{yaml_str}\n---\n\n{body_clean}\n" if body_clean else f"---\n{yaml_str}\n---\n"
 
     @classmethod
     def from_markdown(cls, path: str, markdown: str) -> KnowledgeCandidate:
         """Parse markdown containing YAML frontmatter."""
-        pattern = r"^---\s*\n(.*?)\n---\s*\n(.*)$"
+        pattern = r"^---\s*\n(.*?)\n---\s*(?:\n|\Z)(.*)$"
         match = re.match(pattern, markdown, re.DOTALL)
         if not match:
             return cls(
@@ -110,8 +182,11 @@ class KnowledgeCandidate(BaseModel):
 
         yaml_text, body = match.group(1), match.group(2)
         try:
-            parsed_yaml = yaml.safe_load(yaml_text) or {}
-            if not isinstance(parsed_yaml, dict):
+            yaml_parser = create_yaml_parser()
+            raw_yaml = yaml_parser.load(yaml_text)
+            if raw_yaml is None:
+                raw_yaml = CommentedMap()
+            if not isinstance(raw_yaml, (dict, CommentedMap)):
                 return cls(
                     path=path,
                     markdown=markdown,
@@ -119,6 +194,7 @@ class KnowledgeCandidate(BaseModel):
                     parse_errors=["Frontmatter YAML is not a key-value mapping"],
                 )
 
+            parsed_yaml = dict(raw_yaml)
             # Systematically resolve namespace from path if not provided
             if "namespace" not in parsed_yaml and path:
                 parsed_yaml["namespace"] = path.split("/")[0] if "/" in path else "common"
@@ -131,13 +207,18 @@ class KnowledgeCandidate(BaseModel):
             if "related" in parsed_yaml and isinstance(parsed_yaml["related"], str):
                 parsed_yaml["related"] = [r.strip() for r in parsed_yaml["related"].split(",") if r.strip()]
 
+            if "tags" in parsed_yaml and isinstance(parsed_yaml["tags"], list):
+                parsed_yaml["tags"] = normalize_tags(parsed_yaml["tags"])
+
             frontmatter = KnowledgeFrontmatter.model_validate(parsed_yaml)
-            return cls(
+            cand = cls(
                 path=path,
                 markdown=markdown,
                 frontmatter=frontmatter,
                 body=body.strip(),
             )
+            cand._raw_frontmatter = raw_yaml
+            return cand
         except Exception as e:  # noqa: BLE001
             return cls(
                 path=path,
@@ -232,6 +313,20 @@ def update_markdown_version(markdown: str, new_version: str) -> str:
     if not match:
         return markdown
     yaml_text, body = match.group(1), match.group(2)
+
+    try:
+        yaml_parser = create_yaml_parser()
+        data = yaml_parser.load(yaml_text)
+        if isinstance(data, CommentedMap):
+            data["version"] = DoubleQuotedScalarString(new_version)
+            buf = io.StringIO()
+            yaml_parser.dump(data, buf)
+            new_yaml = buf.getvalue()
+            if not new_yaml.endswith("\n"):
+                new_yaml += "\n"
+            return f"---\n{new_yaml}---\n{body}"
+    except Exception:  # noqa: BLE001, S110
+        pass
 
     if re.search(r"^[ \t]*version\s*:", yaml_text, flags=re.MULTILINE):
         new_yaml = re.sub(

@@ -40,6 +40,8 @@ class MockTypeSafeClient:
         self.practical_utility = practical_utility
         self.coalescence = coalescence
         self.redundancy = redundancy
+        self.tag_quality = 2.0
+        self.has_tag_bloat = 0.05
 
     async def system_one(self, *, state: dict, questions: dict, model: str | None = None) -> SystemOneResponse:
         # Mock answers
@@ -53,10 +55,12 @@ class MockTypeSafeClient:
                 "grammar_and_clarity": MagicMock(score=self.grammar),
                 "markdown_format_quality": MagicMock(score=self.markdown_quality),
                 "practical_utility": MagicMock(score=self.practical_utility),
+                "tag_quality": MagicMock(score=self.tag_quality),
             },
             nouls={
                 "is_coalescence_candidate": MagicMock(noul=self.coalescence),
                 "has_redundancy_or_conflict": MagicMock(noul=self.redundancy),
+                "has_tag_bloat_or_generic_noise": MagicMock(noul=self.has_tag_bloat),
             },
         )
 

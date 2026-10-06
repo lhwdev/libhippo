@@ -176,6 +176,17 @@ class CheckerAgent(BaseHippoAgent):
                     "Does `candidate.content` duplicate rules already present in `parent` or `siblings`?"
                 ),
             ),
+            "tag_quality": Score(
+                instructions=(
+                    "Assess whether `candidate.frontmatter.tags` provide crisp, highly-discriminating keyword "
+                    "identifiers specifically connecting queries to this document."
+                ),
+                criteria=[
+                    "Bloated / Noisy: Overly generic words, redundant synonyms, or low signal.",
+                    "Acceptable: Relevant keywords, but has slight redundancy or could be more specific.",
+                    "Crisp & Optimal: 3 to 10 high-signal, non-redundant, discriminative keyword tags.",
+                ],
+            ),
         }
 
     async def check(
@@ -314,6 +325,20 @@ class CheckerAgent(BaseHippoAgent):
             content_errors.append(f"Markdown formatting quality score below threshold ({markdown_quality_score:.2f} < 0.40)")
         if practical_utility_score < 0.30:
             content_errors.append(f"Practical utility score below threshold ({practical_utility_score:.2f} < 0.30)")
+
+        # Tag quality and bloat verification
+        if candidate.frontmatter and candidate.frontmatter.tags:
+            tag_quality = 1.0
+            if hasattr(response, "scores") and "tag_quality" in response.scores:
+                tag_quality = round(float(getattr(response.scores["tag_quality"], "score", 2.0)) / 2.0, 2)
+
+            if len(candidate.frontmatter.tags) > 10:
+                schema_errors.append(f"Frontmatter contains {len(candidate.frontmatter.tags)} tags, exceeding maximum of 10")
+            elif tag_quality < 0.35:
+                content_errors.append(
+                    f"Frontmatter tags contain excessive bloat or generic noise (quality={tag_quality:.2f}). "
+                    "Filter down to 3-10 crisp, non-redundant discriminative keywords."
+                )
 
         # Step 6: Determine Actionable Gate Verdict
         verdict: AuditVerdict

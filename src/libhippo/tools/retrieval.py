@@ -362,11 +362,16 @@ class KnowledgeDispatcher:
                 if hit_path and status_tag == "HIT":
                     # Boost future search confidence for this query and keywords
                     keywords = list(bk_response.get("keywords") or [])
+                    remove_tags = list(bk_response.get("remove_tags") or [])
                     clean_q = query.strip()
                     if clean_q and clean_q not in keywords:
                         keywords.append(clean_q)
                     try:
-                        await self.store.improve_search_confidence(hit_path, keywords=keywords)
+                        await self.store.improve_search_confidence(
+                            hit_path,
+                            keywords=keywords,
+                            remove_tags=remove_tags,
+                        )
                     except Exception as e:  # noqa: BLE001
                         logger.warning(f"Failed to improve search confidence for {hit_path}: {e}")
                     full_content = await self.store.read_knowledge(hit_path) or ""
