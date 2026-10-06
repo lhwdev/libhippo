@@ -11,7 +11,7 @@ from libhippo.models.knowledge import (
     KnowledgeContext,
     SiblingReference,
 )
-from libhippo.storage.store import KnowledgeAction, KnowledgeStore, SectionType
+from libhippo.storage.store import KnowledgeAction, KnowledgeStore
 from libhippo.tools.retrieval import (
     CriticalityTier,
     EffortTier,
@@ -92,11 +92,10 @@ class ToolRegistry:
             path: str | None = None,
             start_line: int = 1,
             end_line: int | None = None,
-            section: SectionType = "full",
         ) -> str:
             if not path:
                 return "[ERROR: Knowledge path must be specified]"
-            content = await self.store.read_section(path, section=section)
+            content = await self.store.read_knowledge(path)
             if content is None:
                 return f"[ERROR: Knowledge path '{path}' not found]"
             if start_line > 1 or end_line is not None:

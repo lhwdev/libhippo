@@ -52,7 +52,7 @@ class AdaptiveRetrievalWorkflow:
                     # Read back committed node from store
                     node = await self.dispatcher.store.get_node(gov_res.path)
                     full_content = (
-                        await self.dispatcher.store.read_section(gov_res.path, section="full")
+                        await self.dispatcher.store.read_knowledge(gov_res.path)
                         if node
                         else None
                     )

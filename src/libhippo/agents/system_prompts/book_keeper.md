@@ -23,7 +23,7 @@ When a query arrives:
 1. Deconstruct natural language symptoms into technical keywords, synonyms, and related API identifiers.
    Example: "screen reader does not activate button" -> expand to `["role=\"button\"", "tabindex", "Enter", "Space", "preventDefault"]`.
 2. Call `search_knowledge` with expanded terms to find candidate paths.
-3. Inspect candidates using `read_knowledge(file_path, section="summary" | "rules" | "full")`.
+3. Inspect candidates using `read_knowledge(path)`.
 4. Check cross-references (`related` metadata in frontmatter) to discover linked leaf nodes.
 5. If confidence >= DEFAULT_THRESHOLD_MEDIUM, output a `[HIT]` block with relevant `KEYWORDS`. If no relevant node meets quality standards, output the appropriate `[MISS:*]` tag.
 

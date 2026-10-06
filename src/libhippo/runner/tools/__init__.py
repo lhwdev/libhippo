@@ -73,12 +73,19 @@ class CodingToolSuite(
             dispatcher=dispatcher,
         )
 
+
+    _tool_definitions: dict[str, ToolDefinition] | None
+
     @property
     def tools(self) -> dict[str, ToolDefinition]:
+        if self._tool_definitions:
+            return self._tool_definitions
+        
         """Convenience property returning mapping of tool definitions."""
-        return self.get_tool_definitions()
+        _tool_definitions = self.get_tool_definitions()
+        return _tool_definitions
 
-    def get_tool_definitions(self) -> dict[str, ToolDefinition]:
+    def _get_tool_definitions(self) -> dict[str, ToolDefinition]:
         """Return composite mapping of all registered tool definitions."""
         defs: dict[str, ToolDefinition] = {}
         defs.update(FileTools.get_tool_definitions(self))

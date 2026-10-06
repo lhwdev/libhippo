@@ -329,12 +329,11 @@ class KnowledgeStore:
         virtual_path = self.mount_manager.resolve_physical_path(fs_path) or path
         return KnowledgeCandidate.from_markdown(virtual_path, content)
 
-    async def read_section(
+    async def read_knowledge(
         self,
         path: str,
-        section: SectionType = "full",
     ) -> str | None:
-        """Read a specified section ('summary', 'rules', 'full') from knowledge file."""
+        """Read knowledge document."""
         candidate = await self.get_node(path)
         if not candidate:
             return None
@@ -363,14 +362,6 @@ class KnowledgeStore:
                     f"last_checked: {last_checked} | status: {freshness} | source: {sources_str}]\n\n"
                 )
 
-        if section == "full":
-            return f"{meta_banner}{candidate.markdown}"
-
-        summary, rules = extract_sections(candidate.body)
-        if section == "summary":
-            return f"{meta_banner}{summary or candidate.body}"
-        elif section == "rules":
-            return f"{meta_banner}{rules or candidate.body}"
         return f"{meta_banner}{candidate.markdown}"
 
     async def save_node(

@@ -185,8 +185,8 @@ Hooks rules.
 
 
 @pytest.mark.asyncio
-async def test_read_section_metadata_banner(tmp_path):
-    """Verify read_section prepends metadata visibility banner for web-fetched knowledge."""
+async def test_read_knowledge_metadata_banner(tmp_path):
+    """Verify read_knowledge prepends metadata visibility banner for web-fetched knowledge."""
     store = KnowledgeStore(root_dir=tmp_path)
     await store.initialize()
 
@@ -208,11 +208,12 @@ Never mutate state directly.
         resolve_version=False,
     )
 
-    content = await store.read_section("common/web/react.md", section="summary")
+    content = await store.read_knowledge("common/web/react.md")
     assert content is not None
     assert "[Knowledge Metadata | version: 19.0.0" in content
     assert "source: https://react.dev" in content
     assert "React component primitives." in content
+    assert "Never mutate state directly." in content
     await store.close()
 
 

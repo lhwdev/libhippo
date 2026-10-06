@@ -134,12 +134,10 @@ In React 19, useActionState replaces useFormState.
         )
         assert res["status"] == "success"
 
-        # 2. Read sections
-        summary = await store.read_section("plugins/react19/actions.md", section="summary")
-        assert "useActionState replaces useFormState" in summary
-
-        rules = await store.read_section("plugins/react19/actions.md", section="rules")
-        assert "useActionState(fn, initialState)" in rules
+        # 2. Read knowledge
+        content = await store.read_knowledge("plugins/react19/actions.md")
+        assert "useActionState replaces useFormState" in content
+        assert "useActionState(fn, initialState)" in content
 
         # 3. Search
         search_res = await store.search("useActionState formAction")
@@ -236,10 +234,8 @@ Initial rules.
         report2 = await store.sync_all()
         assert report2["upserted"] == 1
         assert "common/file1.md" in report2["details"]["upserted"]
-        cat_entry = await store.catalog.get("common/file1.md")
-        assert cat_entry is not None
-        summary = await store.read_section("common/file1.md", "summary")
-        assert "Updated summary." in summary
+        content = await store.read_knowledge("common/file1.md")
+        assert "Updated summary." in content
 
 
         # 3. Touch file without changing content (same SHA) -> mtime_only_updated

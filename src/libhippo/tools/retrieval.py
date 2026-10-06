@@ -72,7 +72,7 @@ class KnowledgeDispatcher:
             matches = await self.store.search(query=query, top_k=1)
             if matches and matches[0].confidence >= self.threshold_low:
                 top = matches[0]
-                full_content = await self.store.read_section(top.path, section="full") or top.content
+                full_content = await self.store.read_knowledge(top.path) or top.content
                 res = KnowledgeRetrievalResult(
                     status="HIT",
                     path=top.path,
@@ -92,7 +92,7 @@ class KnowledgeDispatcher:
             matches = await self.store.search(query=query, top_k=3)
             if matches and matches[0].confidence >= self.threshold_medium:
                 top = matches[0]
-                full_content = await self.store.read_section(top.path, section="full") or top.content
+                full_content = await self.store.read_knowledge(top.path) or top.content
                 res = KnowledgeRetrievalResult(
                     status="HIT",
                     path=top.path,
@@ -124,7 +124,7 @@ class KnowledgeDispatcher:
             # Direct fallback to top vector match if good confidence
             if matches and matches[0].confidence >= self.threshold_low:
                 top = matches[0]
-                full_content = await self.store.read_section(top.path, section="full") or top.content
+                full_content = await self.store.read_knowledge(top.path) or top.content
                 res = KnowledgeRetrievalResult(
                     status="HIT",
                     path=top.path,
@@ -269,7 +269,7 @@ class KnowledgeDispatcher:
                     if gov_res.status == "COMMITTED":
                         node = await self.store.get_node(gov_res.path)
                         full_content = (
-                            await self.store.read_section(gov_res.path, section="full")
+                            await self.store.read_knowledge(gov_res.path)
                             if node
                             else None
                         )
@@ -369,7 +369,7 @@ class KnowledgeDispatcher:
                         await self.store.improve_search_confidence(hit_path, keywords=keywords)
                     except Exception as e:  # noqa: BLE001
                         logger.warning(f"Failed to improve search confidence for {hit_path}: {e}")
-                    full_content = await self.store.read_section(hit_path, section="full") or ""
+                    full_content = await self.store.read_knowledge(hit_path) or ""
 
                 return KnowledgeRetrievalResult(
                     status=status_tag,

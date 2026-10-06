@@ -158,7 +158,7 @@ class GeneralAgentHarness:
         self.subagents.memory = self.memory
         self.tools.subagent_manager = self.subagents
         self.tools.memory = self.memory
-        self.registered_tools = self.tools.get_tool_definitions()
+        self.registered_tools = self.tools.tools
         self.sidecar = SidecarExecutor(model_client=self.model_client)
         self.harvest_observer = KnowledgeHarvestObserver()
         self.on_event_broadcast: Callable[[KnowledgeAgentEvent], Any] | None = None
