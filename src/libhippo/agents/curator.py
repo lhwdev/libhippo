@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, AsyncGenerator, Sequence
 
+from autogen_agentchat.base import Response
 from autogen_agentchat.agents import AssistantAgent
+from autogen_agentchat.messages import BaseChatMessage, TextMessage, ToolCallExecutionEvent
+from autogen_core import CancellationToken
 from autogen_core.models import ChatCompletionClient
 
 from libhippo.agents.base import BaseHippoAgent
@@ -35,11 +38,13 @@ class CuratorAgent(AssistantAgent, BaseHippoAgent):
         tools: list[Any] | None = None,
         system_message: str | None = None,
         max_tool_iterations: int = 10,
+        orchestrator: Any | None = None,
     ) -> None:
         client = model_client or create_chat_client("curator")
         sys_msg = system_message or get_agent_system_prompt("curator")
         self.store = store
         self.sandbox = sandbox
+        self.orchestrator = orchestrator
         self.current_session: KnowledgeDraftSession | None = None
 
         agent_tools = tools if tools is not None else [
@@ -65,52 +70,74 @@ class CuratorAgent(AssistantAgent, BaseHippoAgent):
         )
         BaseHippoAgent.__init__(self, name=name, description=description)
 
+    async def on_messages_stream(
+        self,
+        messages: Sequence[BaseChatMessage],
+        cancellation_token: CancellationToken,
+    ) -> AsyncGenerator[Any]:
+        """Stream messages and stop immediately once knowledge draft is committed."""
+        
+        async for event in AssistantAgent.on_messages_stream(self, messages, cancellation_token):
+            yield event
+            if isinstance(event, ToolCallExecutionEvent):
+                if self.current_session and self.current_session.is_committed and len(self.current_session.drafts) == 0:
+                    committed_target = (
+                        self.current_session.last_commit_result.path
+                        if self.current_session.last_commit_result
+                        else (self.current_session.active_path or "knowledge node")
+                    )
+                    yield Response(
+                        chat_message=TextMessage(
+                            content=f"Knowledge draft successfully committed to '{committed_target}'.",
+                            source=self.name,
+                        ),
+                        inner_messages=[],
+                    )
+                    return
+
+    def _get_current_session(self) -> KnowledgeDraftSession:
+        if not self.current_session:
+            self.current_session = KnowledgeDraftSession(
+                store=self.store, sandbox=self.sandbox, orchestrator=self.orchestrator
+            )
+        return self.current_session
+
     async def write_knowledge(
         self,
+        path: str,
         content: str,
-        path: str | None = None,
         start_line: int | None = None,
         end_line: int | None = None,
         target: str | None = None,
     ) -> str:
         """Edit or replace a draft document. Returns immediate deterministic sanity check results."""
-        if not self.current_session:
-            self.current_session = KnowledgeDraftSession(store=self.store, sandbox=self.sandbox)
-        return await self.current_session.write_knowledge(
-            content=content, path=path, start_line=start_line, end_line=end_line, target=target
+        return await self._get_current_session().write_knowledge(
+            path=path, content=content, start_line=start_line, end_line=end_line, target=target
         )
 
     async def read_knowledge(
         self,
-        path: str | None = None,
+        path: str,
         start_line: int = 1,
         end_line: int | None = None,
     ) -> str:
         """Read line-addressed slice of a draft document or existing store knowledge node."""
-        if not self.current_session:
-            self.current_session = KnowledgeDraftSession(store=self.store, sandbox=self.sandbox)
-        return await self.current_session.read_knowledge(
+        return await self._get_current_session().read_knowledge(
             path=path, start_line=start_line, end_line=end_line
         )
 
     async def list_knowledge(self, path: str = ".", max_depth: int = 2) -> str:
         """Structural listing of knowledge namespaces and documents behaving like list_dir."""
-        if not self.current_session:
-            self.current_session = KnowledgeDraftSession(store=self.store, sandbox=self.sandbox)
-        return await self.current_session.list_knowledge(path=path, max_depth=max_depth)
+        return await self._get_current_session().list_knowledge(path=path, max_depth=max_depth)
 
     async def search_knowledge(
         self,
+        path: str,
         pattern: str = "*",
-        path: str = ".",
         content_pattern: str | None = None,
     ) -> str:
         """Fast lexical path glob matching and optional regex search across knowledge documents."""
-        if not self.current_session:
-            self.current_session = KnowledgeDraftSession(store=self.store, sandbox=self.sandbox)
-        return await self.current_session.search_knowledge(
-            pattern=pattern, path=path, content_pattern=content_pattern
-        )
+        return await self._get_current_session().search_knowledge(path=path, pattern=pattern, content_pattern=content_pattern)
 
     async def commit(self, path: str) -> dict[str, Any]:
         """Validate and commit a single draft to Maker-Checker governance."""
@@ -126,9 +153,7 @@ class CuratorAgent(AssistantAgent, BaseHippoAgent):
 
     async def run_command(self, command_line: str) -> dict[str, Any]:
         """Execute sandboxed terminal command to verify APIs or behavior."""
-        if not self.current_session:
-            self.current_session = KnowledgeDraftSession(store=self.store, sandbox=self.sandbox)
-        return await self.current_session.run_command(command_line=command_line)
+        return await self._get_current_session().run_command(command_line=command_line)
 
     async def curate(
         self,
@@ -137,14 +162,19 @@ class CuratorAgent(AssistantAgent, BaseHippoAgent):
         context: str = "",
     ) -> dict[str, Any]:
         """Synthesize technical specifications into a new Hub-and-Leaf candidate markdown."""
-        self.current_session = KnowledgeDraftSession(store=self.store, sandbox=self.sandbox)
+        current_session = self._get_current_session()
+
         try:
+            suggested_path = (
+                current_session._normalize_path(target_path)
+                if target_path
+                else f"common/{re.sub(r'[^a-zA-Z0-9_]+', '_', topic_or_query.lower()).strip('_')}"
+            )
             prompt = (
                 f"Research and draft a comprehensive, authoritative knowledge node for:\n"
                 f"TOPIC / QUERY: {topic_or_query}\n"
+                f"SUGGESTED_TARGET_PATH: {suggested_path}\n"
             )
-            if target_path:
-                prompt += f"SUGGESTED_TARGET_PATH: {target_path}\n"
             if context:
                 prompt += f"ADDITIONAL_CONTEXT:\n{context}\n"
 
@@ -152,44 +182,48 @@ class CuratorAgent(AssistantAgent, BaseHippoAgent):
                 "\nFollow the curation workflow:\n"
                 "1. Use list_knowledge / search_knowledge to check existing knowledge and avoid duplication.\n"
                 "2. Use search_web and fetch_web to research official documentation.\n"
-                "3. Use write_knowledge(path=..., content=...) to write the draft document. "
-                "The tool will immediately return deterministic sanity check results.\n"
-                "4. Once checks pass, call commit(path=...) to submit the draft for Maker-Checker review.\n"
-                "Document requirements: strict YAML frontmatter (title, namespace, version, nature, source), "
-                "dual-view (Summary coarse view, Detailed Rules fine view), 500-1000 tokens."
+                "3. Use write_knowledge(path=..., content=...) to write the draft document.\n"
+                "4. Once checks pass, call commit(path=...) to audit and save the draft to disk. If fails, modify."
+                "Document requirements: strict YAML frontmatter (title, version, source, version_check, tags, related), "
+                "500-1000 tokens target."
             )
 
             result = await self.run(task=prompt)
             last_message = result.messages[-1].content if result.messages else ""
             raw_text = last_message if isinstance(last_message, str) else str(last_message)
 
+            gov_result = getattr(self.current_session, "last_commit_result", None)
+
             draft = ""
-            norm_target = self.current_session._normalize_path(target_path) if target_path else None
-            if self.current_session.drafts:
-                if norm_target and norm_target in self.current_session.drafts:
-                    draft = self.current_session.drafts[norm_target].read_text(encoding="utf-8")
+            norm_target = current_session._normalize_path(target_path) if target_path else None
+            if current_session.drafts:
+                if norm_target and norm_target in current_session.drafts:
+                    draft = current_session.drafts[norm_target].read_text(encoding="utf-8")
                     path = norm_target
                 else:
-                    path = self.current_session.active_path or next(iter(self.current_session.drafts.keys()))
-                    draft = self.current_session.drafts[path].read_text(encoding="utf-8")
+                    path = current_session.active_path or next(iter(current_session.drafts.keys()))
+                    draft = current_session.drafts[path].read_text(encoding="utf-8")
             else:
                 draft = self.extract_markdown_draft(raw_text)
                 path = target_path or self.infer_path(draft, topic_or_query)
-                norm_p = self.current_session._normalize_path(path)
-                await self.current_session.write_knowledge(draft, path=norm_p)
+                norm_p = current_session._normalize_path(path)
+                await current_session.write_knowledge(norm_p, draft)
                 path = norm_p
 
             candidate = KnowledgeCandidate.from_markdown(path, draft)
             title = candidate.frontmatter.title if candidate.frontmatter else topic_or_query
             nature = candidate.frontmatter.nature if candidate.frontmatter else "foundation"
 
-            return {
+            res = {
                 "path": path,
                 "draft": draft,
                 "title": title,
                 "nature": nature,
                 "raw_response": raw_text,
             }
+            if gov_result:
+                res["gov_result"] = gov_result
+            return res
         finally:
             if self.current_session:
                 self.current_session.cleanup()
@@ -199,24 +233,23 @@ class CuratorAgent(AssistantAgent, BaseHippoAgent):
         self,
         candidate_markdown: str,
         feedback: str,
-        target_path: str = "common/revised.md",
+        target_path: str = "common/revised",
     ) -> dict[str, Any]:
         """Revise an existing candidate markdown draft based on Checker or Verifier feedback."""
-        self.current_session = KnowledgeDraftSession(store=self.store, sandbox=self.sandbox)
+        current_session = self._get_current_session()
+
         try:
-            norm_path = self.current_session._normalize_path(target_path)
-            draft_file = self.current_session.drafts_dir / norm_path
+            norm_path = current_session._normalize_path(target_path)
+            draft_file = current_session.drafts_dir / f"{norm_path}.md"
             draft_file.parent.mkdir(parents=True, exist_ok=True)
             draft_file.write_text(candidate_markdown, encoding="utf-8")
-            self.current_session.drafts[norm_path] = draft_file
-            self.current_session.active_path = norm_path
+            current_session.drafts[norm_path] = draft_file
+            current_session.active_path = norm_path
 
             prompt = (
-                f"The knowledge node draft '{norm_path}' requires revision:\n\n"
+                f"The knowledge draft '{norm_path}' requires revision:\n\n"
                 f"AUDIT FEEDBACK & DIRECTIVES:\n{feedback}\n\n"
-                f"Draft content has been pre-loaded into draft session '{norm_path}'.\n"
-                f"Use write_knowledge(path='{norm_path}', target='...', content='...') or line replacements "
-                f"to make minimal, surgical edits to fix reported issues. Do NOT rewrite the entire file unless necessary.\n"
+                f"Use write_knowledge or line replacements to make minimal, surgical edits to fix reported issues.\n"
                 f"When checks pass, call commit(path='{norm_path}')."
             )
 
@@ -224,24 +257,29 @@ class CuratorAgent(AssistantAgent, BaseHippoAgent):
             last_message = result.messages[-1].content if result.messages else ""
             raw_text = last_message if isinstance(last_message, str) else str(last_message)
 
+            gov_result = getattr(self.current_session, "last_commit_result", None)
+
             extracted_from_text = self.extract_markdown_draft(raw_text)
             if "---" in extracted_from_text and extracted_from_text != candidate_markdown:
                 draft = extracted_from_text
                 draft_file.write_text(draft, encoding="utf-8")
-            elif norm_path in self.current_session.drafts:
-                draft = self.current_session.drafts[norm_path].read_text(encoding="utf-8")
+            elif norm_path in current_session.drafts:
+                draft = current_session.drafts[norm_path].read_text(encoding="utf-8")
             else:
                 draft = extracted_from_text
 
             candidate = KnowledgeCandidate.from_markdown(target_path, draft)
 
-            return {
+            res = {
                 "path": target_path,
                 "draft": draft,
                 "title": candidate.frontmatter.title if candidate.frontmatter else "",
                 "nature": candidate.frontmatter.nature if candidate.frontmatter else "foundation",
                 "raw_response": raw_text,
             }
+            if gov_result:
+                res["gov_result"] = gov_result
+            return res
         finally:
             if self.current_session:
                 self.current_session.cleanup()
@@ -271,9 +309,11 @@ class CuratorAgent(AssistantAgent, BaseHippoAgent):
         """Infer namespaced virtual path from frontmatter or query."""
         ns_match = re.search(r"^namespace:\s*[\"']?([a-zA-Z0-9_\-]+)[\"']?", draft, re.MULTILINE)
         namespace = ns_match.group(1).strip() if ns_match else "common"
+        if namespace == "knowledge":
+            namespace = "common"
 
         title_match = re.search(r"^title:\s*[\"']?([^\"'\n]+)[\"']?", draft, re.MULTILINE)
         raw_name = title_match.group(1).strip() if title_match else default_query
         slug = re.sub(r"[^a-zA-Z0-9_]+", "_", raw_name.lower()).strip("_")
 
-        return f"{namespace}/{slug}.md"
+        return f"{namespace}/{slug}"

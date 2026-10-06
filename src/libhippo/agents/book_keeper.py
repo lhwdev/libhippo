@@ -8,7 +8,7 @@ from typing import Any
 
 from autogen_agentchat.agents import AssistantAgent
 from autogen_core.models import ChatCompletionClient
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from libhippo.agents.base import BaseHippoAgent
 from libhippo.agents.prompts import get_agent_system_prompt
@@ -18,6 +18,8 @@ from libhippo.storage.store import KnowledgeStore
 
 class BookKeeperLookupOutput(BaseModel):
     """Structured response format for BookKeeper technical retrieval."""
+
+    model_config = ConfigDict(extra="forbid")
 
     status: str = Field(
         default="[MISS:FALLBACK]",
@@ -55,7 +57,7 @@ class BookKeeperAgent(AssistantAgent, BaseHippoAgent):
 
             reg = ToolRegistry(store=store)
             tools = [
-                reg.get_search_knowledge_tool(),
+                reg.get_similarity_search_knowledge_tool(),
                 reg.get_read_knowledge_tool(),
             ]
 

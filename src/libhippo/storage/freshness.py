@@ -102,7 +102,11 @@ class FreshnessChecker:
                     pass
             match = re.search(pattern, resp.text)
             if match:
-                return match.group(1).strip()
+                if match.groups():
+                    return match.group(1).strip()
+                full = match.group(0).strip()
+                v_match = re.search(r"\b(\d+\.\d+(?:\.\d+)?)\b", full)
+                return v_match.group(1) if v_match else full
         return None
 
     async def fetch_terminal_version(self, command: str) -> str | None:

@@ -144,19 +144,20 @@ All model instantiations across AutoGen Chat Completion clients (OpenAI) and Typ
   - **Prompt Cache Write**: **ENABLED** during multi-turn Check → Verify refactoring loops; **DISABLED** on one-off external web scrapes.
   - Blends official external facts with idiomatic programming patterns into modular knowledge nodes.
   - **Write-Protected from Store**: Operates strictly within temporary draft sessions (`.libhippo/drafts/<session_id>/`) and submits drafts solely to Maker-Checker governance via `commit()` or `commit_all()`.
-- **Knowledge Draftsman Tools & Protocols**:
+  - **Knowledge Draftsman Tools & Protocols**:
   - `write_knowledge(content, path=None, start_line=None, end_line=None, target=None)`:
     - Pre-populates from store if editing an existing document.
+    - **Namespace Validation**: Strictly enforces virtual knowledge paths without `.md` extension rooted at registered mounts (`project/`, `common/`, `user/`, `plugins/`), rejecting `knowledge/` or unrecognized namespaces immediately.
     - **Surgical Edit Discipline**: If `target` or `start_line`/`end_line` are specified, performs targeted surgical line replacements. If all are None, replaces the whole document (used only for initial creation or total rewrites).
     - **Zero-LLM Sanity Checks**: Evaluates each edit immediately without LLM calls, returning diagnostics on YAML frontmatter schema compliance, token sizing bounds (500–1,000 target, 1,800 hard maximum), and markdown code block fence parity.
   - `read_knowledge(path=None, start_line=1, end_line=None)`: Line-addressed reading of active draft (`path=None`) or existing store node (`path="common/..."`) to inspect hierarchies and avoid duplicate content.
-  - `list_knowledge(path=".", max_depth=2)`: Instant lexical tree listing of knowledge store (fast exploration, zero LLM overhead).
+  - `list_knowledge(path=".", max_depth=2)`: Instant lexical tree listing of knowledge store (fast exploration, zero LLM overhead, showing mount roots without fictitious `knowledge/` prefix).
   - `search_knowledge(pattern="*", path=".", content_pattern=None)`: Glob and regex text search across store nodes without curation delays.
-  - `commit(path: str)`: Finalizes and dispatches a single validated draft to Maker-Checker governance.
-  - `commit_all()`: Validates and dispatches all open session drafts (essential for multi-draft harvest sidecars).
+  - `commit(path: str)`: Finalizes and executes immediate Maker-Checker governance commit (`CheckerAgent` audit $\rightarrow$ `VerifierAgent` escalation if required $\rightarrow$ store disk save). Returns clean verdict/error status without echoing draft content. Upon success, halts further draftsman agent turns.
+  - `commit_all()`: Validates and executes Maker-Checker governance for all open session drafts, terminating upon success.
   - `run_command`: Executes compiler checks, linters, or syntax validators in the sandboxed workspace.
 - **Input**: Missing topic descriptor, target URLs, change requests / split directives, or conversation history.
-- **Output**: Validated knowledge node drafts submitted to `CheckerAgent`.
+- **Output**: Validated knowledge node drafts audited and committed to `KnowledgeStore`.
 
 ### 3.4 `CheckerAgent` (Primary Structural & Schema Gatekeeper)
 - **Model**: `TypeSafe Jev` (deterministic typed inference).

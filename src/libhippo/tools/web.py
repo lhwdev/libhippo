@@ -9,7 +9,7 @@ from typing import Any
 
 import bs4
 import httpx
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 
 async def fetch_web(

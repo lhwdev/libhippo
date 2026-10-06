@@ -136,7 +136,7 @@ Hope this helps!
     assert "useActionState" in draft
 
     inferred = CuratorAgent.infer_path(draft, "react form actions")
-    assert inferred == "common/react_19_form_actions.md"
+    assert inferred == "common/react_19_form_actions"
 
 
 @pytest.mark.asyncio
@@ -161,7 +161,7 @@ Tailwind v4 uses CSS-first configuration.
     assert len(agent._tools) == 9  # write_knowledge, read_knowledge, list_knowledge, search_knowledge, commit, commit_all, run_command, search_web, fetch_web
 
     result = await agent.curate(topic_or_query="Tailwind v4")
-    assert result["path"] == "common/tailwind_v4_css.md"
+    assert result["path"] == "common/tailwind_v4_css"
     assert "Tailwind v4 uses CSS-first" in result["draft"]
     assert result["nature"] == "foundation"
 
@@ -531,7 +531,7 @@ const [state, formAction, isPending] = useActionState(fn, initialState);
     session = KnowledgeDraftSession(workspace_root=tmp_path)
     try:
         # Write whole document
-        write_out1 = await session.write_knowledge(valid_md, path="common/web/react_actions.md")
+        write_out1 = await session.write_knowledge("common/web/react_actions.md", valid_md)
         assert "Successfully updated draft" in write_out1
         assert "READY_TO_COMMIT" in write_out1
 
@@ -542,8 +542,8 @@ const [state, formAction, isPending] = useActionState(fn, initialState);
 
         # Surgical target search-and-replace
         write_out2 = await session.write_knowledge(
-            content="Use React 19 form actions and useActionState for optimal async handling.",
             path="common/web/react_actions.md",
+            content="Use React 19 form actions and useActionState for optimal async handling.",
             target="Use React 19 form actions and useActionState for pending states.",
         )
         assert "READY_TO_COMMIT" in write_out2
@@ -564,18 +564,137 @@ source:
 ## Summary
 Next.js App Router conventions.
 """
-        await session.write_knowledge(second_md, path="common/web/nextjs.md")
+        await session.write_knowledge("common/web/nextjs.md", second_md)
         assert len(session.drafts) == 2
 
-        # Commit single draft
+        # Commit single draft (isolated mock session without store/orch)
         commit_res = await session.commit("common/web/react_actions.md")
         assert commit_res["status"] == "ready"
-        assert commit_res["path"] == "common/web/react_actions.md"
+        assert commit_res["path"] == "common/web/react_actions"
+        assert "content" not in commit_res
 
-        # Commit all drafts
+        # Commit all remaining drafts
         commit_all_res = await session.commit_all()
         assert commit_all_res["status"] == "ready"
-        assert len(commit_all_res["drafts"]) == 2
+        assert len(commit_all_res["drafts"]) == 1
+        assert len(session.drafts) == 0
+
+        # Verify rejection of invalid namespace (e.g. knowledge/...)
+        bad_write = await session.write_knowledge("knowledge/react.md", valid_md)
+        assert "[ERROR: Invalid namespace 'knowledge'" in bad_write
+
+        bad_commit = await session.commit("knowledge/react")
+        assert bad_commit["status"] == "error"
+        assert "Invalid namespace 'knowledge'" in bad_commit["message"]
     finally:
         session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_draftsman_commit_with_orchestrator(tmp_path):
+    """Verify in-tool commit triggers Maker-Checker governance and disk save."""
+    from libhippo.agents.draftsman import KnowledgeDraftSession
+    from libhippo.orchestration.maker_checker import MakerCheckerResult
+
+    mock_orch = AsyncMock()
+    mock_orch.run_governance.return_value = MakerCheckerResult(
+        status="COMMITTED",
+        path="common/web/react",
+        verdict="PASS",
+        message="Audited and committed successfully.",
+    )
+
+    session = KnowledgeDraftSession(workspace_root=tmp_path, orchestrator=mock_orch)
+    try:
+        md = """---
+title: "React Components"
+version: "1.0.0"
+---
+## Summary
+React component rules.
+"""
+        await session.write_knowledge("common/web/react", md)
+        res = await session.commit("common/web/react")
+
+        assert res["status"] == "committed"
+        assert res["path"] == "common/web/react"
+        assert res["verdict"] == "PASS"
+        assert "content" not in res
+        assert session.is_committed is True
+        assert mock_orch.run_governance.called
+    finally:
+        session.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_curator_stops_after_successful_commit():
+    """Verify CuratorAgent halts turn iteration once commit succeeds without extra LLM turns."""
+    from autogen_core import FunctionCall
+    from autogen_core.models import ChatCompletionClient, ModelCapabilities
+    from autogen_agentchat.messages import TextMessage
+    from libhippo.orchestration.maker_checker import MakerCheckerResult
+
+    class FakeClient(ChatCompletionClient):
+        def __init__(self):
+            self.call_count = 0
+
+        @property
+        def model_info(self):
+            return {"vision": False, "function_calling": True, "json_output": False, "family": "unknown"}
+
+        @property
+        def capabilities(self):
+            return ModelCapabilities(vision=False, function_calling=True, json_output=False)
+
+        async def create(self, messages, **kwargs):
+            self.call_count += 1
+            if self.call_count == 1:
+                return CreateResult(
+                    finish_reason="function_calls",
+                    content=[
+                        FunctionCall(
+                            id="call_1",
+                            name="write_knowledge",
+                            arguments='{"path": "common/react", "content": "---\\ntitle: React\\n---\\n## Summary\\nRules."}',
+                        ),
+                        FunctionCall(
+                            id="call_2",
+                            name="commit",
+                            arguments='{"path": "common/react"}',
+                        ),
+                    ],
+                    usage=RequestUsage(prompt_tokens=10, completion_tokens=10),
+                    cached=False,
+                )
+            return CreateResult(
+                finish_reason="stop",
+                content="Extra turn that should never happen!",
+                usage=RequestUsage(prompt_tokens=10, completion_tokens=10),
+                cached=False,
+            )
+
+        async def create_stream(self, messages, **kwargs):
+            pass
+
+        def actual_usage(self): return RequestUsage(prompt_tokens=0, completion_tokens=0)
+        def total_usage(self): return RequestUsage(prompt_tokens=0, completion_tokens=0)
+        def count_tokens(self, messages, **kwargs): return 1
+        def remaining_tokens(self, messages, **kwargs): return 1000
+        async def close(self): pass
+
+    mock_orch = AsyncMock()
+    mock_orch.run_governance.return_value = MakerCheckerResult(
+        status="COMMITTED",
+        path="common/react",
+        verdict="PASS",
+        message="Saved to disk.",
+    )
+
+    client = FakeClient()
+    agent = CuratorAgent(model_client=client, orchestrator=mock_orch, max_tool_iterations=5)
+    res = await agent.curate(topic_or_query="React")
+
+    assert client.call_count == 1  # Exactly 1 LLM call; stopped right after commit!
+    assert res.get("gov_result") is not None
+    assert res["gov_result"].status == "COMMITTED"
 

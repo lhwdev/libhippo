@@ -689,7 +689,7 @@ class KnowledgeStore:
         """
         lines: list[str] = []
         if path in (".", "", "/"):
-            lines.append("knowledge/")
+            lines.append("[Knowledge Mounts]")
             mounts = self.mount_manager.get_all_mounts()
             for idx, m in enumerate(mounts):
                 is_last_m = idx == len(mounts) - 1
@@ -707,7 +707,7 @@ class KnowledgeStore:
         else:
             norm = path.strip("/.")
             try:
-                target_phys = self.mount_manager.resolve_physical_path(norm)
+                target_phys = self.mount_manager.resolve_virtual_path(norm)[0]
             except Exception:
                 target_phys = self.root_dir / norm
 
@@ -760,8 +760,8 @@ class KnowledgeStore:
 
     async def search_knowledge(
         self,
-        pattern: str = "*",
         path: str = ".",
+        pattern: str = "*",
         content_pattern: str | None = None,
     ) -> str:
         """Fast lexical search matching path globs and/or content regex across knowledge documents.
@@ -779,7 +779,7 @@ class KnowledgeStore:
         else:
             norm = path.strip("/.")
             try:
-                phys = self.mount_manager.resolve_physical_path(norm)
+                phys = self.mount_manager.resolve_virtual_path(norm)[0]
             except Exception:
                 phys = self.root_dir / norm
             if phys.exists():

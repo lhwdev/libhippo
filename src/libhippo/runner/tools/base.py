@@ -52,7 +52,7 @@ class BaseToolSuite:
         """Check if request_review mode or project policy requires user confirmation."""
         from libhippo.runner.config import ExecutionMode
 
-        if self.project_manager.config.mode == ExecutionMode.REQUEST_REVIEW:
+        if self.project_manager and getattr(self.project_manager, "config", None) and self.project_manager.config.mode == ExecutionMode.REQUEST_REVIEW:
             req_id = f"req-{abs(hash(str(details))) % 100000}"
             await self.emit_event(
                 {

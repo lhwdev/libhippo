@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import logging
 import os
+import re
 import sys
 from typing import Any, AsyncIterator, Sequence
+
+from rich.console import Console
+from rich.text import Text
 
 from autogen_core.models import (
     ChatCompletionClient,
@@ -26,6 +31,25 @@ if not logger.handlers:
     logger.addHandler(_handler)
 logger.propagate = False
 
+_console = Console(file=io.StringIO(), force_terminal=True, color_system="standard", width=1000, soft_wrap=True)
+
+
+def _render_ansi(text_obj: Text) -> str:
+    """Render a rich Text object to an ANSI-escaped string."""
+    buf = io.StringIO()
+    c = Console(file=buf, force_terminal=True, color_system="standard", width=1000, soft_wrap=True)
+    c.print(text_obj)
+    return buf.getvalue().rstrip("\n")
+
+
+class _StripAnsiFilter(logging.Filter):
+    _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = self._ANSI_RE.sub("", record.msg)
+        return True
+
 
 _file_handler_initialized = False
 
@@ -44,6 +68,7 @@ def _setup_file_handler() -> None:
                 return
         fh = logging.FileHandler(abs_path, encoding="utf-8")
         fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        fh.addFilter(_StripAnsiFilter())
         logger.addHandler(fh)
         _file_handler_initialized = True
     except Exception:
@@ -72,10 +97,36 @@ def is_openai_logging_enabled() -> bool:
     return val in ("1", "true", "yes", "on", "enable", "enabled")
 
 
-def _truncate_text(text: str, max_chars: int = 1500) -> str:
+def _truncate_text(text: str, max_chars: int = 1000, max_lines: int = 30) -> str:
+    lines = text.splitlines(keepends=True)
+    if len(lines) > max_lines:
+        truncated_by_lines = "".join(lines[:max_lines])
+        truncated_lines_count = len(lines) - max_lines
+    else:
+        truncated_by_lines = None
+        truncated_lines_count = 0
+
     if len(text) > max_chars:
-        return text[:max_chars] + f"\n... [truncated {len(text) - max_chars} characters] ..."
-    return text
+        truncated_by_chars = text[:max_chars]
+        truncated_chars_count = len(text) - max_chars
+    else:
+        truncated_by_chars = None
+        truncated_chars_count = 0
+
+    if truncated_by_lines is None and truncated_by_chars is None:
+        return text
+
+    if truncated_by_lines is not None and truncated_by_chars is not None:
+        if len(truncated_by_lines) <= len(truncated_by_chars):
+            return truncated_by_lines.rstrip("\r\n") + f"\n... [truncated {truncated_lines_count} lines] ..."
+        else:
+            return truncated_by_chars + f"\n... [truncated {truncated_chars_count} characters] ..."
+    elif truncated_by_lines is not None:
+        return truncated_by_lines.rstrip("\r\n") + f"\n... [truncated {truncated_lines_count} lines] ..."
+    elif truncated_by_chars is not None:
+        return truncated_by_chars + f"\n... [truncated {truncated_chars_count} characters] ..."
+    else:
+        return text
 
 
 def _format_message(msg: Any) -> tuple[str, str]:
@@ -123,8 +174,8 @@ def _log_request(
     if not is_openai_logging_enabled():
         return
 
-    model_name = getattr(client, "model", None) or getattr(client, "_model", None) or "openai"
-    agent_role = getattr(client, "agent_role", None)
+    model_name = str(getattr(client, "model", None) or getattr(client, "_model", None) or "openai")
+    agent_role = str(getattr(client, "agent_role", None)) if getattr(client, "agent_role", None) else None
     agent_tag = f" [Agent: {agent_role}]" if agent_role else ""
     total_messages = len(messages)
 
@@ -152,26 +203,41 @@ def _log_request(
             logged_system_prompts.add(h)
 
     stream_tag = " (stream)" if stream else ""
+    banner_text = Text("=" * 38, style="dim cyan")
+    banner_text.append(f" [OpenAI Request{stream_tag}] ", style="bold not dim cyan")
+    banner_text.append("=" * (40 if not stream else 31), style="dim cyan")
     lines: list[str] = [
-        f"{'=' * 38} [OpenAI Request{stream_tag}] {'=' * 38}",
-        f"Model: {model_name}{agent_tag}",
+        _render_ansi(banner_text),
     ]
+
+    model_text = Text("Model: ", style="dim")
+    model_text.append(model_name, style="bold not dim cyan")
+    if agent_role:
+        model_text.append(" [Agent: ", style="dim")
+        model_text.append(agent_role, style="bold not dim magenta")
+        model_text.append("]", style="dim")
+    lines.append(_render_ansi(model_text))
 
     # Show system prompt(s) on first send
     for _, text in shown_sys_msgs:
-        lines.append("--- System Prompt (First Send) ---")
+        lines.append(_render_ansi(Text("--- System Prompt (First Send) ---", style="bold yellow")))
         lines.append(text)
 
     if total_messages == 0:
-        lines.append("Context: 0 messages")
+        lines.append(_render_ansi(Text("Context: 0 messages", style="dim")))
     elif total_messages == 1:
         if not shown_sys_msgs:
             role, text = _format_message(messages[0])
-            lines.append("Context: 1 message (0 previous hidden)")
-            lines.append(f"--- Latest Message [{role}] ---")
+            ctx_t = Text("Context: ", style="dim")
+            ctx_t.append("1 message (0 previous hidden)", style="dim")
+            lines.append(_render_ansi(ctx_t))
+            role_t = Text("--- Latest Message [", style="bold yellow")
+            role_t.append(role, style="bold not dim cyan")
+            role_t.append("] ---", style="bold yellow")
+            lines.append(_render_ansi(role_t))
             lines.append(text)
         else:
-            lines.append("Context: 1 message (system prompt shown above)")
+            lines.append(_render_ansi(Text("Context: 1 message (system prompt shown above)", style="dim")))
     else:
         # Collect all trailing tool messages as latest turn if multiple tool messages are at the end
         latest_msgs: list[Any] = [messages[-1]]
@@ -196,12 +262,21 @@ def _log_request(
 
         if shown_sys_msgs:
             if hidden_messages:
-                lines.append("-" * 96)
-                lines.append(f"Context: {total_messages} messages ({len(shown_sys_msgs)} system prompt shown, {len(hidden_messages)} previous hidden: {breakdown})")
+                lines.append(_render_ansi(Text("-" * 96, style="dim")))
+                ctx_t = Text("Context: ", style="dim")
+                ctx_t.append(f"{total_messages} messages ", style="bold not dim white")
+                ctx_t.append(f"({len(shown_sys_msgs)} system prompt shown, {len(hidden_messages)} previous hidden: {breakdown})", style="dim")
+                lines.append(_render_ansi(ctx_t))
             else:
-                lines.append(f"Context: {total_messages} messages ({len(shown_sys_msgs)} system prompt shown, 0 previous hidden)")
+                ctx_t = Text("Context: ", style="dim")
+                ctx_t.append(f"{total_messages} messages ", style="bold not dim white")
+                ctx_t.append(f"({len(shown_sys_msgs)} system prompt shown, 0 previous hidden)", style="dim")
+                lines.append(_render_ansi(ctx_t))
         else:
-            lines.append(f"Context: {total_messages} messages ({len(prev_messages)} previous hidden: {breakdown})")
+            ctx_t = Text("Context: ", style="dim")
+            ctx_t.append(f"{total_messages} messages ", style="bold not dim white")
+            ctx_t.append(f"({len(prev_messages)} previous hidden: {breakdown})", style="dim")
+            lines.append(_render_ansi(ctx_t))
 
         if tools:
             tool_names = []
@@ -214,15 +289,21 @@ def _log_request(
                     tool_names.append(t.schema.get("name", "tool"))
                 else:
                     tool_names.append(str(t))
-            lines.append(f"Tools: {len(tools)} tools ({', '.join(tool_names[:10])}{'...' if len(tool_names) > 10 else ''})")
+            tools_t = Text("Tools: ", style="dim")
+            tools_t.append(f"{len(tools)} tools ", style="bold not dim green")
+            tools_t.append(f"({', '.join(tool_names[:10])}{'...' if len(tool_names) > 10 else ''})", style="dim")
+            lines.append(_render_ansi(tools_t))
 
         for lm in latest_msgs:
             if id(lm) not in shown_sys_ids:
                 role, text = _format_message(lm)
-                lines.append(f"--- Latest Message [{role}] ---")
+                role_t = Text("--- Latest Message [", style="bold yellow")
+                role_t.append(role, style="bold not dim cyan")
+                role_t.append("] ---", style="bold yellow")
+                lines.append(_render_ansi(role_t))
                 lines.append(text)
 
-    lines.append("=" * 96)
+    lines.append(_render_ansi(Text("=" * 96, style="dim cyan")))
     logger.info("\n".join(lines))
 
 
@@ -234,19 +315,16 @@ def _log_response(
     if not is_openai_logging_enabled():
         return
 
-    model_name = getattr(client, "model", None) or getattr(client, "_model", None) or "openai"
-    agent_role = getattr(client, "agent_role", None)
-    agent_tag = f" [Agent: {agent_role}]" if agent_role else ""
+    model_name = str(getattr(client, "model", None) or getattr(client, "_model", None) or "openai")
+    agent_role = str(getattr(client, "agent_role", None)) if getattr(client, "agent_role", None) else None
     stream_tag = " (stream)" if stream else ""
     finish_reason = getattr(result, "finish_reason", "stop")
 
-    meta_parts = [f"Model: {model_name}{agent_tag}", f"Finish: {finish_reason}"]
     p_tokens = 0
     c_tokens = 0
     if hasattr(result, "usage") and result.usage:
         p_tokens = getattr(result.usage, "prompt_tokens", 0) or 0
         c_tokens = getattr(result.usage, "completion_tokens", 0) or 0
-        meta_parts.append(f"Usage: prompt={p_tokens}, completion={c_tokens}")
 
     cached_tokens = int(
         getattr(result, "cached_tokens", None)
@@ -264,27 +342,49 @@ def _log_response(
         or 0
     )
 
+    resp_banner = Text("=" * 38, style="dim green")
+    resp_banner.append(f" [OpenAI Response{stream_tag}] ", style="bold not dim green")
+    resp_banner.append("=" * (39 if not stream else 30), style="dim green")
+    lines: list[str] = [
+        _render_ansi(resp_banner),
+    ]
+
+    meta_t = Text("Model: ", style="dim")
+    meta_t.append(model_name, style="bold not dim cyan")
+    if agent_role:
+        meta_t.append(" [Agent: ", style="dim")
+        meta_t.append(agent_role, style="bold not dim magenta")
+        meta_t.append("]", style="dim")
+    meta_t.append(" | Finish: ", style="dim")
+    meta_t.append(str(finish_reason), style="bold not dim yellow" if finish_reason != "stop" else "dim")
+
+    if p_tokens or c_tokens:
+        meta_t.append(" | Usage: ", style="dim")
+        meta_t.append(f"prompt={p_tokens}, completion={c_tokens}", style="not dim")
+
     if cached_tokens > 0:
         pct = (cached_tokens / p_tokens * 100) if p_tokens > 0 else 100.0
-        meta_parts.append(f"Cache: HIT ({cached_tokens}/{p_tokens}, {pct:.1f}%)")
+        meta_t.append(" | Cache: ", style="dim")
+        meta_t.append(f"HIT ({cached_tokens}/{p_tokens}, {pct:.1f}%)", style="bold not dim green")
     elif cache_write_tokens > 0:
-        meta_parts.append(f"Cache: WRITE ({cache_write_tokens} tokens)")
+        meta_t.append(" | Cache: ", style="dim")
+        meta_t.append(f"WRITE ({cache_write_tokens} tokens)", style="bold not dim blue")
     elif getattr(result, "cached", False):
-        meta_parts.append("Cache: HIT")
+        meta_t.append(" | Cache: ", style="dim")
+        meta_t.append("HIT", style="bold not dim green")
     else:
-        meta_parts.append("Cache: MISS")
+        meta_t.append(" | Cache: ", style="dim")
+        meta_t.append("MISS", style="dim")
 
     if reasoning_tokens > 0:
-        meta_parts.append(f"Reasoning: {reasoning_tokens} tokens")
+        meta_t.append(" | Reasoning: ", style="dim")
+        meta_t.append(f"{reasoning_tokens} tokens", style="bold not dim cyan")
 
-    lines: list[str] = [
-        f"{'=' * 38} [OpenAI Response{stream_tag}] {'=' * 37}",
-        " | ".join(meta_parts),
-    ]
+    lines.append(_render_ansi(meta_t))
 
     thought = getattr(result, "thought", None)
     if thought:
-        lines.append("--- Thought ---")
+        lines.append(_render_ansi(Text("--- Thought ---", style="italic dim cyan")))
         lines.append(str(thought))
 
     content = getattr(result, "content", "")
@@ -295,13 +395,16 @@ def _log_response(
                 tool_call_strs.append(f"{item.name}({item.arguments})")
             else:
                 tool_call_strs.append(str(item))
-        lines.append("--- Tool Calls ---")
-        lines.extend(f"- {tc}" for tc in tool_call_strs)
+        lines.append(_render_ansi(Text("--- Tool Calls ---", style="bold cyan")))
+        for tc in tool_call_strs:
+            tc_t = Text("- ", style="dim")
+            tc_t.append(tc, style="bold not dim yellow")
+            lines.append(_render_ansi(tc_t))
     else:
-        lines.append("--- Content ---")
+        lines.append(_render_ansi(Text("--- Content ---", style="bold green")))
         lines.append(str(content))
 
-    lines.append("=" * 96)
+    lines.append(_render_ansi(Text("=" * 96, style="dim green")))
     logger.info("\n".join(lines))
 
 
@@ -312,17 +415,31 @@ def _log_stream_chunks_summary(
     if not is_openai_logging_enabled():
         return
 
-    model_name = getattr(client, "model", None) or getattr(client, "_model", None) or "openai"
-    agent_role = getattr(client, "agent_role", None)
+    model_name = str(getattr(client, "model", None) or getattr(client, "_model", None) or "openai")
+    agent_role = str(getattr(client, "agent_role", None)) if getattr(client, "agent_role", None) else None
     agent_tag = f" [Agent: {agent_role}]" if agent_role else ""
     full_text = "".join(chunks)
+
+    banner_t = Text("=" * 38, style="dim green")
+    banner_t.append(" [OpenAI Response (stream)] ", style="bold not dim green")
+    banner_t.append("=" * 30, style="dim green")
     lines: list[str] = [
-        f"{'=' * 38} [OpenAI Response (stream)] {'=' * 30}",
-        f"Model: {model_name}{agent_tag} | Chunks: {len(chunks)}",
-        "--- Content ---",
-        full_text,
-        "=" * 96,
+        _render_ansi(banner_t),
     ]
+
+    meta_t = Text("Model: ", style="dim")
+    meta_t.append(model_name, style="bold not dim cyan")
+    if agent_role:
+        meta_t.append(" [Agent: ", style="dim")
+        meta_t.append(agent_role, style="bold not dim magenta")
+        meta_t.append("]", style="dim")
+    meta_t.append(" | Chunks: ", style="dim")
+    meta_t.append(str(len(chunks)), style="not dim")
+    lines.append(_render_ansi(meta_t))
+
+    lines.append(_render_ansi(Text("--- Content ---", style="bold green")))
+    lines.append(full_text)
+    lines.append(_render_ansi(Text("=" * 96, style="dim green")))
     logger.info("\n".join(lines))
 
 
@@ -385,7 +502,23 @@ class LoggingChatCompletionClient(ChatCompletionClient):
         except Exception as exc:
             if is_openai_logging_enabled():
                 model_name = getattr(self._inner, "model", "openai")
-                logger.info(f"{'=' * 38} [OpenAI Error] {'=' * 41}\nModel: {model_name} | Error: {exc}\n{'=' * 96}")
+                err_banner = Text("=" * 38, style="dim red")
+                err_banner.append(" [OpenAI Error] ", style="bold not dim red")
+                err_banner.append("=" * 41, style="dim red")
+                err_meta = Text("Model: ", style="dim")
+                err_meta.append(model_name, style="bold not dim cyan")
+                if self.agent_role:
+                    err_meta.append(" [Agent: ", style="dim")
+                    err_meta.append(self.agent_role, style="bold not dim magenta")
+                    err_meta.append("]", style="dim")
+                err_meta.append(" | Error: ", style="dim")
+                err_meta.append(str(exc), style="bold not dim red")
+                err_lines = [
+                    _render_ansi(err_banner),
+                    _render_ansi(err_meta),
+                    _render_ansi(Text("=" * 96, style="dim red")),
+                ]
+                logger.info("\n".join(err_lines))
             raise
 
     async def create_stream(
@@ -419,7 +552,23 @@ class LoggingChatCompletionClient(ChatCompletionClient):
         except Exception as exc:
             if is_openai_logging_enabled():
                 model_name = getattr(self._inner, "model", "openai")
-                logger.info(f"{'=' * 38} [OpenAI Error (stream)] {'=' * 32}\nModel: {model_name} | Error: {exc}\n{'=' * 96}")
+                err_banner = Text("=" * 38, style="dim red")
+                err_banner.append(" [OpenAI Error (stream)] ", style="bold not dim red")
+                err_banner.append("=" * 32, style="dim red")
+                err_meta = Text("Model: ", style="dim")
+                err_meta.append(model_name, style="bold not dim cyan")
+                if self.agent_role:
+                    err_meta.append(" [Agent: ", style="dim")
+                    err_meta.append(self.agent_role, style="bold not dim magenta")
+                    err_meta.append("]", style="dim")
+                err_meta.append(" | Error: ", style="dim")
+                err_meta.append(str(exc), style="bold not dim red")
+                err_lines = [
+                    _render_ansi(err_banner),
+                    _render_ansi(err_meta),
+                    _render_ansi(Text("=" * 96, style="dim red")),
+                ]
+                logger.info("\n".join(err_lines))
             raise
 
 

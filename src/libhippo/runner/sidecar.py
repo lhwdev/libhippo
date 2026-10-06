@@ -86,7 +86,8 @@ class KnowledgeHarvestSidecar:
         topic_hint: str | None = None,
     ) -> Any:
         """Synthesize Hub/Leaf knowledge node from warm context and run Maker-Checker governance."""
-        session = KnowledgeDraftSession(store=self.store)
+        orchestrator = self._get_orchestrator()
+        session = KnowledgeDraftSession(store=self.store, orchestrator=orchestrator)
         try:
             parent_messages = parent_memory.get_all_messages()
             llm_messages: list[Any] = []

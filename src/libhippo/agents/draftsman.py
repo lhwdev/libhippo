@@ -8,7 +8,9 @@ and Maker-Checker submission tools.
 from __future__ import annotations
 
 import asyncio
+import difflib
 import fnmatch
+import logging
 import re
 import shutil
 import uuid
@@ -19,6 +21,8 @@ import tiktoken
 import yaml
 
 from libhippo.storage.store import KnowledgeStore
+
+logger = logging.getLogger(__name__)
 
 
 def run_draft_sanity_checks(markdown: str) -> dict[str, Any]:
@@ -53,6 +57,30 @@ def run_draft_sanity_checks(markdown: str) -> dict[str, Any]:
         # Agent-written properties: title is required
         if not frontmatter_dict.get("title"):
             errors.append("Frontmatter missing required field: 'title'.")
+        if "namespace" in frontmatter_dict:
+            fm_ns = str(frontmatter_dict["namespace"]).strip().lower()
+            valid_namespaces = {"project", "common", "user", "plugins"}
+            if fm_ns not in valid_namespaces:
+                errors.append(
+                    f"Invalid frontmatter namespace '{fm_ns}'. Must be one of: {sorted(valid_namespaces)}."
+                )
+
+        # Validate version_check format if present
+        if frontmatter_dict.get("version_check"):
+            vc = str(frontmatter_dict["version_check"]).strip()
+            valid_prefixes = ("npm:", "pypi:", "github:", "crates:", "scrape:", "terminal:")
+            if not any(vc.startswith(p) for p in valid_prefixes) and "/" not in vc:
+                errors.append(
+                    f"Invalid version_check '{vc}'. Expected format: npm:<pkg>, pypi:<pkg>, "
+                    f"github:<owner>/<repo>, crates:<crate>, scrape:<url>#<regex>, or terminal:<cmd>."
+                )
+            elif vc.startswith("scrape:"):
+                target = vc[7:].strip()
+                if "#" not in target and "|" not in target:
+                    warnings.append(
+                        f"Scrape version_check '{vc}' does not specify a regex delimiter ('#' or '|'). "
+                        "Defaulting to 'v?([0-9]+\\.[0-9]+(?:\\.[0-9]+)?)'."
+                    )
 
     # 2. Token count check
     try:
@@ -103,6 +131,7 @@ class KnowledgeDraftSession:
         workspace_root: Path | str | None = None,
         store: KnowledgeStore | None = None,
         sandbox: Any | None = None,
+        orchestrator: Any | None = None,
     ) -> None:
         self.session_id = session_id or uuid.uuid4().hex[:12]
         self.workspace_root = Path(workspace_root or Path.cwd()).resolve()
@@ -110,30 +139,67 @@ class KnowledgeDraftSession:
         self.drafts_dir.mkdir(parents=True, exist_ok=True)
         self.store = store
         self.sandbox = sandbox
+        self.orchestrator = orchestrator
         self.drafts: dict[str, Path] = {}
         self.active_path: str | None = None
+        self.is_committed: bool = False
+        self.last_commit_result: Any | None = None
 
     def _normalize_path(self, path: str) -> str:
         clean = path.strip("/. ").replace("\\", "/")
-        if not clean.endswith(".md"):
-            clean += ".md"
+        if clean.endswith(".md"):
+            clean = clean[:-3]
         return clean
+
+    def _validate_namespace(self, norm_path: str) -> str | None:
+        """Validate that the path begins with a valid registered namespace prefix."""
+        parts = norm_path.split("/", 1)
+        prefix = parts[0].lower()
+        if self.store:
+            registered = [m.namespace_prefix for m in self.store.mount_manager.get_all_mounts()]
+        else:
+            registered = ["project", "common", "user", "plugins"]
+
+        if prefix not in registered:
+            return (
+                f"[ERROR: Invalid namespace '{prefix}'. Knowledge paths must start with a registered mount: "
+                f"{registered} and must not contain '.md' extension. Example: 'common/react' or 'common/web/react']"
+            )
+        return None
+
+    def _get_orchestrator(self) -> Any | None:
+        """Obtain or lazily instantiate MakerCheckerOrchestrator if store is available."""
+        if self.orchestrator is not None:
+            return self.orchestrator
+        if self.store:
+            from libhippo.orchestration.maker_checker import MakerCheckerOrchestrator
+
+            self.orchestrator = MakerCheckerOrchestrator(store=self.store)
+            return self.orchestrator
+        return None
+
+    async def _get_candidate_paths(self) -> list[str]:
+        """Collect available knowledge paths from active drafts and mounted storage."""
+        if len(self.drafts) > 0:
+            return [p[:-3] if p.endswith(".md") else p for p in self.drafts.keys()]
+        if self.store:
+            raw = await self.store.catalog.get_random_suggestions(limit=2)
+            return [p[:-3] if p.endswith(".md") else p for p in raw]
+        return []
 
     async def read_knowledge(
         self,
-        path: str | None = None,
+        path: str,
         start_line: int = 1,
         end_line: int | None = None,
     ) -> str:
         """Read line-addressed slice of a draft document or existing store knowledge node."""
-        target_path = path or self.active_path
-        if not target_path and len(self.drafts) == 1:
-            target_path = next(iter(self.drafts.keys()))
+        if not path or not path.strip():
+            candidates = await self._get_candidate_paths()
+            sample = candidates[0] if candidates and len(candidates) else "common/<topic>"
+            return f"[ERROR: No knowledge path specified. Please specify path, e.g. path='{sample}']"
 
-        if not target_path:
-            return "[ERROR: No active draft. Please specify path='<namespace>/<file>.md']"
-
-        norm = self._normalize_path(target_path)
+        norm = self._normalize_path(path)
 
         # 1. Active draft in session
         if norm in self.drafts and self.drafts[norm].exists():
@@ -141,15 +207,27 @@ class KnowledgeDraftSession:
         # 2. Existing node in knowledge store
         elif self.store:
             try:
-                phys = self.store.mount_manager.resolve_physical_path(norm)
+                phys, _ = self.store.mount_manager.resolve_virtual_path(norm)
                 if phys.exists() and phys.is_file():
                     text = phys.read_text(encoding="utf-8")
                 else:
-                    return f"[ERROR: Knowledge path '{norm}' not found in drafts or knowledge store.]"
+                    candidates = await self._get_candidate_paths()
+                    matches = difflib.get_close_matches(norm, candidates, n=3, cutoff=0.4)
+                    if matches:
+                        suggest = f" Did you mean '{matches[0]}'?"
+                    else:
+                        suggest = ""
+                    return f"[ERROR: Knowledge path '{norm}' not found in drafts or knowledge store.{suggest}]"
             except Exception:
-                return f"[ERROR: Knowledge path '{norm}' not found in drafts or knowledge store.]"
+                candidates = await self._get_candidate_paths()
+                matches = difflib.get_close_matches(norm, candidates, n=3, cutoff=0.4)
+                suggest = f" Did you mean '{matches[0]}'?" if matches else ""
+                return f"[ERROR: Knowledge path '{norm}' not found in drafts or knowledge store.{suggest}]"
         else:
-            return f"[ERROR: Knowledge path '{norm}' not found in active drafts.]"
+            candidates = await self._get_candidate_paths()
+            matches = difflib.get_close_matches(norm, candidates, n=3, cutoff=0.4)
+            suggest = f" Did you mean '{matches[0]}'?" if matches else ""
+            return f"[ERROR: Knowledge path '{norm}' not found in active drafts.{suggest}]"
 
         lines = text.splitlines()
         total_lines = len(lines)
@@ -164,32 +242,32 @@ class KnowledgeDraftSession:
 
     async def write_knowledge(
         self,
+        path: str,
         content: str,
-        path: str | None = None,
         start_line: int | None = None,
         end_line: int | None = None,
         target: str | None = None,
     ) -> str:
         """Surgically edit or replace a draft document and return immediate sanity check results."""
-        target_path = path or self.active_path
-        if not target_path and len(self.drafts) == 1:
-            target_path = next(iter(self.drafts.keys()))
+        if not path or not path.strip():
+            return "[ERROR: No draft path specified. Please specify path='<namespace>/<name>']"
 
-        if not target_path:
-            return "[ERROR: No draft path specified. Please specify path='<namespace>/<name>.md']"
+        norm = self._normalize_path(path)
+        ns_err = self._validate_namespace(norm)
+        if ns_err:
+            return ns_err
 
-        norm = self._normalize_path(target_path)
         self.active_path = norm
 
         draft_file = self.drafts.get(norm)
         if not draft_file:
-            draft_file = self.drafts_dir / norm
+            draft_file = self.drafts_dir / f"{norm}.md"
             draft_file.parent.mkdir(parents=True, exist_ok=True)
             if not draft_file.exists():
                 existing_text = ""
                 if self.store:
                     try:
-                        phys = self.store.mount_manager.resolve_physical_path(norm)
+                        phys, _ = self.store.mount_manager.resolve_virtual_path(norm)
                         if phys.exists() and phys.is_file():
                             existing_text = phys.read_text(encoding="utf-8")
                     except Exception:
@@ -200,11 +278,17 @@ class KnowledgeDraftSession:
         current_text = draft_file.read_text(encoding="utf-8")
 
         # Edit logic: full replacement vs surgical string/line replacement
+        mod_start = 1
         if start_line is None and end_line is None and target is None:
             new_text = content
+            mod_start = 1
+            mod_end = len(new_text.splitlines())
         elif target is not None:
             if target not in current_text:
                 return f"[ERROR: Target string '{target[:80]}...' not found in draft '{norm}']"
+            prefix_before = current_text.split(target, 1)[0]
+            mod_start = len(prefix_before.splitlines()) or 1
+            mod_end = mod_start + len(content.splitlines())
             new_text = current_text.replace(target, content, 1)
         else:
             lines = current_text.splitlines()
@@ -212,6 +296,8 @@ class KnowledgeDraftSession:
             e_idx = end_line if end_line is not None else len(lines)
             new_lines = content.splitlines()
             lines[s_idx:e_idx] = new_lines
+            mod_start = s_idx + 1
+            mod_end = s_idx + len(new_lines)
             new_text = "\n".join(lines) + ("\n" if current_text.endswith("\n") or not current_text else "")
 
         draft_file.write_text(new_text, encoding="utf-8")
@@ -219,30 +305,32 @@ class KnowledgeDraftSession:
         # Run deterministic sanity checks immediately
         checks = run_draft_sanity_checks(new_text)
 
-        lines_count = len(new_text.splitlines())
-        status_label = "READY_TO_COMMIT" if checks["passed"] else "REQUIRES_REVISION"
-        fm = checks["frontmatter"]
-        fm_summary = (
-            f"title='{fm.get('title')}', v='{fm.get('version', '1.0.0')}'"
-            if fm
-            else "NONE"
-        )
+        lines_list = new_text.splitlines()
+        lines_count = len(lines_list)
+        res_lines = [f"Successfully updated draft '{norm}' ({lines_count} lines)."]
 
-        res_lines = [
-            f"Successfully updated draft '{norm}' ({lines_count} lines).",
-            "--- Deterministic Sanity Checks ---",
-            f"Frontmatter: {'PASS' if fm else 'FAIL'} ({fm_summary})",
-            f"Tokens: {checks['token_status']}",
-            f"Code Blocks: {checks['code_blocks']}",
-            f"Status: {status_label}",
-        ]
+        # If surgical edit, provide compact annotated context preview around modified lines
+        if target is not None or start_line is not None or end_line is not None:
+            p_start = max(1, mod_start - 2)
+            p_end = min(lines_count, mod_end + 2)
+            if p_start <= lines_count:
+                res_lines.append("--- Modified Section Preview ---")
+                preview_slice = lines_list[p_start - 1 : p_end]
+                res_lines.extend(f"{idx}: {l}" for idx, l in enumerate(preview_slice, start=p_start))
+
+        # Do NOT print verbose "PASS" logs. Only print diagnostic errors or warnings if any exist.
         if checks["errors"]:
+            res_lines.append("Status: REQUIRES_REVISION")
             res_lines.append("Errors:")
             res_lines.extend(f"- {e}" for e in checks["errors"])
-        if checks["warnings"]:
+        elif checks["warnings"]:
             res_lines.append("Warnings:")
             res_lines.extend(f"- {w}" for w in checks["warnings"])
+        else:
+            res_lines.append("Status: READY_TO_COMMIT")
 
+        if checks["errors"] or checks["warnings"]:
+            res_lines.append("Surgically modify to fix problems.")
         return "\n".join(res_lines)
 
     async def list_knowledge(self, path: str = ".", max_depth: int = 2) -> str:
@@ -251,7 +339,7 @@ class KnowledgeDraftSession:
         if self.store:
             output = await self.store.list_knowledge(path=path, max_depth=max_depth)
         else:
-            output = "knowledge/\n"
+            output = "[Knowledge Mounts]\n"
 
         if self.drafts:
             output += "\n[Active Session Drafts]\n"
@@ -261,16 +349,19 @@ class KnowledgeDraftSession:
 
     async def search_knowledge(
         self,
+        path: str,
         pattern: str = "*",
-        path: str = ".",
         content_pattern: str | None = None,
     ) -> str:
         """Fast lexical and content regex search across store knowledge and session drafts."""
+        if not path or not path.strip():
+            return "[ERROR: No search path specified. Please specify path, e.g. path='.' or path='common']"
+
         results: list[str] = []
         if self.store:
             store_res = await self.store.search_knowledge(
-                pattern=pattern,
                 path=path,
+                pattern=pattern,
                 content_pattern=content_pattern,
             )
             if store_res and store_res != "No matching knowledge documents found.":
@@ -302,6 +393,13 @@ class KnowledgeDraftSession:
     async def commit(self, path: str) -> dict[str, Any]:
         """Validate and commit a single draft to the Maker-Checker governance loop."""
         norm = self._normalize_path(path)
+        ns_err = self._validate_namespace(norm)
+        if ns_err:
+            return {
+                "status": "error",
+                "message": ns_err,
+            }
+
         if norm not in self.drafts or not self.drafts[norm].exists():
             return {
                 "status": "error",
@@ -313,16 +411,48 @@ class KnowledgeDraftSession:
         if not checks["passed"]:
             return {
                 "status": "error",
-                "message": f"Draft '{norm}' failed deterministic sanity checks.",
+                "message": f"Draft '{norm}' failed deterministic sanity checks. Surgically modify to fix.",
                 "errors": checks["errors"],
                 "warnings": checks["warnings"],
             }
 
+        orch = self._get_orchestrator()
+        if orch:
+            logger.info("Submitting draft '%s' to Maker-Checker governance loop", norm)
+            gov_res = await orch.run_governance(
+                candidate=content,
+                target_path=norm,
+            )
+            if gov_res.status in ("COMMITTED", "MERGED"):
+                self.drafts.pop(norm, None)
+                self.is_committed = len(self.drafts) == 0
+                self.last_commit_result = gov_res
+                return {
+                    "status": "committed",
+                    "path": norm,
+                    "verdict": gov_res.verdict,
+                    "message": gov_res.message,
+                    "remaining_drafts": list(self.drafts.keys()),
+                }
+            else:
+                errors = []
+                if gov_res.report:
+                    errors = gov_res.report.schema_errors + gov_res.report.content_errors
+                return {
+                    "status": "error",
+                    "path": norm,
+                    "verdict": gov_res.verdict,
+                    "message": gov_res.message or f"Commit failed (${gov_res.status}). Surgically modify to fix.",
+                    "errors": errors,
+                }
+
+        self.drafts.pop(norm, None)
+        self.is_committed = len(self.drafts) == 0
         return {
             "status": "ready",
             "path": norm,
-            "content": content,
             "checks": checks,
+            "remaining_drafts": list(self.drafts.keys()),
         }
 
     async def commit_all(self) -> dict[str, Any]:
@@ -337,6 +467,10 @@ class KnowledgeDraftSession:
         validated: dict[str, str] = {}
 
         for norm, draft_path in self.drafts.items():
+            ns_err = self._validate_namespace(norm)
+            if ns_err:
+                failed[norm] = [ns_err]
+                continue
             if not draft_path.exists():
                 failed[norm] = ["Draft file not found on disk."]
                 continue
@@ -350,13 +484,46 @@ class KnowledgeDraftSession:
         if failed:
             return {
                 "status": "error",
-                "message": f"{len(failed)} draft(s) failed deterministic sanity checks.",
+                "message": f"{len(failed)} draft(s) failed checks. Surgically modify to fix.",
                 "failed_drafts": failed,
             }
 
+        orch = self._get_orchestrator()
+        if orch:
+            committed_paths: list[str] = []
+            for norm, content in validated.items():
+                logger.info("Submitting draft '%s' to Maker-Checker governance loop", norm)
+                gov_res = await orch.run_governance(candidate=content, target_path=norm)
+                if gov_res.status in ("COMMITTED", "MERGED"):
+                    committed_paths.append(norm)
+                    self.drafts.pop(norm, None)
+                    self.last_commit_result = gov_res
+                else:
+                    errors = []
+                    if gov_res.report:
+                        errors = gov_res.report.schema_errors + gov_res.report.content_errors
+                    return {
+                        "status": "error",
+                        "path": norm,
+                        "verdict": gov_res.verdict,
+                        "message": gov_res.message or f"Commit failed ({gov_res.status}). Surgically modify to fix.",
+                        "errors": errors,
+                        "remaining_drafts": list(self.drafts.keys()),
+                    }
+            self.is_committed = len(self.drafts) == 0
+            return {
+                "status": "committed",
+                "committed_paths": committed_paths,
+                "remaining_drafts": list(self.drafts.keys()),
+            }
+
+        for norm in validated:
+            self.drafts.pop(norm, None)
+        self.is_committed = len(self.drafts) == 0
         return {
             "status": "ready",
-            "drafts": validated,
+            "drafts": list(validated.keys()),
+            "remaining_drafts": list(self.drafts.keys()),
         }
 
     async def run_command(self, command_line: str) -> dict[str, Any]:

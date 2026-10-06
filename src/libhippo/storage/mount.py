@@ -61,19 +61,25 @@ class MountManager:
         """Resolve a virtual namespaced path to a physical filesystem path and its MountConfig.
 
         Example:
-            "common/web/html.md" -> (Path("/path/to/common/web/html.md"), MountConfig(prefix="common", ...))
+            "common/web/html" -> (Path("/path/to/common/web/html.md"), MountConfig(prefix="common", ...))
         """
         clean = virtual_path.lstrip("/").replace("\\", "/")
-        if not clean.endswith(".md"):
-            clean = f"{clean}.md"
-
         parts = clean.split("/", 1)
         prefix = parts[0].lower()
+        if prefix.endswith(".md"):
+            prefix = prefix[:-3]
+
         subpath = parts[1] if len(parts) > 1 else ""
+        if subpath and not subpath.endswith(".md"):
+            subpath = f"{subpath}.md"
 
         if prefix in self._mounts:
             mount = self._mounts[prefix]
-            target_path = mount.physical_path / subpath if subpath else mount.physical_path / f"{prefix}.md"
+            if subpath:
+                target_path = mount.physical_path / subpath
+            else:
+                # Namespace root: prefer directory or root document
+                target_path = mount.physical_path if mount.physical_path.is_dir() else mount.physical_path / f"{prefix}.md"
             return target_path, mount
 
         if self.fallback_root:

@@ -21,6 +21,7 @@ from autogen_core.models import (
     FunctionExecutionResultMessage,
 )
 from openai import AsyncOpenAI
+from openai.lib._pydantic import to_strict_json_schema
 from pydantic import BaseModel
 import uuid
 
@@ -268,12 +269,14 @@ class OpenAIResponsesClient(ChatCompletionClient):
         if target is None:
             return
         if isinstance(target, type) and issubclass(target, BaseModel):
+            schema = to_strict_json_schema(target)
+
             req_kwargs["text"] = {
                 "format": {
                     "type": "json_schema",
                     "name": target.__name__,
                     "strict": True,
-                    "schema": target.model_json_schema(),
+                    "schema": schema,
                 }
             }
         elif isinstance(target, dict) and "type" in target:

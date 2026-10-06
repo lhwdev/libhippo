@@ -30,7 +30,9 @@ class AgentManager:
         orchestrator: MakerCheckerOrchestrator | None = None,
     ) -> None:
         self.store = store
-        self.curator = curator or CuratorAgent()
+        self.curator = curator or CuratorAgent(store=store)
+        if not getattr(self.curator, "store", None):
+            self.curator.store = store
         self.checker = checker or CheckerAgent()
         self.verifier = verifier or VerifierAgent(store=store)
         self.book_keeper = book_keeper or BookKeeperAgent(store=store)
@@ -40,6 +42,7 @@ class AgentManager:
             curator=self.curator,
             verifier=self.verifier,
         )
+        self.curator.orchestrator = self.orchestrator
         self._dispatcher: KnowledgeDispatcher | None = None
 
     def create_dispatcher(

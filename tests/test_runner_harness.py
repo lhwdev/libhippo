@@ -608,7 +608,7 @@ def test_harness_template_assembled_system_prompt(tmp_path: Path):
     assert "<tone_and_behavior>" in prompt
     assert "<tools:available>" in prompt
     assert "<tools:core_guidance>" in prompt
-    assert "<knowledge:format>" in prompt
+    assert "<knowledge:spec>" in prompt
 
     # Template variable substitution checks
     assert "my_project" in prompt

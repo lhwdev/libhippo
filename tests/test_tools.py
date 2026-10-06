@@ -40,7 +40,7 @@ async def test_read_and_search_tools(tmp_path):
     try:
         registry = ToolRegistry(store=populated_store)
         read_tool = registry.get_read_knowledge_tool()
-        search_tool = registry.get_search_knowledge_tool()
+        search_tool = registry.get_similarity_search_knowledge_tool()
 
         # Read summary
         summary = await read_tool("common/web/html/accessibility/aria_button.md", section="summary")
@@ -54,15 +54,16 @@ async def test_read_and_search_tools(tmp_path):
         # List knowledge hierarchy
         list_tool = registry.get_list_knowledge_tool()
         tree_res = await list_tool(path=".")
-        assert "knowledge/" in tree_res
+        assert "[Knowledge Mounts]" in tree_res
         assert "common/" in tree_res
 
         # Lexical search
-        lex_res = await search_tool(pattern="*aria_button*")
+        exact_search_tool = registry.get_exact_search_knowledge_tool()
+        lex_res = await exact_search_tool(path=".", pattern="*aria_button*")
         assert "common/web/html/accessibility/aria_button.md" in lex_res
 
         # Content regex search
-        content_res = await search_tool(pattern="*", content_pattern="preventDefault")
+        content_res = await exact_search_tool(path=".", pattern="*", content_pattern="preventDefault")
         assert "common/web/html/accessibility/aria_button.md" in content_res
         assert "preventDefault" in content_res
     finally:

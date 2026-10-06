@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import difflib
+from pathlib import Path
 from typing import Any
 
 from libhippo.runner.tools.base import BaseToolSuite, ToolExecutionError
@@ -15,12 +17,28 @@ class KnowledgeTools(BaseToolSuite):
 
     def __init__(
         self,
+        workspace_root: Path | None = None,
+        sandbox: Any = None,
+        project_manager: Any = None,
         *args: Any,
         store: KnowledgeStore | None = None,
         dispatcher: KnowledgeDispatcher | None = None,
         **kwargs: Any,
     ) -> None:
-        super().__init__(*args, **kwargs)
+        if workspace_root is not None and sandbox is not None and project_manager is not None:
+            super().__init__(
+                workspace_root=workspace_root,
+                sandbox=sandbox,
+                project_manager=project_manager,
+                *args,
+                **kwargs,
+            )
+        else:
+            self.workspace_root = workspace_root.resolve() if workspace_root else Path.cwd()
+            self.sandbox = sandbox
+            self.project_manager = project_manager
+            self.event_callback = kwargs.get("event_callback")
+            self._interactive_responses = {}
         self.store = store or (dispatcher.store if dispatcher else None)
         self.dispatcher = dispatcher
         self.harvest_queue: list[dict[str, Any]] = []
@@ -119,6 +137,72 @@ class KnowledgeTools(BaseToolSuite):
         except Exception as e:
             raise ToolExecutionError(f"modify_knowledge failed: {e}")
 
+    async def read_knowledge(
+        self,
+        path: str,
+        start_line: int = 1,
+        end_line: int | None = None,
+    ) -> dict[str, Any]:
+        """Read line-addressed slice of a knowledge document by path."""
+        if not self.store:
+            raise ToolExecutionError("No knowledge store available.")
+
+        await self.check_approval_if_needed(
+            "read_knowledge",
+            {"path": path, "start_line": start_line, "end_line": end_line},
+        )
+
+        norm = path.strip("/. ").replace("\\", "/")
+        if norm.endswith(".md"):
+            norm = norm[:-3]
+
+        text: str | None = None
+        try:
+            phys, _ = self.store.mount_manager.resolve_virtual_path(norm)
+            if phys.exists() and phys.is_file():
+                text = phys.read_text(encoding="utf-8")
+        except Exception:
+            pass
+
+        if text is None:
+            # Gather candidates for fuzzy diagnostic suggestion
+            candidates: set[str] = set()
+            for mount in self.store.mount_manager.get_all_mounts():
+                if mount.physical_path.exists():
+                    for md_file in mount.physical_path.rglob("*.md"):
+                        rel = md_file.relative_to(mount.physical_path).as_posix()
+                        if rel.endswith(".md"):
+                            rel = rel[:-3]
+                        candidates.add(f"{mount.namespace_prefix}/{rel}")
+
+            matches = difflib.get_close_matches(norm, sorted(candidates), n=3, cutoff=0.4)
+            suggest = f" Did you mean '{matches[0]}'?" if matches else ""
+            return {
+                "status": "not_found",
+                "path": norm,
+                "message": f"Knowledge path '{norm}' not found.{suggest}",
+            }
+
+        lines = text.splitlines()
+        total_lines = len(lines)
+        s_line = max(1, start_line)
+        e_line = min(total_lines, end_line) if end_line is not None else total_lines
+
+        if s_line > total_lines:
+            selected_content = ""
+        else:
+            selected = lines[s_line - 1 : e_line]
+            selected_content = "\n".join(f"{idx}: {line}" for idx, line in enumerate(selected, start=s_line))
+
+        return {
+            "status": "success",
+            "path": norm,
+            "total_lines": total_lines,
+            "start_line": s_line,
+            "end_line": e_line,
+            "content": selected_content,
+        }
+
     async def list_knowledge(
         self,
         path: str = ".",
@@ -143,7 +227,7 @@ class KnowledgeTools(BaseToolSuite):
             "search_knowledge",
             {"pattern": pattern, "path": path, "content_pattern": content_pattern},
         )
-        return await self.store.search_knowledge(pattern=pattern, path=path, content_pattern=content_pattern)
+        return await self.store.search_knowledge(path=path, pattern=pattern, content_pattern=content_pattern)
 
     def get_tool_definitions(self) -> dict[str, ToolDefinition]:
         """Return ToolDefinition schemas for knowledge subsystem operations."""
@@ -231,6 +315,21 @@ class KnowledgeTools(BaseToolSuite):
                     },
                 },
                 handler=self.search_knowledge,
+            )
+
+            defs["read_knowledge"] = ToolDefinition(
+                name="read_knowledge",
+                description="Read full or line-addressed slice of a knowledge document by path (e.g. 'common/react').",
+                parameters_schema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Virtual knowledge path without .md extension (e.g. 'common/react')"},
+                        "start_line": {"type": "integer", "default": 1, "description": "1-indexed start line"},
+                        "end_line": {"type": "integer", "description": "1-indexed end line (optional)"},
+                    },
+                    "required": ["path"],
+                },
+                handler=self.read_knowledge,
             )
 
         return defs

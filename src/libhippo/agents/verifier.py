@@ -8,7 +8,7 @@ from typing import Any
 
 from autogen_agentchat.agents import AssistantAgent
 from autogen_core.models import ChatCompletionClient
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from libhippo.agents.base import BaseHippoAgent
 from libhippo.agents.prompts import get_agent_system_prompt
@@ -22,6 +22,8 @@ from libhippo.tools.registry import ToolRegistry
 
 class VerifierDirective(BaseModel):
     """Structured response format for Verifier escalation resolution."""
+
+    model_config = ConfigDict(extra="forbid")
 
     status: str = Field(
         default="REFACTOR_PLANNED",
@@ -62,7 +64,7 @@ class VerifierAgent(AssistantAgent, BaseHippoAgent):
                 reg.get_modify_knowledge_tool(),
                 reg.get_read_knowledge_tool(),
                 reg.get_list_knowledge_tool(),
-                reg.get_search_knowledge_tool(),
+                reg.get_exact_search_knowledge_tool(),
                 reg.get_write_knowledge_tool(),
                 reg.get_run_command_tool(),
             ]

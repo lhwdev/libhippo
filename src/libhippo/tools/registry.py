@@ -47,55 +47,58 @@ class ToolRegistry:
 
         return list_knowledge
 
-    def get_search_knowledge_tool(self) -> Callable[..., Any]:
-        """Tool: search_knowledge(pattern='*', path='.', content_pattern=None, query=None)."""
+    def get_similarity_search_knowledge_tool(self) -> Callable[..., Any]:
+        """{ query: string, namespace?: string = null, top_k: int = 5 }"""
         async def search_knowledge(
-            pattern: str = "*",
-            path: str = ".",
-            content_pattern: str | None = None,
-            query: str | None = None,
+            query: str,
             namespace: str | None = None,
             top_k: int = 5,
             **kwargs: Any,
         ) -> Any:
-            # If called as semantic query search (legacy / BookKeeper candidate search)
-            if query is not None and pattern == "*" and content_pattern is None and path == ".":
-                results = await self.store.search(query=query, namespace=namespace, top_k=top_k)
-                return [
-                    {
-                        "path": r.path,
-                        "title": r.title,
-                        "namespace": r.namespace,
-                        "snippet": r.snippet,
-                        "confidence": r.confidence,
-                        "importance": r.importance,
-                    }
-                    for r in results
-                ]
+            results = await self.store.search(query=query, namespace=namespace, top_k=top_k)
+            return [
+                {
+                    "path": r.path,
+                    "title": r.title,
+                    "namespace": r.namespace,
+                    "snippet": r.snippet,
+                    "confidence": r.confidence,
+                    "importance": r.importance,
+                }
+                for r in results
+            ]
+        return search_knowledge
+
+    def get_exact_search_knowledge_tool(self) -> Callable[..., Any]:
+        """{ path: string, pattern: string = "*", content_pattern?: string }"""
+        async def search_knowledge(
+            path: str = ".",
+            pattern: str = "*",
+            content_pattern: str | None = None,
+            query: str | None = None,
+        ) -> Any:
             effective_pattern = pattern if pattern != "*" else (query or "*")
             return await self.store.search_knowledge(
-                pattern=effective_pattern,
                 path=path,
+                pattern=effective_pattern,
                 content_pattern=content_pattern,
             )
 
         return search_knowledge
 
     def get_read_knowledge_tool(self) -> Callable[..., Any]:
-        """Tool: read_knowledge(path: str, start_line: int = 1, end_line: int | None = None)."""
+        """{ path: string, start_line: int = 1, end_line?: int }"""
         async def read_knowledge(
             path: str | None = None,
-            file_path: str | None = None,
             start_line: int = 1,
             end_line: int | None = None,
             section: SectionType = "full",
         ) -> str:
-            target = path or file_path
-            if not target:
+            if not path:
                 return "[ERROR: Knowledge path must be specified]"
-            content = await self.store.read_section(target, section=section)
+            content = await self.store.read_section(path, section=section)
             if content is None:
-                return f"[ERROR: Knowledge path '{target}' not found]"
+                return f"[ERROR: Knowledge path '{path}' not found]"
             if start_line > 1 or end_line is not None:
                 lines = content.splitlines()
                 s = max(1, start_line)
@@ -116,7 +119,7 @@ class ToolRegistry:
             target: str | None = None,
         ) -> str:
             try:
-                phys = self.store.mount_manager.resolve_physical_path(path)
+                phys = self.store.mount_manager.resolve_virtual_path(path)[0]
             except Exception:
                 phys = self.store.root_dir / path.strip("/")
             current_text = phys.read_text(encoding="utf-8") if phys.exists() and phys.is_file() else ""

@@ -23,14 +23,14 @@ You are equipped with tools to inspect and refactor the knowledge base:
      - `quarantine`: Move deprecated knowledge to `deprecated/`.
      - `create_hub`: Establish a new directory hub with index navigation.
 
-2. `read_knowledge(path=None, start_line=1, end_line=None)`:
+2. `read_knowledge(path, start_line=1, end_line?)`:
    - Read knowledge nodes or draft files with line-addressed slices.
 
-3. `write_knowledge(content, path=None, start_line=None, end_line=None, target=None)`:
+3. `write_knowledge(path, content, start_line?, end_line?, target?)`:
    - Draft revised content and run sanity checks before executing mutations.
 
 4. `list_knowledge(path=".", max_depth=2)`: Inspect hierarchical tree of existing knowledge.
-5. `search_knowledge(pattern="*", path=".", content_pattern=None)`: Search existing knowledge nodes.
+5. `search_knowledge(path, pattern="*", content_pattern?)`: Search existing knowledge nodes.
 6. `run_command`: Run tests, scripts, or verifications in the sandboxed workspace.
 </tools:verifier_guidance>
 

@@ -30,7 +30,7 @@ In most time, read `architecture.md` first.
 ### Python Rules
 
 - Never put import in the middle of code block, unless dynamic import is needed.
-- Do not overuse `inspect`; just search docs on web, or read source.
+- Do not overuse `inspect` or executing scratch codes; just search docs on web, or read source.
 
 ### Planning Rules
 

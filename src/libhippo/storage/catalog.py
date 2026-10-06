@@ -9,7 +9,6 @@ from typing import Any, Self
 
 import aiosqlite
 import aiosqlite.core
-from threading import Thread
 
 if not getattr(aiosqlite.core, "_libhippo_daemon_patched", False):
     _orig_thread = aiosqlite.core.Thread
@@ -345,6 +344,15 @@ class KnowledgeCatalog:
         async with db.execute(sql, params) as cursor:
             rows = await cursor.fetchall()
             return [self._format_row(row) for row in rows]
+
+    async def get_random_suggestions(self, limit=2) -> list[str]:
+        sql = "SELECT path FROM catalog_entries ORDER BY RANDOM() LIMIT ?"
+        params = [limit]
+
+        db = await self._get_conn()
+        async with db.execute(sql, params) as cursor:
+            rows = await cursor.fetchall()
+            return [row["path"] for row in rows]
 
     async def update_freshness(
         self,

@@ -43,8 +43,8 @@ class KnowledgeDispatcher:
         curator: Any | None = None,
         checker: Any | None = None,
         orchestrator: Any | None = None,
-        threshold_low: float = 0.70,
-        threshold_medium: float = 0.82,
+        threshold_low: float = 0.50,
+        threshold_medium: float = 0.70,
         on_event: Any | None = None,
     ) -> None:
         self.store = store

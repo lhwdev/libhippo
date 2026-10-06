@@ -84,10 +84,13 @@ The function calling API provides full parameter schemas for all tools. Below ar
 ## Knowledge Drafting & Harvesting
 
 Use these tools ONLY while drafting or updating knowledge nodes:
-- `write_knowledge(content, path?, start_line?, end_line?, target?)`: Create or surgically edit draft nodes (e.g. `project/...md`, `common/...md`). Target 500–1,000 tokens. When updating existing documents, use surgical edits (`target` or `start_line`/`end_line`) rather than full file replacements.
-- `read_knowledge(path?, start_line=1, end_line?)`: Read line-addressed slices of existing knowledge or session drafts.
+- `write_knowledge(path, content, start_line?, end_line?, target?)`: Create or surgically edit draft nodes (e.g. `project/...`, `common/...`). Knowledge paths must not include `.md`. Target 500–1,000 tokens.
+  - Prefer `target` (unique substring replacement) for surgical updates; it is immune to line-number shifts.
+  - When modifying by `start_line` / `end_line`, ALWAYS inspect lines with `read_knowledge` first to confirm line numbers.
+  - When `version_check` is needed, use canonical package detectors: `npm:<pkg>`, `pypi:<pkg>`, `github:<owner>/<repo>`, `crates:<crate>`, `scrape:<url>#<regex>`, or `terminal:<cmd>`.
+- `read_knowledge(path, start_line=1, end_line?)`: Read line-addressed slices of existing knowledge or session drafts.
 - `list_knowledge(path=".", max_depth=2)`: Browse existing knowledge directory hierarchies.
-- `search_knowledge(pattern="*", path=".", content_pattern?)`: Fast lexical or regex search across existing knowledge nodes.
+- `search_knowledge(path, pattern="*", content_pattern?)`: Fast lexical or regex search across existing knowledge nodes.
 - `commit(path)`: Validate and submit a specific draft.
 - `commit_all()`: Validate and submit all open session drafts at once.
 </tools:harvest_guidance>
@@ -123,87 +126,5 @@ After tool invocation which yields long, bulky output, you SHOULD use `shorten_t
 
 </tools:core_guidance>
 
-<knowledge:format>
-# Knowledge Document Format & Structure
-Knowledge nodes are valid GitHub-Flavored Markdown files with strict YAML frontmatter.
-
-## Schema Specification
-```yaml
----
-title: "<Concise, descriptive title>"
-version: "<optional version string, defaults to 1.0.0>"
-source: ["<canonical doc url>"]
-tags: ["<tag1>", "<tag2>"]
-related: ["<optional relative or virtual path>"]
----
-```
-
-## Document Scope & Hub-and-Leaf Architecture
-- **Self-Contained Content**: A document directly specifies about itself (rules, conventions, code patterns). Do not partition a single document into artificial coarse and fine sections.
-- **Hub & Leaf Separation**:
-  - **Leaf Node** (`<topic>/<subtopic>.md`): Encapsulates a focused, concrete rule, library quirk, edge case, or pattern.
-  - **Hub Node** (`<topic>.md` accompanied by directory `<topic>/`): When a topic is broad or composite, the parent document acts as a Hub. It provides a concise domain overview and indexes child leaves; its detailed aspects are split into separate child knowledge documents rather than accumulated in the Hub.
-
-## Examples
-
-<knowledge:example_leaf path="project/autogen/create_result.md">
----
-title: "AutoGen CreateResult Dynamic Attribute Restriction"
-tags: ["autogen", "pydantic", "telemetry"]
----
-
-AutoGen 0.4 `CreateResult` is a strict Pydantic model and forbids dynamic attribute assignment (`setattr`). Store custom cache/telemetry metrics on `RequestUsage` dataclass instead.
-
-### Rules & Edge Cases
-- Calling `setattr(result, "cached_tokens", count)` on `CreateResult` raises `ValueError: "CreateResult" object has no field "cached_tokens"`.
-- `RequestUsage` is a standard dataclass that supports arbitrary dynamic attributes:
-  ```python
-  setattr(usage, "cached_tokens", cached_tokens)
-  setattr(usage, "reasoning_tokens", reasoning_tokens)
-  ```
-- For `CreateResult`, use the built-in boolean field `result.cached = (cached_tokens > 0)`.
-</knowledge:example_leaf>
-
-<knowledge:example_hub path="common/web/react.md">
----
-title: "React Core Architecture"
-tags: ["react", "frontend", "javascript", "ui", "declarative"]
-related:
-  - "common/web/react/form.md"
----
-
-React is a JavaScript library for building user interfaces (UIs), especially interactive web applications.
-
-React applications follow functional component architecture with unidirectional data flow and immutable state updates.
-
-## Core Architecture
-- **Pure Rendering**: Components must be pure functions of props and state; side effects belong strictly in event handlers or lifecycle effects.
-- **State Management**: Prefer local component state and composition over monolithic global stores; always treat state as immutable.
-- **Subsystem Specialization**: Specific hooks, version-specific APIs, and form handling primitives are documented in dedicated child knowledges.
-</knowledge:example_hub>
-
-<knowledge:example_leaf path="common/web/react/form.md">
----
-title: "React Form Handling & Actions"
-tags: ["react", "forms", "actions", "useActionState", "useFormStatus", "useOptimistic"]
----
-
-Modern React form handling emphasizes action functions, native form submissions, and declarative state hooks.
-
-### Form Actions & `useActionState`
-- Wire async actions directly to `<form action={formAction}>`.
-- React 19 replaces `useFormState` (deprecated) with `useActionState` from `"react"`:
-  ```tsx
-  const [state, formAction, isPending] = useActionState(actionFn, initialState);
-  ```
-  `isPending` is provided natively in the tuple without extra `useTransition`.
-
-...
-
-### Pending Status & Optimistic UI
-- `useFormStatus`: call within child form controls to access parent `<form>` pending status without prop-drilling.
-- `useOptimistic`: apply immediate client-side UI updates ahead of server responses.
-</knowledge:example_leaf>
-
-</knowledge:format>
+{{ common_knowledge_spec }}
 

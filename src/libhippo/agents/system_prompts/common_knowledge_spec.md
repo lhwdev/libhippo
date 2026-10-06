@@ -40,7 +40,7 @@ React applications follow functional component architecture with unidirectional 
 1. `title`: Required concise, unambiguous topic title.
 2. `version`: Optional version string of the documented technology or API (defaults to "1.0.0").
 3. `source`: Recommended list of authoritative, canonical URLs. Ingest only canonical documentation; omit blogs, forums, or aggregators.
-4. `version_check`: Optional package or command version detector (e.g. `npm:react`, `pypi:fastapi`).
+4. `version_check`: Optional package or command version detector: `npm:<pkg>`, `pypi:<pkg>`, `github:<owner>/<repo>`, `crates:<crate>`, `scrape:<url>#<regex>`, or `terminal:<cmd>`; i.e. `npm:react`, `pypi:numpy`. Avoid arbitrary or unparseable strings.
 5. `tags`: Optional list of keyword tags for discoverability.
 6. `related`: Optional list of related knowledge document paths.
 

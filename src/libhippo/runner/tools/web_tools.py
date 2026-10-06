@@ -16,7 +16,10 @@ class WebTools(BaseToolSuite):
         await self.check_approval_if_needed("search_web", {"query": query, "domain": domain})
         effective_query = f"{query} site:{domain}" if domain else query
         try:
-            from duckduckgo_search import DDGS  # type: ignore
+            try:
+                from ddgs import DDGS
+            except ImportError:
+                from duckduckgo_search import DDGS  # type: ignore
 
             with DDGS() as ddgs:
                 results = list(ddgs.text(effective_query, max_results=5))

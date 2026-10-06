@@ -8,10 +8,15 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import io
 import logging
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
+
+from rich.console import Console
+from rich.text import Text
 
 from libhippo.agents.checker import CheckerAgent
 from libhippo.agents.curator import CuratorAgent
@@ -127,6 +132,10 @@ class MakerCheckerOrchestrator:
         self.checker = checker or CheckerAgent()
         self.curator = curator
         self.verifier = verifier
+        if self.curator:
+            self.curator.orchestrator = self
+            if not getattr(self.curator, "store", None):
+                self.curator.store = store
         self.context_manager = context_manager or RefactoringContextManager()
         self.on_event = on_event
 
@@ -134,6 +143,25 @@ class MakerCheckerOrchestrator:
         """Emit real-time observability event to stream and UI."""
         if not event.timestamp:
             event.timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+        summary = event.output_summary or event.input_summary or ""
+
+        status_style = "bold not dim green" if event.status in ("PASS", "READY", "COMMITTED", "MERGED") else (
+            "bold not dim red" if event.status in ("FAIL", "REJECTED", "ERROR") else "bold not dim cyan"
+        )
+        evt_t = Text("[", style="dim")
+        evt_t.append(event.timestamp, style="dim cyan")
+        evt_t.append("] ", style="dim")
+        evt_t.append(event.agent, style="bold not dim magenta")
+        evt_t.append(f" {event.action} ", style="yellow")
+        evt_t.append(f"({event.status})", style=status_style)
+        if summary:
+            evt_t.append(": ", style="dim")
+            evt_t.append(summary, style="dim")
+
+        buf = io.StringIO()
+        c = Console(file=buf, force_terminal=True, color_system="standard", width=1000, soft_wrap=True)
+        c.print(evt_t)
+        logger.info(buf.getvalue().rstrip("\n"))
         cb = on_event or self.on_event
         if cb:
             try:
@@ -636,6 +664,9 @@ class MakerCheckerOrchestrator:
             target_path=target_path,
             context=context,
         )
+
+        if curated.get("gov_result"):
+            return curated["gov_result"]
 
         tokens = self.checker.count_tokens(curated["draft"])
         await self._emit(
