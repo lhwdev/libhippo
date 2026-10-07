@@ -1,5 +1,7 @@
 # LibHippo Architecture
 
+> This is summary to other documents; all text should be kept short and concise.
+
 LibHippo is an autonomous coding agent framework built on AutoGen 0.4. It decouples into two core pillars:
 
 1. **[Knowledge Management Subsystem](architecture_knowledge.md)** (`libhippo.storage`, `libhippo.tools`, `libhippo.agents`): General-purpose, permanent knowledge library for LLM.
@@ -21,14 +23,14 @@ Maintains living, audited engineering knowledge across agent sessions.
   - Automated Freshness Checker: SQLite-tracked `last_checked_at` and `freshness_status` without git churn; zero-token deterministic registry/terminal checking; bi-directional parent/child cascading.
 - **3-Tier Adaptive Retrieval (`query_knowledge`)**:
   - `effort=low`: Vector/FTS search ($\text{confidence} \ge \tau_{\text{low}}$, defined by `DEFAULT_THRESHOLD_LOW`). Returns `content` on hit; fails fast without LLM calls on miss.
-  - `effort=medium`: Vector search ($\text{confidence} \ge \tau_{\text{med}}$, defined by `DEFAULT_THRESHOLD_MEDIUM`, with title match boost), escalates to stateless `BookKeeperAgent` lookup on miss.
+  - `effort=medium`: Vector search guarded by `BookKeeperAgent` (TypeSafe Jev) to prevent coarseness mismatches; escalates to Curator on `MISS:GAP`.
   - `effort=high`: Broad vector seed + deep `BookKeeperAgent` exploration. Falls back to web research if criticality is mandatory.
   - `criticality`: `mandatory` (obligatory curation on miss), `preferred` (fallback to model weights, 0 web calls), `optional` (fail fast).
   - **Staleness Routing**: `optional`/`low` (No Fetch with advisory), `preferred` (Stale-While-Revalidate in background), `mandatory` + `high` (Wait for Latest). Forced updates centralized in `modify_knowledge(action="revalidate")`.
 
 - **Agents Orchestration**: `GraphFlow`
   - `TaskSolverAgent` is related to general agent harness.
-  - `BookKeeperAgent` Performs advanced search if fast-path `query_knowledge` fails, extracts search keywords to improve future retrieval confidence (persisted to frontmatter `tags` and vector `#keywords`), and returns full document `content`.
+  - `BookKeeperAgent`: Powered by Jev, inspects retrieval candidate, triggers `CuratorAgent` on `MISS:GAP`, and asynchronously maintains decayed vector search aliases.
   - **Maker-Checker Governance Loop (`libhippo.orchestration.maker_checker`)**
 
     1. `CuratorAgent` as maker generates candidate markdown drafts from web specifications upon mandatory retrieval misses.
@@ -54,7 +56,7 @@ Provides an execution runtime for autonomous software engineering tasks.
   - **Filesystem**: `read_file` (windowed, max 800 lines), `write_file` (targeted line/string replace), `overwrite_file`, `delete_file`.
   - **Code Exploration**: Pure Python `search_file` (hierarchical `.gitignore` parsing) and `list_dir`.
   - **Terminal & Tasks**: Sandboxed `run_command` and background `manage_task` execution.
-  - **Knowledge**: `query_knowledge` (mandatory retrieval before scaffolding/modifications), `record_learning` (explicit learning queues), and `modify_knowledge`.
+  - **Knowledge**: `query_knowledge` (mandatory retrieval) and `refine_knowledge`, `record_learning` (learning queues), and `modify_knowledge`.
   - **Subagents**: `invoke_subagent`, `shorten_tool_output`, and `manage_subagents` for parallel delegation and LLM-driven output shortening.
   - **User Interaction**: Interactive `ask_question` modal and ambient `get_status`.
 

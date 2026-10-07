@@ -16,7 +16,7 @@ Namespace = Literal["common", "user", "project", "plugins"]
 NodeStatus = Literal["active", "deprecated", "needs_review"]
 NodeNature = Literal["foundation", "critical_rule", "transient_tip"]
 
-MAX_TAGS = 10
+MAX_TAGS = 8
 
 
 def create_yaml_parser() -> YAML:

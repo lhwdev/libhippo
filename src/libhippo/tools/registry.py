@@ -92,12 +92,22 @@ class ToolRegistry:
             path: str | None = None,
             start_line: int = 1,
             end_line: int | None = None,
+            section: str | None = None,
+            **kwargs: Any,
         ) -> str:
             if not path:
                 return "[ERROR: Knowledge path must be specified]"
             content = await self.store.read_knowledge(path)
             if content is None:
                 return f"[ERROR: Knowledge path '{path}' not found]"
+            if section:
+                from libhippo.storage.store import extract_sections
+
+                summary_sec, rules_sec = extract_sections(content)
+                if section == "summary":
+                    return summary_sec
+                if section == "rules":
+                    return rules_sec
             if start_line > 1 or end_line is not None:
                 lines = content.splitlines()
                 s = max(1, start_line)

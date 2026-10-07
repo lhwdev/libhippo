@@ -104,24 +104,27 @@ class KnowledgeDispatcher:
                     source="fast_path",
                 )
                 return await self._apply_staleness_routing(res, effort="medium", criticality=criticality)
+
             # Below medium threshold -> escalate to BookKeeperAgent if available and matches exist
             if self.book_keeper and matches:
                 bk_res = await self._invoke_bookkeeper(query, candidates=matches, criticality=criticality)
                 if bk_res.status == "HIT":
                     return await self._apply_staleness_routing(bk_res, effort="medium", criticality=criticality)
+                return await self._handle_miss_async(query, effort="medium", criticality=criticality)
 
             # BookKeeper missed or not provided
             return await self._handle_miss_async(query, effort="medium", criticality=criticality)
 
-        # 3. High Effort Tier: Vector seed match + deep BookKeeper exploration
+        # 3. High Effort Tier: Deep BookKeeper exploration
         if effort == "high":
             matches = await self.store.search(query=query, top_k=5)
             if self.book_keeper and matches:
                 bk_res = await self._invoke_bookkeeper(query, candidates=matches, criticality=criticality)
                 if bk_res.status == "HIT":
                     return await self._apply_staleness_routing(bk_res, effort="high", criticality=criticality)
+                return await self._handle_miss_async(query, effort="high", criticality=criticality)
 
-            # Direct fallback to top vector match if good confidence
+            # Fallback to top vector match only if no BookKeeper is configured
             if matches and matches[0].confidence >= self.threshold_low:
                 top = matches[0]
                 full_content = await self.store.read_knowledge(top.path) or top.content
@@ -360,20 +363,17 @@ class KnowledgeDispatcher:
                 hit_path = bk_response.get("path")
                 full_content = ""
                 if hit_path and status_tag == "HIT":
-                    # Boost future search confidence for this query and keywords
                     keywords = list(bk_response.get("keywords") or [])
                     remove_tags = list(bk_response.get("remove_tags") or [])
-                    clean_q = query.strip()
-                    if clean_q and clean_q not in keywords:
-                        keywords.append(clean_q)
-                    try:
-                        await self.store.improve_search_confidence(
-                            hit_path,
-                            keywords=keywords,
-                            remove_tags=remove_tags,
-                        )
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning(f"Failed to improve search confidence for {hit_path}: {e}")
+                    if keywords or remove_tags:
+                        try:
+                            await self.store.improve_search_confidence(
+                                hit_path,
+                                keywords=keywords,
+                                remove_tags=remove_tags,
+                            )
+                        except Exception as e:  # noqa: BLE001
+                            logger.warning(f"Failed to improve search confidence for {hit_path}: {e}")
                     full_content = await self.store.read_knowledge(hit_path) or ""
 
                 return KnowledgeRetrievalResult(

@@ -582,6 +582,12 @@ class KnowledgeStore:
         await self.save_node(path, candidate.to_markdown(), sync_index=True)
         return True
 
+    async def record_search_alias(self, path: str, query: str, decay: float = 0.80) -> None:
+        """Update the decayed search alias vector centroid without mutating markdown frontmatter."""
+        if not self._initialized:
+            await self.initialize()
+        self.vector_store.update_alias_centroid(path=path, query=query, decay=decay)
+
     async def modify_knowledge(
         self,
         action: KnowledgeAction,

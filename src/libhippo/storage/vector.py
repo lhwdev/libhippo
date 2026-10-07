@@ -77,6 +77,20 @@ class VectorKnowledgeStore:
         rules: str = "",
     ) -> None:
         """Upsert knowledge chunks (coarse summary and fine rules) into vector store."""
+        # Capture any existing search alias chunk before deleting
+        alias_id = f"{candidate.path}#search_alias"
+        existing_alias = None
+        try:
+            res = self.collection.get(ids=[alias_id], include=["embeddings", "metadatas", "documents"])
+            if res and res["ids"] and len(res.get("embeddings") or []) > 0:
+                existing_alias = {
+                    "embeddings": res["embeddings"],
+                    "metadatas": res["metadatas"],
+                    "documents": res["documents"],
+                }
+        except Exception:
+            pass
+
         # Remove any existing chunks for this path first
         self.delete(candidate.path)
         self.mutation_count += 1
@@ -138,6 +152,71 @@ class VectorKnowledgeStore:
                 documents=documents,
                 metadatas=metadatas,
             )
+
+        if existing_alias and existing_alias.get("embeddings"):
+            try:
+                self.collection.upsert(
+                    ids=[alias_id],
+                    embeddings=existing_alias["embeddings"],
+                    documents=existing_alias.get("documents") or ["Search Alias Centroid"],
+                    metadatas=existing_alias.get("metadatas") or [{"path": candidate.path, "section": "search_alias"}],
+                )
+            except Exception:
+                pass
+
+    def update_alias_centroid(
+        self,
+        path: str,
+        query: str,
+        decay: float = 0.80,
+    ) -> None:
+        """Update the decayed search alias vector centroid for a document in ChromaDB."""
+        clean_q = query.strip()
+        if not clean_q:
+            return
+
+        embed_fn = getattr(self.collection, "_embedding_function", None)
+        if not embed_fn:
+            return
+
+        try:
+            q_emb_raw = embed_fn([clean_q])
+            if not q_emb_raw or not q_emb_raw[0]:
+                return
+        except Exception:
+            return
+
+        import numpy as np
+
+        q_emb = np.array(q_emb_raw[0], dtype=float)
+        alias_id = f"{path}#search_alias"
+
+        try:
+            existing = self.collection.get(ids=[alias_id], include=["embeddings", "metadatas"])
+        except Exception:
+            existing = None
+
+        if existing and existing.get("ids") and len(existing.get("embeddings") or []) > 0:
+            old_emb = np.array(existing["embeddings"][0], dtype=float)
+            new_emb = decay * old_emb + (1.0 - decay) * q_emb
+            norm = np.linalg.norm(new_emb)
+            new_emb = (new_emb / norm if norm > 0 else new_emb).tolist()
+            hit_count = (existing["metadatas"][0] if existing.get("metadatas") else {}).get("hit_count", 1) + 1
+        else:
+            norm = np.linalg.norm(q_emb)
+            new_emb = (q_emb / norm if norm > 0 else q_emb).tolist()
+            hit_count = 1
+
+        self.collection.upsert(
+            ids=[alias_id],
+            embeddings=[new_emb],
+            documents=[f"Search Alias Centroid: {clean_q}"],
+            metadatas=[{
+                "path": path,
+                "section": "search_alias",
+                "hit_count": hit_count,
+            }],
+        )
 
     def delete(self, path: str) -> None:
         """Delete all chunks belonging to a given knowledge path."""
@@ -213,7 +292,7 @@ class VectorKnowledgeStore:
 
             if section == "title":
                 entry["title_sim"] = max(entry["title_sim"] or 0.0, cosine_sim)
-            elif section in ("tag", "keywords"):
+            elif section in ("tag", "keywords", "search_alias"):
                 entry["tag_sim"] = max(entry["tag_sim"] or 0.0, cosine_sim)
             elif section in ("summary", "rules", "full"):
                 if entry["content_sim"] is None or cosine_sim > entry["content_sim"]:
@@ -244,6 +323,10 @@ class VectorKnowledgeStore:
                 active_weights += w_tag
 
             combined_sim = (weighted_score / active_weights) if active_weights > 0 else (data["best_sim"] if data["best_sim"] >= 0 else 0.0)
+            if title_sim is not None and title_sim >= 0.85:
+                combined_sim = max(combined_sim, title_sim * 0.95)
+            if tag_sim is not None and tag_sim >= 0.85:
+                combined_sim = max(combined_sim, tag_sim * 0.90)
 
             importance = data["importance"]
             confidence = min(1.0, round((1.0 - alpha) * combined_sim + alpha * importance, 4))

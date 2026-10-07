@@ -68,6 +68,9 @@ class KnowledgeTools(BaseToolSuite):
         query: str,
         effort: str = "medium",
         criticality: str = "preferred",
+        refine_previous: bool = False,
+        feedback: str | None = None,
+        rejected_path: str | None = None,
     ) -> dict[str, Any]:
         """Bridge query_knowledge into the harness using 3-tier adaptive retrieval."""
         if not self.dispatcher and not self.store:
@@ -78,14 +81,29 @@ class KnowledgeTools(BaseToolSuite):
             {"query": query, "effort": effort, "criticality": criticality},
         )
 
+        # Compact previous query output in memory if this is an explicit refinement
+        if refine_previous:
+            mem = getattr(self, "memory", None)
+            if mem:
+                prev = mem.get_last_tool_output("query_knowledge")
+                if prev and not prev.content.startswith("[Superseded:"):
+                    mem.replace_tool_output(
+                        f"[Superseded: previous query_knowledge returned broad overview; refined to '{query}' below]",
+                        tool_name="query_knowledge",
+                    )
+
         if self.dispatcher:
             res = await self.dispatcher.query_knowledge(query=query, effort=effort, criticality=criticality)  # type: ignore
+            hint = ""
+            if res.status == "HIT" and res.confidence < 0.90:
+                hint = f"\n\n[Hint: If this document is too broad or you need a deeper subtopic leaf, invoke refine_knowledge(feedback='too_broad', query='{query} <subtopic>').]"
+
             return {
                 "status": res.status,
                 "query": query,
                 "path": res.path,
                 "title": res.title,
-                "content": res.content,
+                "content": f"{res.content}{hint}" if res.content else "",
                 "confidence": res.confidence,
                 "effort_tier": res.effort_tier,
                 "criticality": res.criticality,
@@ -102,6 +120,33 @@ class KnowledgeTools(BaseToolSuite):
                 ],
             }
         return {"status": "error", "message": "No knowledge store or dispatcher available"}
+
+    async def refine_knowledge(
+        self,
+        feedback: str,
+        query: str,
+        rejected_path: str | None = None,
+        effort: str = "medium",
+        criticality: str = "preferred",
+    ) -> dict[str, Any]:
+        """Refine a prior query_knowledge result that was too broad or in the wrong direction."""
+        mem = getattr(self, "memory", None)
+        if mem:
+            prev = mem.get_last_tool_output("query_knowledge")
+            if prev and not prev.content.startswith("[Superseded:"):
+                mem.replace_tool_output(
+                    f"[Superseded: previous query_knowledge returned broad overview; refined to '{query}' below]",
+                    tool_name="query_knowledge",
+                )
+
+        return await self.query_knowledge(
+            query=query,
+            effort=effort,
+            criticality=criticality,
+            refine_previous=True,
+            feedback=feedback,
+            rejected_path=rejected_path,
+        )
 
     async def modify_knowledge(
         self,
@@ -258,10 +303,31 @@ class KnowledgeTools(BaseToolSuite):
                         "query": {"type": "string", "description": "Unambiguous, self-contained search query"},
                         "effort": {"type": "string", "enum": ["low", "medium", "high"], "default": "medium"},
                         "criticality": {"type": "string", "enum": ["mandatory", "preferred", "optional"], "default": "preferred"},
+                        "refine_previous": {"type": "boolean", "default": False, "description": "Set true to refine/specialize a previous query result"},
+                        "feedback": {"type": "string", "enum": ["too_broad", "too_narrow", "wrong_direction", "more_details"], "description": "Reason previous match was insufficient"},
                     },
                     "required": ["query"],
                 },
                 handler=self.query_knowledge,
+            )
+
+            defs["refine_knowledge"] = ToolDefinition(
+                name="refine_knowledge",
+                description="Refine or specialize a prior query_knowledge match that was too broad, too narrow, or missing deep details.",
+                parameters_schema={
+                    "type": "object",
+                    "properties": {
+                        "feedback": {
+                            "type": "string",
+                            "enum": ["too_broad", "too_narrow", "wrong_direction", "more_details"],
+                            "description": "Why the previous knowledge match was insufficient",
+                        },
+                        "query": {"type": "string", "description": "Refined or specialized query targeting the specific child concept"},
+                        "rejected_path": {"type": "string", "description": "Optional virtual path of the previous overly broad candidate"},
+                    },
+                    "required": ["feedback", "query"],
+                },
+                handler=self.refine_knowledge,
             )
 
         if self.store:

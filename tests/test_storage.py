@@ -104,8 +104,8 @@ Ensure preventDefault on Space key.
     assert len(results) >= 1
     top = results[0]
     assert top.path == "common/web/html/accessibility/aria_button.md"
-    # Verify importance confidence formula with title boost (+0.15 for 'accessibility' in title):
-    expected_conf = min(1.0, round(0.92 * top.cosine_sim + 0.08 * 0.85 + 0.15, 4))
+    # Verify importance confidence formula: (1 - alpha) * cosine_sim + alpha * importance
+    expected_conf = min(1.0, round(0.92 * top.cosine_sim + 0.08 * 0.85, 4))
     assert top.confidence == expected_conf
 
 

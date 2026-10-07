@@ -66,7 +66,7 @@ def test_ruamel_formatting_inline_tags_and_block_source():
 
 
 def test_tag_normalization_and_capping():
-    """Verify tag lowercasing, deduplication, and capping at MAX_TAGS = 10."""
+    """Verify tag lowercasing, deduplication, and capping at MAX_TAGS = 8."""
     raw_tags = [
         "React",
         "react",
@@ -82,7 +82,7 @@ def test_tag_normalization_and_capping():
         "Virtual DOM",
     ]
     normalized = normalize_tags(raw_tags)
-    assert len(normalized) == 10
+    assert len(normalized) == 8
     assert normalized[0] == "react"
     assert normalized[1] == "ui"
     assert "react" in normalized

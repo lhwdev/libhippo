@@ -2,12 +2,12 @@
 title: React
 version: "19.3.0"
 source:
-- https://react.dev/learn
-- https://react.dev/reference/react
-- https://react.dev/reference/rules
-- https://react.dev/learn/you-might-not-need-an-effect
-- https://react.dev/reference/rsc/server-components
-- https://react.dev/reference/react-dom/client/createRoot
+  - https://react.dev/learn
+  - https://react.dev/reference/react
+  - https://react.dev/reference/rules
+  - https://react.dev/learn/you-might-not-need-an-effect
+  - https://react.dev/reference/rsc/server-components
+  - https://react.dev/reference/react-dom/client/createRoot
 version_check: npm:react
 tags: ["javascript", "frontend", "ui", "react", "jsx", "state", "props"]
 related: []

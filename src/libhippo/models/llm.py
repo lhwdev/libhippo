@@ -86,14 +86,9 @@ DEFAULT_AGENT_MODELS: dict[AgentRole, ModelConfig] = {
         model_info=DEFAULT_OPENAI_MODEL_INFO,
     ),
     "book_keeper": ModelConfig(
-        provider="openai",
-        model="gpt-5-nano",
-        reasoning_effort="low",
+        provider="typesafe",
+        model="jev-latest",
         cache_write=False,
-        cache_mode="explicit",
-        cache_system_prompt_only=True,
-        prompt_cache_key="libhippo-bookkeeper",
-        model_info=DEFAULT_OPENAI_MODEL_INFO,
     ),
     "curator": ModelConfig(
         provider="openai",

@@ -25,7 +25,8 @@ def test_default_model_configs():
     assert solver_cfg.cache_write is True
 
     bookkeeper_cfg = get_model_config("book_keeper")
-    assert bookkeeper_cfg.model == "gpt-5-nano"
+    assert bookkeeper_cfg.provider == "typesafe"
+    assert bookkeeper_cfg.model == "jev-latest"
     assert bookkeeper_cfg.cache_write is False
 
     curator_cfg = get_model_config("curator")
@@ -76,9 +77,9 @@ def test_mock_client_injection():
 def test_create_chat_client_instantiation():
     """Verify create_chat_client returns OpenAIChatCompletionClient with correct parameters."""
     client = create_chat_client(
-        "book_keeper",
+        "curator",
         api_key="test-api-key",
-        model="gpt-5-nano",
+        model="gpt-6-luna",
     )
     from autogen_ext.models.openai import OpenAIChatCompletionClient
     from libhippo.models.logging_client import LoggingChatCompletionClient
