@@ -733,7 +733,7 @@ class KnowledgeStore:
         """
         lines: list[str] = []
         if path in (".", "", "/"):
-            lines.append("[Knowledge Mounts]")
+            lines.append("<knowledges root>")
             mounts = self.mount_manager.get_all_mounts()
             for idx, m in enumerate(mounts):
                 is_last_m = idx == len(mounts) - 1
@@ -748,6 +748,7 @@ class KnowledgeStore:
                         max_depth=max_depth,
                         lines=lines,
                     )
+            lines.append("</knowledge>")
         else:
             norm = path.strip("/.")
             try:
@@ -759,6 +760,7 @@ class KnowledgeStore:
                 return f"[Knowledge directory or node not found: '{path}']"
             if target_phys.is_file():
                 return f"{norm} (file)"
+            lines.append(f'<knowledges path="{norm}">')
             lines.append(f"{norm}/")
             self._build_knowledge_tree(
                 target_phys,
@@ -767,6 +769,7 @@ class KnowledgeStore:
                 max_depth=max_depth,
                 lines=lines,
             )
+            lines.append("</knowledges>")
         return "\n".join(lines)
 
     def _build_knowledge_tree(

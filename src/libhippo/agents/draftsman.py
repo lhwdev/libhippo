@@ -306,7 +306,12 @@ class KnowledgeDraftSession:
             return f"[Draft '{norm}': start_line {s_line} exceeds file line count {total_lines}]"
 
         selected = lines[s_line - 1 : e_line]
-        return "\n".join(f"{idx}: {line}" for idx, line in enumerate(selected, start=s_line))
+        formatted = "\n".join(f"{idx}: {line}" for idx, line in enumerate(selected, start=s_line))
+        return (
+            f'<knowledge path="{norm}" lines="{s_line}:{e_line}" total_lines="{total_lines}">\n'
+            f"{formatted}\n"
+            "</knowledge>"
+        )
 
     async def write_knowledge(
         self,
@@ -426,7 +431,7 @@ class KnowledgeDraftSession:
             output = "[Knowledge Mounts]\n"
 
         if self.drafts:
-            output += "\n[Active Session Drafts]\n"
+            output += "\n## Active Session Drafts\n"
             for p in sorted(self.drafts.keys()):
                 output += f"  * {p} [DRAFT]\n"
         return output

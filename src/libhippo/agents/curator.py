@@ -165,36 +165,30 @@ class CuratorAgent(AssistantAgent, BaseHippoAgent):
         current_session = self._get_current_session()
 
         try:
-            if target_path:
-                norm_target = current_session._normalize_path(target_path)
-                suggested_target_line = f"SUGGESTED_TARGET_PATH: {norm_target}\n"
-            else:
-                suggested_target_line = (
-                    "TARGET_PATH: Determine an appropriate canonical, hierarchical snake_case path "
-                    "under the relevant mount (e.g. common/<domain>/<topic>).\n"
-                )
+            norm_target = current_session._normalize_path(target_path) if target_path else None
+            target_tag = (
+                f"<curate:TARGET_PATH>{norm_target}</curate:TARGET_PATH>\n"
+                if norm_target
+                else "<curate:default_target_path>Determine canonical hierarchical snake_case path under relevant mount (e.g. `common/<domain>/<topic>`)</curate:default_target_path>\n"
+            )
+            context_tag = f"<curate:context>\n{context}\n</curate:context>\n" if context else ""
             prompt = (
-                "Research and draft a comprehensive, authoritative knowledge document for `curate:USER_QUERY`.\n"
+                "<curate>\n"
                 f"<curate:USER_QUERY>{topic_or_query}</curate:USER_QUERY>\n"
-                "\n"
-                "<curate:CONCEPTUAL_SCOPE>\n"
+                f"{target_tag}"
+                f"{context_tag}"
+                "<curate:instruction>\n"
                 "The curated document is NOT necessarily a 1:1 mapping from the query.\n"
                 "A knowledge document represents a durable, modular technical concept that can be searched from the query, "
                 "not merely what the query literally requests (e.g. QUERY: `React useEffect` -> DOCUMENT: `React lifecycle hooks`).\n"
-                "</curate:CONCEPTUAL_SCOPE>\n"
-                "\n"
-                f"{suggested_target_line}"
-            )
-            if context:
-                prompt += f"ADDITIONAL_CONTEXT:\n{context}\n"
-
-            prompt += (
-                "\nFollow the curation workflow:\n"
+                "## Workflow\n"
                 "1. Use list_knowledge / search_knowledge to check existing knowledge and avoid duplication.\n"
                 "2. Use search_web and fetch_web to research official documentation.\n"
                 "3. Use write_knowledge(path=..., content=...) to write the draft document.\n"
                 "4. Once checks pass, call commit(path=...) to audit and save the draft to disk. If fails, modify.\n"
-                "Document requirements: markdown with strict YAML frontmatter, with proper length."
+                "Document requirements: markdown with strict YAML frontmatter, with proper length.\n"
+                "</curate:instruction>\n"
+                "</curate>"
             )
 
             result = await self.run(task=prompt)
@@ -256,10 +250,11 @@ class CuratorAgent(AssistantAgent, BaseHippoAgent):
             current_session.active_path = norm_path
 
             prompt = (
-                f"The knowledge draft '{norm_path}' requires revision:\n\n"
-                f"AUDIT FEEDBACK & DIRECTIVES:\n{feedback}\n\n"
-                f"Use content/line replacements with `write_knowledge` to make minimal, surgical edits to fix reported issues.\n"
-                f"When checks pass, call commit(path='{norm_path}')."
+                f'<revise path="{norm_path}">\n'
+                "Use content/line replacements with `write_knowledge` to make minimal, surgical edits to fix reported issues.\n"
+                f"When checks pass, call commit(path='{norm_path}').\n"
+                f"<revise:AUDIT_FEEDBACK>\n{feedback}\n</revise:AUDIT_FEEDBACK>\n"
+                "</revise>"
             )
 
             result = await self.run(task=prompt)

@@ -49,8 +49,11 @@ class FileTools(BaseToolSuite):
 
         selected_lines = lines[s_line - 1:e_line]
         formatted = "\n".join(f"{s_line + idx}: {line}" for idx, line in enumerate(selected_lines))
-        prefix = f"[Showing lines {s_line} to {e_line} of {total_lines} in {path}]\n"
-        return prefix + formatted
+        return (
+            f'<file path="{path}" lines="{s_line}:{e_line}" total_lines="{total_lines}">\n'
+            f"{formatted}\n"
+            "</file>"
+        )
 
     async def overwrite_file(self, path: str, content: str) -> str:
         """Create new file or completely overwrite existing file atomically."""

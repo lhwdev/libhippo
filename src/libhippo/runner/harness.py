@@ -543,7 +543,13 @@ class GeneralAgentHarness:
         if name not in self.skills:
             raise KeyError(f"Skill '{name}' not found. Available: {list(self.skills.keys())}")
         skill = self.skills[name]
-        return await self.step(f"[Invoking Skill: {skill.name}]\n{skill.system_prompt}\nArguments: {args}")
+        prompt = (
+            f'<skill name="{skill.name}">\n'
+            f"<skill:instruction>\n{skill.system_prompt}\n</skill:instruction>\n"
+            f"<skill:ARGUMENTS>\n{args}\n</skill:ARGUMENTS>\n"
+            "</skill>"
+        )
+        return await self.step(prompt)
 
     async def steer(self, guidance: str) -> dict[str, Any]:
         """Send mid-turn steering message over WebSocket without tearing down connection."""

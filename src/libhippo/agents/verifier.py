@@ -93,16 +93,17 @@ class VerifierAgent(AssistantAgent, BaseHippoAgent):
         errors = report.schema_errors + report.content_errors
         diagnostics = "\n".join(f"- {d}" for d in errors) if errors else "None"
         prompt = (
-            f"CheckerAgent has emitted an audit verdict for knowledge node '{candidate.path}':\n"
+            f"<audit>\nCheckerAgent has emitted an audit verdict for knowledge node '{candidate.path}':\n"
+            "<audit:verdict>\n"
             f"VERDICT: {report.verdict}\n"
             f"SIZE STATUS: {report.size_status} (tokens: {report.effective_token_count})\n"
             f"TAXONOMY FIT: {report.taxonomy_fit}\n"
             f"DIAGNOSTICS:\n{diagnostics}\n\n"
-            f"CANDIDATE CONTENT:\n```markdown\n{candidate.markdown}\n```\n\n"
+            f"<audit:CANDIDATE_CONTENT>\n{candidate.markdown}\n</audit:CANDIDATE_CONTENT>\n</audit:verdict>\n\n"
             f"Please evaluate whether to:\n"
             f"1. Promote to parent hub and partition child leaves (if OVERSIZED).\n"
             f"2. Coalesce into sibling/parent (if UNDERSIZED or redundant).\n"
-            f"3. Execute direct mutations via modify_knowledge or output refactoring plan.\n"
+            f"3. Execute direct mutations via modify_knowledge or output refactoring plan.\n</audit>\n"
         )
 
         result = await self.run(task=prompt)

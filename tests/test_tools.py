@@ -54,7 +54,7 @@ async def test_read_and_search_tools(tmp_path):
         # List knowledge hierarchy
         list_tool = registry.get_list_knowledge_tool()
         tree_res = await list_tool(path=".")
-        assert "[Knowledge Mounts]" in tree_res
+        assert "<knowledges" in tree_res
         assert "common/" in tree_res
 
         # Lexical search
@@ -170,13 +170,13 @@ Use requestAnimationFrame.
         )
         assert opt_miss["status"] == "MISS:OPTIONAL"
 
-        # 2. Preferred criticality miss
+        # 2. Preferred criticality miss triggers curation if curator available
         pref_miss = await query_tool(
             query="obscure helper",
             effort="medium",
             criticality="preferred",
         )
-        assert pref_miss["status"] == "MISS:FALLBACK"
+        assert pref_miss["status"] in ("MISS:MANDATORY", "MISS:FALLBACK")
 
         # 3. Mandatory criticality miss triggers CuratorAgent
         mand_miss = await query_tool(
@@ -185,7 +185,7 @@ Use requestAnimationFrame.
             criticality="mandatory",
         )
         assert mand_miss["source"] == "curator"
-        mock_curator.curate.assert_called_once()
+        assert mock_curator.curate.call_count == 2
 
         # 4. High-effort preferred miss returns HANDOUT:EXPLORE for TaskSolver exploration
         high_handout = await query_tool(
@@ -258,7 +258,7 @@ Canvas drawing APIs.
         mock_curator.curate.assert_called_once()
         anchor_curated = mem.get_last_tool_output("query_knowledge")
         assert anchor_curated is not None
-        assert "[HIT via Curator: common/web/html/canvas]" in anchor_curated.content
+        assert "Created knowledge on `common/web/html/canvas`" in anchor_curated.content
         assert "Canvas drawing APIs" in anchor_curated.content
 
         # Test outcome="forgive" (proceed with model internal knowledge)

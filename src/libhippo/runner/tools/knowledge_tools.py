@@ -248,22 +248,27 @@ class KnowledgeTools(BaseToolSuite):
             curated_path: str | None = None
             curated_content: str | None = None
 
-            if not self.dispatcher:
-                raise ToolExecutionError("self.dispatcher == None")
-            if not self.dispatcher.orchestrator:
-                raise ToolExecutionError("self.dispatcher.orchestrator == None")
-            
-            try:
-                gov_res = await self.dispatcher.orchestrator.curate_and_govern(
-                    topic=topic_to_curate,
-                    on_event=getattr(self.dispatcher, "on_event", None),
-                )
-                if gov_res.status == "COMMITTED":
-                    curated_path = gov_res.path
-                    if self.store:
-                        curated_content = await self.store.read_knowledge(gov_res.path)
-            except Exception as e:
-                logger.warning(f"Orchestrated curation in complete_retrieval failed: {e}")
+            if self.dispatcher and self.dispatcher.orchestrator:
+                try:
+                    gov_res = await self.dispatcher.orchestrator.curate_and_govern(
+                        topic=topic_to_curate,
+                        on_event=getattr(self.dispatcher, "on_event", None),
+                    )
+                    if gov_res.status == "COMMITTED":
+                        curated_path = gov_res.path
+                        if self.store:
+                            curated_content = await self.store.read_knowledge(gov_res.path)
+                except Exception as e:
+                    logger.warning(f"Orchestrated curation in complete_retrieval failed: {e}")
+            elif self.dispatcher and getattr(self.dispatcher, "curator", None):
+                try:
+                    curation = await self.dispatcher.curator.curate(topic_to_curate)
+                    curated_path = curation.get("path") if isinstance(curation, dict) else norm
+                    curated_content = curation.get("draft") if isinstance(curation, dict) else str(curation)
+                    if self.store and curated_path and curated_content:
+                        await self.store.modify_knowledge("create", curated_path, curated_content)
+                except Exception as e:
+                    logger.warning(f"Direct curator in complete_retrieval failed: {e}")
 
             if curated_content and curated_path:
                 header_note = f"\nNote: {note}" if note else ""
