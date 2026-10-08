@@ -73,8 +73,8 @@ class KnowledgeHarvestSidecar:
     def _get_orchestrator(self) -> Any:
         if self._orchestrator is not None:
             return self._orchestrator
+        
         from libhippo.agents.manager import AgentManager
-
         self._orchestrator = AgentManager(store=self.store).orchestrator
         return self._orchestrator
 

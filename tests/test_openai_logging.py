@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, AsyncIterator, Sequence
 import pytest
 
@@ -141,7 +142,8 @@ async def test_system_prompt_shown_on_first_send_and_hidden_on_subsequent(
     # Turn 1 should show the system prompt explicitly
     assert "--- System Prompt (First Send) ---" in log1
     assert sys_prompt in log1
-    assert "Turn 1: Fix bug in parser" in log1
+    clean_log1 = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", log1)
+    assert "Turn 1: Fix bug in parser" in clean_log1
     assert "system prompt shown" in log1
 
     # Turn 2: Subsequent send with prior history + new request
@@ -159,11 +161,12 @@ async def test_system_prompt_shown_on_first_send_and_hidden_on_subsequent(
         log2 = caplog.text
 
     # Turn 2 should NOT show the system prompt again
+    clean_log2 = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", log2)
     assert "--- System Prompt (First Send) ---" not in log2
-    assert "Turn 2: Add test cases" in log2
+    assert "Turn 2: Add test cases" in clean_log2
     # Prior history should be hidden with count breakdown
-    assert "previous hidden: 1 SystemMessage, 1 UserMessage, 1 AssistantMessage" in log2
-    assert "Turn 1: Fix bug in parser" not in log2
+    assert "previous hidden: 1 SystemMessage, 1 UserMessage, 1 AssistantMessage" in clean_log2
+    assert "Turn 1: Fix bug in parser" not in clean_log2
 
 
 @pytest.mark.asyncio
@@ -222,7 +225,8 @@ async def test_tool_output_truncation(monkeypatch: pytest.MonkeyPatch, caplog: p
         await wrapped.create(messages=messages)
 
     log_text = caplog.text
-    assert "... [truncated 1500 characters] ..." in log_text
+    clean_log = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", log_text)
+    assert "... [truncated 1500 characters] ..." in clean_log
 
 
 def test_file_handler_logging(monkeypatch: pytest.MonkeyPatch, tmp_path):

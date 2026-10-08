@@ -165,15 +165,25 @@ class CuratorAgent(AssistantAgent, BaseHippoAgent):
         current_session = self._get_current_session()
 
         try:
-            suggested_path = (
-                current_session._normalize_path(target_path)
-                if target_path
-                else f"common/{re.sub(r'[^a-zA-Z0-9_]+', '_', topic_or_query.lower()).strip('_')}"
-            )
+            if target_path:
+                norm_target = current_session._normalize_path(target_path)
+                suggested_target_line = f"SUGGESTED_TARGET_PATH: {norm_target}\n"
+            else:
+                suggested_target_line = (
+                    "TARGET_PATH: Determine an appropriate canonical, hierarchical snake_case path "
+                    "under the relevant mount (e.g. common/<domain>/<topic>).\n"
+                )
             prompt = (
-                f"Research and draft a comprehensive, authoritative knowledge node for:\n"
-                f"TOPIC / QUERY: {topic_or_query}\n"
-                f"SUGGESTED_TARGET_PATH: {suggested_path}\n"
+                "Research and draft a comprehensive, authoritative knowledge document for `curate:USER_QUERY`.\n"
+                f"<curate:USER_QUERY>{topic_or_query}</curate:USER_QUERY>\n"
+                "\n"
+                "<curate:CONCEPTUAL_SCOPE>\n"
+                "The curated document is NOT necessarily a 1:1 mapping from the query.\n"
+                "A knowledge document represents a durable, modular technical concept that can be searched from the query, "
+                "not merely what the query literally requests (e.g. QUERY: `React useEffect` -> DOCUMENT: `React lifecycle hooks`).\n"
+                "</curate:CONCEPTUAL_SCOPE>\n"
+                "\n"
+                f"{suggested_target_line}"
             )
             if context:
                 prompt += f"ADDITIONAL_CONTEXT:\n{context}\n"
@@ -183,9 +193,8 @@ class CuratorAgent(AssistantAgent, BaseHippoAgent):
                 "1. Use list_knowledge / search_knowledge to check existing knowledge and avoid duplication.\n"
                 "2. Use search_web and fetch_web to research official documentation.\n"
                 "3. Use write_knowledge(path=..., content=...) to write the draft document.\n"
-                "4. Once checks pass, call commit(path=...) to audit and save the draft to disk. If fails, modify."
-                "Document requirements: strict YAML frontmatter (title, version, source, version_check, tags, related), "
-                "500-1000 tokens target."
+                "4. Once checks pass, call commit(path=...) to audit and save the draft to disk. If fails, modify.\n"
+                "Document requirements: markdown with strict YAML frontmatter, with proper length."
             )
 
             result = await self.run(task=prompt)
@@ -205,7 +214,7 @@ class CuratorAgent(AssistantAgent, BaseHippoAgent):
                     draft = current_session.drafts[path].read_text(encoding="utf-8")
             else:
                 draft = self.extract_markdown_draft(raw_text)
-                path = target_path or self.infer_path(draft, topic_or_query)
+                path = target_path or self.infer_path(draft, topic_or_query, store=self.store)
                 norm_p = current_session._normalize_path(path)
                 await current_session.write_knowledge(norm_p, draft)
                 path = norm_p
@@ -249,7 +258,7 @@ class CuratorAgent(AssistantAgent, BaseHippoAgent):
             prompt = (
                 f"The knowledge draft '{norm_path}' requires revision:\n\n"
                 f"AUDIT FEEDBACK & DIRECTIVES:\n{feedback}\n\n"
-                f"Use write_knowledge or line replacements to make minimal, surgical edits to fix reported issues.\n"
+                f"Use content/line replacements with `write_knowledge` to make minimal, surgical edits to fix reported issues.\n"
                 f"When checks pass, call commit(path='{norm_path}')."
             )
 
@@ -305,8 +314,8 @@ class CuratorAgent(AssistantAgent, BaseHippoAgent):
         return text.strip()
 
     @staticmethod
-    def infer_path(draft: str, default_query: str) -> str:
-        """Infer namespaced virtual path from frontmatter or query."""
+    def infer_path(draft: str, default_query: str, store: Any | None = None) -> str:
+        """Infer namespaced virtual path from frontmatter or query following Hub-and-Leaf rules."""
         ns_match = re.search(r"^namespace:\s*[\"']?([a-zA-Z0-9_\-]+)[\"']?", draft, re.MULTILINE)
         namespace = ns_match.group(1).strip() if ns_match else "common"
         if namespace == "knowledge":
@@ -314,6 +323,34 @@ class CuratorAgent(AssistantAgent, BaseHippoAgent):
 
         title_match = re.search(r"^title:\s*[\"']?([^\"'\n]+)[\"']?", draft, re.MULTILINE)
         raw_name = title_match.group(1).strip() if title_match else default_query
-        slug = re.sub(r"[^a-zA-Z0-9_]+", "_", raw_name.lower()).strip("_")
 
+        # Strip conversational query filler words
+        cleaned = re.sub(
+            r"\b(specification|specifications|specs?|usage|guides?|overview|docs?|documentation|tutorials?|cheat_sheets?)\b",
+            "",
+            raw_name,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(r"[:,\-_()]+", " ", cleaned).strip()
+        if not cleaned:
+            cleaned = raw_name
+
+        words = cleaned.split()
+        if len(words) >= 2 and store:
+            first_slug = re.sub(r"[^a-zA-Z0-9_]+", "_", words[0].lower()).strip("_")
+            rest_slug = re.sub(r"[^a-zA-Z0-9_]+", "_", "_".join(words[1:]).lower()).strip("_")
+
+            # Check if parent hub exists in store
+            parent_candidate = f"{namespace}/{first_slug}"
+            parent_exists = False
+            try:
+                phys, _ = store.mount_manager.resolve_virtual_path(parent_candidate)
+                parent_exists = (phys.exists() and phys.is_file()) or phys.with_suffix(".md").exists()
+            except Exception:
+                pass
+
+            if parent_exists and rest_slug:
+                return f"{namespace}/{first_slug}/{rest_slug}"
+
+        slug = re.sub(r"[^a-zA-Z0-9_]+", "_", cleaned.lower()).strip("_")
         return f"{namespace}/{slug}"

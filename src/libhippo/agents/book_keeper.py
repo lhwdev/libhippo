@@ -9,7 +9,7 @@ import re
 from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
-from typesafe_sdk import Choice, Noul, Score
+from typesafe_sdk import Choice, Noul
 
 from libhippo.agents.base import BaseHippoAgent
 from libhippo.models.llm import (
@@ -152,7 +152,6 @@ class BookKeeperAgent(BaseHippoAgent):
         client: TypeSafeClientProtocol | None = None,
         model: str | None = None,
         store: KnowledgeStore | None = None,
-        **kwargs: Any,
     ) -> None:
         super().__init__(name=name, description=description)
         cfg = get_model_config("book_keeper")

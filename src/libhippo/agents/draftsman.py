@@ -177,6 +177,42 @@ class KnowledgeDraftSession:
             )
         return None
 
+    def _validate_path(self, norm_path: str) -> str | None:
+        """Validate namespace, snake_case segment casing, query words, and parent existence."""
+        ns_err = self._validate_namespace(norm_path)
+        if ns_err:
+            return ns_err
+
+        segments = norm_path.split("/")
+        for seg in segments:
+            if not re.match(r"^[a-z0-9]+(_[a-z0-9]+)*$", seg):
+                return (
+                    f"[ERROR: Invalid path segment '{seg}' in '{norm_path}'. "
+                    f"All path segments must be lowercase snake_case.]"
+                )
+
+        if len(segments) >= 3 and self.store:
+            parent_path = "/".join(segments[:-1])
+            parent_exists = False
+            if parent_path in self.drafts and self.drafts[parent_path].exists():
+                parent_exists = True
+            else:
+                try:
+                    phys, _ = self.store.mount_manager.resolve_virtual_path(parent_path)
+                    parent_exists = (phys.exists() and phys.is_file()) or phys.with_suffix(".md").exists()
+                except Exception:
+                    pass
+
+            if not parent_exists:
+                return (
+                    f"[ERROR: Parent path '{parent_path}' does not exist in drafts or knowledge store. "
+                    f"Under Hub-and-Leaf architecture, a child path cannot introduce an additional "
+                    f"hierarchy level without an existing parent hub. Draft at '{parent_path}' instead, "
+                    f"or create the parent hub document first.]"
+                )
+
+        return None
+
     def _get_orchestrator(self) -> Any | None:
         """Obtain or lazily instantiate MakerCheckerOrchestrator if store is available."""
         if self.orchestrator is not None:
@@ -285,9 +321,9 @@ class KnowledgeDraftSession:
             return "[ERROR: No draft path specified. Please specify path='<namespace>/<name>']"
 
         norm = self._normalize_path(path)
-        ns_err = self._validate_namespace(norm)
-        if ns_err:
-            return ns_err
+        path_err = self._validate_path(norm)
+        if path_err:
+            return path_err
 
         self.active_path = norm
 
@@ -441,11 +477,11 @@ class KnowledgeDraftSession:
     async def commit(self, path: str) -> dict[str, Any]:
         """Validate and commit a single draft to the Maker-Checker governance loop."""
         norm = self._normalize_path(path)
-        ns_err = self._validate_namespace(norm)
-        if ns_err:
+        path_err = self._validate_path(norm)
+        if path_err:
             return {
                 "status": "error",
-                "message": ns_err,
+                "message": path_err,
             }
 
         if norm not in self.drafts or not self.drafts[norm].exists():
@@ -536,9 +572,9 @@ class KnowledgeDraftSession:
         validated: dict[str, str] = {}
 
         for norm, draft_path in self.drafts.items():
-            ns_err = self._validate_namespace(norm)
-            if ns_err:
-                failed[norm] = [ns_err]
+            path_err = self._validate_path(norm)
+            if path_err:
+                failed[norm] = [path_err]
                 continue
             if not draft_path.exists():
                 failed[norm] = ["Draft file not found on disk."]

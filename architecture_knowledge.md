@@ -325,6 +325,10 @@ Root Namespace Index
 ### 4.3 Hub-and-Leaf Directory Structure (Per Mount)
 Within each mount point, files follow the Hub-and-Leaf pattern: every subdirectory is accompanied by a sibling markdown file of identical basename. The parent file serves as a **Hub Knowledge (coarse overview and child index)**, while internal files act as **Leaf Knowledge (granular rules, edge cases, and code patterns)**.
 
+- **Path Segment Casing**: All virtual path segments strictly follow lowercase `snake_case` (e.g., `common/react/use_effect`, `project/agent_runtime`).
+- **Parent Hub Precondition**: Under Hub-and-Leaf architecture, an additional directory level (e.g., `common/react/use_effect`) CANNOT be created unless its parent hub document (`common/web/react.md`) already exists in the store or drafts. If the parent does not exist, knowledge must be drafted at the parent level (`common/web/react`) rather than fragmenting into premature subdirectories.
+- **Typographic Discipline**: Knowledge documents might actively employ markdown styling.
+
 ### 4.4 Markdown as Pure Source of Truth & Incremental Cache Sync
 - **Source of Truth**: Local human-readable, Git-tracked **Markdown files (`.md`)** across the mounted physical paths.
 - **Unified Disposable Caches**: Both the SQLite catalog (`knowledge_catalog.db`) and ChromaDB vector store (`.chromadb/`) are strictly derived, disposable caches (stored in `<workspace root>/.libhippo/cache/` or user cache). They index virtual paths (`project/...`, `common/...`) alongside mount metadata.

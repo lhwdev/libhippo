@@ -24,30 +24,32 @@ from libhippo.tools.retrieval import (
 class AgentManager:
     """Manages lifecycle, coordination, and reuse of framework knowledge agents."""
 
+    store: KnowledgeStore
+    curator: CuratorAgent
+    checker: CheckerAgent
+    verifier: VerifierAgent
+    book_keeper: BookKeeperAgent
+    orchestrator: MakerCheckerOrchestrator
+
+    _dispatcher: KnowledgeDispatcher | None = None
+
     def __init__(
         self,
         store: KnowledgeStore,
-        curator: CuratorAgent | None = None,
-        checker: CheckerAgent | None = None,
-        verifier: VerifierAgent | None = None,
-        book_keeper: BookKeeperAgent | None = None,
-        orchestrator: MakerCheckerOrchestrator | None = None,
     ) -> None:
         self.store = store
-        self.curator = curator or CuratorAgent(store=store)
-        if not getattr(self.curator, "store", None):
-            self.curator.store = store
-        self.checker = checker or CheckerAgent()
-        self.verifier = verifier or VerifierAgent(store=store)
-        self.book_keeper = book_keeper or BookKeeperAgent(store=store)
-        self.orchestrator = orchestrator or MakerCheckerOrchestrator(
+        self.curator = CuratorAgent(store=store)
+        self.checker = CheckerAgent()
+        self.verifier = VerifierAgent(store=store)
+        self.book_keeper = BookKeeperAgent(store=store)
+        self.orchestrator = MakerCheckerOrchestrator(
             store=store,
             checker=self.checker,
             curator=self.curator,
             verifier=self.verifier,
         )
+
         self.curator.orchestrator = self.orchestrator
-        self._dispatcher: KnowledgeDispatcher | None = None
 
     def create_dispatcher(
         self,

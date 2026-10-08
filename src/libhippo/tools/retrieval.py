@@ -97,6 +97,11 @@ class KnowledgeDispatcher:
     ) -> KnowledgeRetrievalResult:
         """Execute 3-tier adaptive retrieval with confidence scoring, metadata visibility, and staleness routing.
 
+        `effort`: Changes complexity of behavior. When no high-confidence match exists, each effort routes to
+        different tools.
+
+        `criticality`: After deciding document is MISS, decides whether to create document.
+
         `feedback` and `rejected_path` refine a prior result: the rejected candidate is excluded and
         remaining candidates are re-ranked by hierarchy relation (see `apply_rejection`).
         """
@@ -318,7 +323,7 @@ class KnowledgeDispatcher:
         criticality: CriticalityTier,
     ) -> KnowledgeRetrievalResult:
         """Handle miss with potential CuratorAgent scraping for MANDATORY criticality."""
-        if criticality == "mandatory":
+        if not criticality == "optional":
             if self.orchestrator and getattr(self.orchestrator, "curator", None):
                 try:
                     gov_res = await self.orchestrator.curate_and_govern(

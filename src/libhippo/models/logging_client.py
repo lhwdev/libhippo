@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import logging
 import os
 import re
@@ -11,6 +12,8 @@ import sys
 from typing import Any, AsyncIterator, Sequence
 
 from rich.console import Console
+from rich.highlighter import ReprHighlighter
+from rich.markdown import Markdown
 from rich.text import Text
 
 from autogen_core.models import (
@@ -32,13 +35,14 @@ if not logger.handlers:
 logger.propagate = False
 
 _console = Console(file=io.StringIO(), force_terminal=True, color_system="standard", width=1000, soft_wrap=True)
+_repr_highlighter = ReprHighlighter()
 
 
-def _render_ansi(text_obj: Text) -> str:
-    """Render a rich Text object to an ANSI-escaped string."""
+def _render_ansi(renderable: Any) -> str:
+    """Render any rich renderable (Text, Markdown, Syntax, etc.) to an ANSI-escaped string."""
     buf = io.StringIO()
     c = Console(file=buf, force_terminal=True, color_system="standard", width=1000, soft_wrap=True)
-    c.print(text_obj)
+    c.print(renderable)
     return buf.getvalue().rstrip("\n")
 
 
@@ -129,6 +133,93 @@ def _truncate_text(text: str, max_chars: int = 1000, max_lines: int = 30) -> str
         return text
 
 
+def _is_knowledge_doc(text: str) -> bool:
+    """Detect if text contains a knowledge document with YAML frontmatter or Markdown heading."""
+    trimmed = text.strip()
+    if re.match(r"^---\s*\n.*?\n---\s*(?:\n|\Z)", trimmed, re.DOTALL):
+        return True
+    if trimmed.startswith("# ") and "\n" in trimmed:
+        return True
+    return False
+
+
+def _highlight_value(val: Any) -> str:
+    """Format and highlight value using Rich ReprHighlighter or Markdown for knowledge docs."""
+    val_str = str(val)
+    if _is_knowledge_doc(val_str):
+        return _render_ansi(Markdown(val_str))
+    return _render_ansi(_repr_highlighter(val_str))
+
+
+def _format_tool_call(name: str, args_input: Any) -> list[str]:
+    """Format tool call with short arguments inline and long string arguments formatted separately."""
+    parsed_args: dict[str, Any] | None = None
+    if isinstance(args_input, dict):
+        parsed_args = args_input
+    elif isinstance(args_input, str):
+        try:
+            parsed = json.loads(args_input)
+            if isinstance(parsed, dict):
+                parsed_args = parsed
+        except Exception:
+            pass
+
+    if parsed_args is None:
+        raw_str = str(args_input)
+        if len(raw_str) > 120 or "\n" in raw_str:
+            t = Text(f"{name}(...)", style="bold not dim yellow")
+            res = [_render_ansi(t)]
+            res.append(f"    {_highlight_value(_truncate_text(raw_str))}")
+            return res
+        tc_t = Text(name, style="bold not dim yellow")
+        tc_t.append("(", style="dim")
+        tc_t.append_text(_repr_highlighter(raw_str))
+        tc_t.append(")", style="dim")
+        return [_render_ansi(tc_t)]
+
+    # Separate short args from long string args
+    short_parts: list[Text] = []
+    long_parts: list[tuple[str, Any]] = []
+
+    for k, v in parsed_args.items():
+        if isinstance(v, str) and (len(v) > 80 or "\n" in v):
+            long_parts.append((k, v))
+        else:
+            val_repr = json.dumps(v) if not isinstance(v, (str, int, float, bool)) else (f'"{v}"' if isinstance(v, str) else str(v).lower())
+            p_t = Text(k, style="dim cyan")
+            p_t.append("=", style="dim")
+            p_t.append_text(_repr_highlighter(val_repr))
+            short_parts.append(p_t)
+
+    header_t = Text(name, style="bold not dim yellow")
+    header_t.append("(", style="dim")
+    for idx, sp in enumerate(short_parts):
+        if idx > 0:
+            header_t.append(", ", style="dim")
+        header_t.append_text(sp)
+    if long_parts and short_parts:
+        header_t.append(f", ... +{len(long_parts)} long args", style="italic dim")
+    elif long_parts and not short_parts:
+        header_t.append(f"... +{len(long_parts)} long args", style="italic dim")
+    header_t.append(")", style="dim")
+
+    lines = [_render_ansi(header_t)]
+
+    for arg_k, arg_v in long_parts:
+        val_str = str(arg_v)
+        arg_label = Text(f"    {arg_k}:", style="bold dim cyan")
+        lines.append(_render_ansi(arg_label))
+        truncated = _truncate_text(val_str, max_chars=1500, max_lines=25)
+        if _is_knowledge_doc(truncated):
+            rendered_md = _render_ansi(Markdown(truncated))
+            lines.extend("      " + line for line in rendered_md.splitlines())
+        else:
+            rendered_val = _render_ansi(_repr_highlighter(truncated))
+            lines.extend("      " + line for line in rendered_val.splitlines())
+
+    return lines
+
+
 def _format_message(msg: Any) -> tuple[str, str]:
     if isinstance(msg, dict):
         role = msg.get("role", "message")
@@ -147,21 +238,36 @@ def _format_message(msg: Any) -> tuple[str, str]:
         parts: list[str] = []
         for part in content:
             if isinstance(part, dict):
-                parts.append(str(part.get("text") or part.get("content") or part))
+                parts.append(_highlight_value(str(part.get("text") or part.get("content") or part)))
             elif hasattr(part, "name") and hasattr(part, "arguments"):
-                parts.append(f"{part.name}({part.arguments})")
+                tc_lines = _format_tool_call(part.name, part.arguments)
+                parts.append("\n".join(tc_lines))
             elif hasattr(part, "call_id") and hasattr(part, "content"):
                 part_name = getattr(part, "name", "tool")
-                parts.append(f"[{part_name}:{part.call_id}] {_truncate_text(str(part.content))}")
+                trunc = _truncate_text(str(part.content))
+                if _is_knowledge_doc(trunc):
+                    md_rendered = _render_ansi(Markdown(trunc))
+                    parts.append(f"[{part_name}:{part.call_id}]\n{md_rendered}")
+                else:
+                    highlighted = _render_ansi(_repr_highlighter(trunc))
+                    parts.append(f"[{part_name}:{part.call_id}] {highlighted}")
             elif hasattr(part, "content"):
-                parts.append(str(part.content))
+                parts.append(_highlight_value(str(part.content)))
             else:
-                parts.append(str(part))
+                parts.append(_highlight_value(str(part)))
         text = "\n".join(parts)
     else:
         text = str(content)
         if "tool" in role.lower() or "functionexecution" in role.lower():
-            text = _truncate_text(text)
+            trunc = _truncate_text(text)
+            if _is_knowledge_doc(trunc):
+                text = _render_ansi(Markdown(trunc))
+            else:
+                text = _render_ansi(_repr_highlighter(trunc))
+        elif _is_knowledge_doc(text):
+            text = _render_ansi(Markdown(text))
+        else:
+            text = _render_ansi(_repr_highlighter(text))
     return role, text
 
 
@@ -389,20 +495,18 @@ def _log_response(
 
     content = getattr(result, "content", "")
     if isinstance(content, list):
-        tool_call_strs: list[str] = []
+        lines.append(_render_ansi(Text("--- Tool Calls ---", style="bold cyan")))
         for item in content:
             if hasattr(item, "name") and hasattr(item, "arguments"):
-                tool_call_strs.append(f"{item.name}({item.arguments})")
+                tc_lines = _format_tool_call(item.name, item.arguments)
+                for idx, tcl in enumerate(tc_lines):
+                    prefix = "- " if idx == 0 else "  "
+                    lines.append(f"{prefix}{tcl}")
             else:
-                tool_call_strs.append(str(item))
-        lines.append(_render_ansi(Text("--- Tool Calls ---", style="bold cyan")))
-        for tc in tool_call_strs:
-            tc_t = Text("- ", style="dim")
-            tc_t.append(tc, style="bold not dim yellow")
-            lines.append(_render_ansi(tc_t))
+                lines.append(f"- {_highlight_value(str(item))}")
     else:
         lines.append(_render_ansi(Text("--- Content ---", style="bold green")))
-        lines.append(str(content))
+        lines.append(_highlight_value(str(content)))
 
     lines.append(_render_ansi(Text("=" * 96, style="dim green")))
     logger.info("\n".join(lines))

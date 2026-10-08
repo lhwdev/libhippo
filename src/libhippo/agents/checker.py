@@ -44,7 +44,7 @@ class CheckerAgent(BaseHippoAgent):
 
     Uses the TypeSafe Jev System One model to evaluate candidate markdown nodes
     across structural, sizing, taxonomy, importance, and schema dimensions.
-    Bypasses expensive LLM inference for routine reviews that pass all checks.
+    Bypasses LLM agents for routine reviews that pass all checks.
     """
 
     def __init__(
@@ -57,9 +57,10 @@ class CheckerAgent(BaseHippoAgent):
     ) -> None:
         super().__init__(name=name, description=description)
         cfg = get_model_config("checker")
-        self.client = client
         self.model = model or cfg.resolve_model_name()
         self.token_count_bound = token_count_bound or TokenCountBoundary()
+
+        self.client = client or create_typesafe_client("checker", model=self.model)
 
         try:
             self._tokenizer = tiktoken.get_encoding("cl100k_base")
@@ -270,13 +271,8 @@ class CheckerAgent(BaseHippoAgent):
 
         # Step 3: Call TypeSafe Jev for semantic judgments
         questions = self._build_questions()
-
-        client = self.client or default_model_registry.get_mock_client("checker")
-        if client:
-            response = await client.system_one(state=state, questions=questions, model=self.model)
-        else:
-            async with create_typesafe_client("checker", model=self.model) as typesafe_client:
-                response = await typesafe_client.system_one(state=state, questions=questions, model=self.model)
+        
+        response = await self.client.system_one(state=state, questions=questions, model=self.model)
 
         # Step 4: Extract typed answers
         taxonomy_choice: TaxonomyFit = getattr(response.choices["taxonomy_fit"], "choice", "optimal")  # type: ignore

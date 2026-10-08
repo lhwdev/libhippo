@@ -3,6 +3,7 @@ import { User, Bot, AlertOctagon, Terminal, Info, BookOpen } from "lucide-react"
 import { ChatMessage } from "../../types/events";
 import { ToolCallCard } from "./ToolCallCard";
 import { KnowledgeAgentCard } from "./KnowledgeAgentCard";
+import { MarkdownRenderer } from "../common/MarkdownRenderer";
 
 interface MessageCardProps {
   message: ChatMessage;
@@ -55,8 +56,8 @@ export const MessageCard: React.FC<MessageCardProps> = ({ message }) => {
         )}
       </div>
 
-      <div className="whitespace-pre-wrap leading-relaxed font-sans text-sm selection:bg-sky-500/30 select-text">
-        {message.content}
+      <div className="leading-relaxed font-sans text-sm selection:bg-sky-500/30 select-text">
+        <MarkdownRenderer content={message.content} />
       </div>
 
       {message.toolCalls && message.toolCalls.length > 0 && (

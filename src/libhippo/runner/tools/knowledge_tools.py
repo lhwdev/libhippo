@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from libhippo.orchestration.maker_checker import MakerCheckerOrchestrator
+from libhippo.runner.memory import ContextMemory
 from libhippo.runner.tools.base import BaseToolSuite, ToolExecutionError
 from libhippo.runner.types import ToolDefinition
 from libhippo.storage.store import KnowledgeStore
@@ -23,6 +24,8 @@ def _normalize_path(path: str) -> str:
 
 class KnowledgeTools(BaseToolSuite):
     """Knowledge tools bridging 3-tier adaptive retrieval and learning queues."""
+
+    memory: ContextMemory | None = None
 
     def __init__(
         self,
@@ -73,10 +76,9 @@ class KnowledgeTools(BaseToolSuite):
         }
 
     def _last_retrieval_output(self) -> Any:
-        mem = getattr(self, "memory", None)
-        if not mem:
+        if not self.memory:
             return None
-        for msg in reversed(mem.zone2_history):
+        for msg in reversed(self.memory.zone2_history):
             if msg.role == "tool" and msg.metadata.get("tool_name") in ("query_knowledge", "refine_knowledge"):
                 return msg
         return None
@@ -113,10 +115,11 @@ class KnowledgeTools(BaseToolSuite):
                     except Exception:
                         pass
                 rejected_desc = f" `{rejected_path}`" if rejected_path else ""
-                self.memory.replace_tool_output(
-                    f"[Superseded: previous result{rejected_desc} was {feedback}; refined to '{query}' below]",
-                    tool_call_id=prev.tool_call_id,
-                )
+                if self.memory:
+                    self.memory.replace_tool_output(
+                        f"[Superseded: previous result{rejected_desc} was {feedback}; refined to '{query}' below]",
+                        tool_call_id=prev.tool_call_id,
+                    )
         if rejected_path:
             rejected_path = _normalize_path(rejected_path)
 
@@ -187,13 +190,12 @@ class KnowledgeTools(BaseToolSuite):
         - "create": No suitable document found; indicates a knowledge gap to create/draft (`path` optional).
         - "forgive": Knowledge not found.
         """
-        mem = getattr(self, "memory", None)
         norm = _normalize_path(path) if path else None
 
         # Extract last query from memory if available
         last_query = ""
-        if mem:
-            prev = mem.get_last_tool_output("query_knowledge")
+        if self.memory:
+            prev = self.memory.get_last_tool_output("query_knowledge")
             if prev and prev.content:
                 last_query = prev.metadata.get("query", "")
                 if not last_query:
@@ -228,8 +230,8 @@ class KnowledgeTools(BaseToolSuite):
             collapsed_payload = (
                 f"[HIT; You found knowledge `{norm}`]{header_note}\n\n{content}"
             )
-            if mem:
-                mem.collapse_intermediate_turns(
+            if self.memory:
+                self.memory.collapse_intermediate_turns(
                     anchor_tool_name="query_knowledge",
                     final_tool_content=collapsed_payload,
                 )
@@ -268,8 +270,8 @@ class KnowledgeTools(BaseToolSuite):
                 collapsed_payload = (
                     f"[HIT; Created knowledge on `{curated_path}`.]{header_note}\n\n{curated_content}"
                 )
-                if mem:
-                    mem.collapse_intermediate_turns(
+                if self.memory:
+                    self.memory.collapse_intermediate_turns(
                         anchor_tool_name="query_knowledge",
                         final_tool_content=collapsed_payload,
                     )
@@ -288,8 +290,8 @@ class KnowledgeTools(BaseToolSuite):
                 f"[MISS:GAP]{target_desc}{header_note}\n\n"
                 "No adequate document was found in the knowledge base and automated curation is unavailable. 비상"
             )
-            if mem:
-                mem.collapse_intermediate_turns(
+            if self.memory:
+                self.memory.collapse_intermediate_turns(
                     anchor_tool_name="query_knowledge",
                     final_tool_content=collapsed_payload,
                 )
@@ -303,8 +305,8 @@ class KnowledgeTools(BaseToolSuite):
         # Case 3: FORGIVE
         header_note = f"\nRationale: {note}" if note else ""
         collapsed_payload = f"[MISS:FALLBACK; No knowledge found.]{header_note}"
-        if mem:
-            mem.collapse_intermediate_turns(
+        if self.memory:
+            self.memory.collapse_intermediate_turns(
                 anchor_tool_name="query_knowledge",
                 final_tool_content=collapsed_payload,
             )
@@ -333,7 +335,7 @@ class KnowledgeTools(BaseToolSuite):
 
         try:
             res = await self.store.modify_knowledge(
-                action=action,
+                action=action, # type: ignore
                 path=path,
                 content=content,
                 metadata=metadata or {},

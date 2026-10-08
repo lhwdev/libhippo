@@ -29,6 +29,8 @@ class SubagentInstance:
 class SubagentManager:
     """Orchestrates child subagent lifecycles and concurrency."""
 
+    memory: ContextMemory | None = None
+
     def __init__(
         self,
         model_client: ChatCompletionClient,
@@ -108,7 +110,7 @@ class SubagentManager:
         parent_memory: ContextMemory | None = None,
     ) -> str:
         """Spawn a child worker and return subagent_id."""
-        mem = parent_memory or getattr(self, "memory", None)
+        mem = parent_memory or self.memory
         inst = await self.invoke_subagent(
             role=role,
             prompt=prompt,
@@ -142,7 +144,7 @@ class SubagentManager:
         parent_memory: ContextMemory | None = None,
     ) -> str:
         """Execute a delegated subagent task against warm parent KV cache."""
-        mem = parent_memory or getattr(self, "memory", None)
+        mem = parent_memory or self.memory
         inst = await self.invoke_subagent(
             role=role,
             prompt=instruction,

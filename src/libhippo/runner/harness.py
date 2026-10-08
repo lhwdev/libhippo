@@ -9,7 +9,7 @@ import json
 import platform
 import subprocess
 import uuid
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
 from autogen_core import FunctionCall
 from autogen_core.models import (
@@ -107,6 +107,7 @@ class GeneralAgentHarness:
             project_manager=self.project_manager,
             tasks_dir=self.workspace_root / "tasks",
         )
+        self.agent_manager.curator.sandbox = self.sandbox
 
         # 2. Persistence Session
         conv_id = f"conv-{uuid.uuid4().hex[:8]}"

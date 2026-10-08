@@ -206,7 +206,7 @@ class ModelRegistry:
         self,
         role_or_config: AgentRole | str | ModelConfig = "checker",
         **override_kwargs: Any,
-    ) -> Any:
+    ) -> AsyncTypeSafeClient:
         """Create an AsyncTypeSafeClient for TypeSafe System One judgments."""
         role_key = role_or_config if isinstance(role_or_config, str) else None
         if role_key and role_key in self._mock_clients:
@@ -247,5 +247,5 @@ def create_chat_client(role_or_config: AgentRole | str | ModelConfig, **kwargs: 
     return default_model_registry.create_chat_client(role_or_config, **kwargs)
 
 
-def create_typesafe_client(role_or_config: AgentRole | str | ModelConfig = "checker", **kwargs: Any) -> Any:
+def create_typesafe_client(role_or_config: AgentRole | str | ModelConfig = "checker", **kwargs: Any):
     return default_model_registry.create_typesafe_client(role_or_config, **kwargs)

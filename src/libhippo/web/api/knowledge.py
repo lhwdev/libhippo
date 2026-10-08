@@ -98,6 +98,42 @@ def setup_knowledge_routes(app: web.Application, harness: GeneralAgentHarness) -
             "result": result,
         })
 
+    async def get_documents(request: web.Request) -> web.Response:
+        docs: list[dict[str, Any]] = []
+        if harness.store:
+            try:
+                entries = await harness.store.catalog.list_entries(status="active", limit=100)
+                for e in entries:
+                    docs.append({
+                        "path": e.path,
+                        "title": e.title,
+                        "namespace": e.namespace,
+                        "version": e.version,
+                    })
+            except Exception:
+                pass
+        return web.json_response({"documents": docs})
+
+    async def get_document(request: web.Request) -> web.Response:
+        path = request.query.get("path", "").strip()
+        if not path:
+            return web.json_response({"error": "Path parameter is required"}, status=400)
+        content = ""
+        if harness.store:
+            try:
+                phys, _ = harness.store.mount_manager.resolve_virtual_path(path)
+                if phys.exists() and phys.is_file():
+                    content = phys.read_text(encoding="utf-8")
+                else:
+                    phys_md = phys.with_suffix(".md")
+                    if phys_md.exists() and phys_md.is_file():
+                        content = phys_md.read_text(encoding="utf-8")
+            except Exception as e:
+                return web.json_response({"error": str(e)}, status=404)
+        if not content:
+            return web.json_response({"error": f"Document '{path}' not found"}, status=404)
+        return web.json_response({"path": path, "content": content})
+
     async def rebuild_index(request: web.Request) -> web.Response:
         await harness.post_task_maintenance()
         return web.json_response({
@@ -106,5 +142,7 @@ def setup_knowledge_routes(app: web.Application, harness: GeneralAgentHarness) -
         })
 
     app.router.add_get("/api/knowledge/mounts", get_mounts)
+    app.router.add_get("/api/knowledge/documents", get_documents)
+    app.router.add_get("/api/knowledge/document", get_document)
     app.router.add_post("/api/knowledge/query", query_knowledge)
     app.router.add_post("/api/knowledge/rebuild", rebuild_index)
