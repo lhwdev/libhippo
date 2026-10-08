@@ -160,42 +160,45 @@ class BookKeeperAgent(BaseHippoAgent):
         self.model = model or cfg.resolve_model_name()
         self.store = store
 
-    def _build_questions(self) -> dict[str, Any]:
-        """Construct TypeSafe Jev questions for retrieval inspection."""
-        return {
-            "coarseness_fit": Choice(
-                instructions="Compare the specificity of the search query against the scope of the document outline.",
+    def _build_questions(self, candidate_count: int = 1, has_rejection: bool = False) -> dict[str, Any]:
+        """Construct TypeSafe Jev questions for retrieval candidate inspection."""
+        questions: dict[str, Any] = {}
+        rejection_hint = (
+            " The asker already rejected `rejection.path` for `rejection.feedback`; judge fit against that intent."
+            if has_rejection else ""
+        )
+
+        for i in range(candidate_count):
+            questions[f"fit_{i}"] = Choice(
+                instructions=f"Does `candidates[{i}]` directly address `query` and fit specificity level of `query`?{rejection_hint}",
                 criteria={
-                    "optimal": "The document is at the direct and appropriate specificity level for the query (optimal broad overview for broad query, or optimal leaf for specific query).",
-                    "too_broad_parent": "The document is a high-level overview while the query requests specific implementation parameters, detailed usage, or a dedicated subtopic.",
-                    "too_narrow_child": "The document is a narrow sub-component while the query asks for broad architectural concepts.",
-                    "tangential_mention": "The query topic is only mentioned in passing.",
-                    "unrelated": "The document does not address the query topic.",
+                    "optimal": "Direct, appropriate specificity level for `query`.",
+                    "too_broad": "High-level overview, while the `query` requests undescribed, specific details.",
+                    "too_narrow": "Narrow detail, while the query asks for broad concepts.",
+                    "tangential_mention": "Topic is only mentioned in passing.",
+                    "unrelated": "Does not address the query topic.",
                 },
-            ),
-            "coverage_depth": Score(
-                instructions="Assess whether the document provides sufficient depth to satisfy the search query.",
-                criteria=[
-                    "Passing mention or table of contents only.",
-                    "Partial overview: explains general concepts but lacks complete parameters, syntax, or edge cases.",
-                    "Exhaustive reference: directly provides required parameters, syntax, and concrete examples.",
-                ],
-            ),
-            "should_specialize_leaf": Noul(
-                instructions="Does this query warrant a dedicated sub-document rather than resolving to this candidate?",
-            ),
-            "should_record_alias": Noul(
-                instructions="Is this query an accurate search synonym for this document that should accelerate future lookups?",
-            ),
-        }
+            )
+
+        questions["should_specialize_leaf"] = Noul(
+            instructions="Does `query` warrant a new dedicated document rather than resolving to any candidate in `candidates`?",
+        )
+        questions["should_record_alias"] = Noul(
+            instructions="Is this query a proper, accurate search synonym for some of `candidates`?",
+        )
+        return questions
 
     async def lookup(
         self,
         query: str,
         candidates: list[Any],
         criticality: str = "preferred",
+        rejection: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Perform a fast, deterministic Jev inspection of candidates."""
+        """Perform a fast, deterministic Jev inspection of up to 3 candidates.
+
+        `rejection` (`{"path", "feedback"}`) describes a prior candidate the asker refused.
+        """
         if not candidates:
             return {
                 "status": "[MISS:FALLBACK]",
@@ -207,62 +210,112 @@ class BookKeeperAgent(BaseHippoAgent):
                 "raw_response": "",
             }
 
-        top = candidates[0]
-        top_path = getattr(top, "path", str(top))
-        top_title = getattr(top, "title", "")
-        top_conf = float(getattr(top, "confidence", 0.70))
+        # Inspect up to top-3 candidates
+        eval_candidates = candidates[:3]
+        structured_candidates: list[dict[str, Any]] = []
 
-        # Retrieve candidate content for outline digest
-        content = ""
-        if hasattr(top, "content") and top.content:
-            content = top.content
-        elif self.store:
-            try:
-                content = await self.store.read_knowledge(top_path) or ""
-            except Exception:
-                pass
+        for idx, cand in enumerate(eval_candidates):
+            c_path = getattr(cand, "path", str(cand))
+            c_title = getattr(cand, "title", "")
+            c_conf = float(getattr(cand, "confidence", 0.70))
 
-        outline = extract_structural_digest(content)
+            content = ""
+            if hasattr(cand, "content") and cand.content:
+                content = cand.content
+            elif self.store:
+                try:
+                    content = await self.store.read_knowledge(c_path) or ""
+                except Exception:
+                    pass
 
-        state = {
-            "query": query,
-            "candidate": {
-                "path": top_path,
-                "title": top_title,
+            outline = extract_structural_digest(content, max_chars=350)
+            structured_candidates.append({
+                "id": f"c_{idx}",
+                "path": c_path,
+                "title": c_title,
+                "confidence": c_conf,
                 "outline": outline,
-                "tags": getattr(top, "tags", []),
-            },
+                "tags": getattr(cand, "tags", []),
+            })
+
+        state: dict[str, Any] = {
+            "query": query,
+            "candidates": structured_candidates,
             "criticality": criticality,
         }
+        if rejection:
+            state["rejection"] = rejection
 
-        questions = self._build_questions()
+        questions = self._build_questions(candidate_count=len(structured_candidates), has_rejection=bool(rejection))
+
+        # top_p = 0.65 (strictly below retrieval medium threshold 0.80 and low threshold 0.68)
+        # max_tokens = 64 for minimal token overhead
+        jev_kwargs: dict[str, Any] = {
+            "top_p": 0.65,
+            "max_tokens": 64,
+        }
 
         client = self.client or default_model_registry.get_mock_client("book_keeper")
         if client:
-            response = await client.system_one(state=state, questions=questions, model=self.model)
+            try:
+                response = await client.system_one(state=state, questions=questions, model=self.model, **jev_kwargs)
+            except TypeError:
+                response = await client.system_one(state=state, questions=questions, model=self.model)
         else:
             async with create_typesafe_client("book_keeper", model=self.model) as typesafe_client:
-                response = await typesafe_client.system_one(state=state, questions=questions, model=self.model)
+                try:
+                    response = await typesafe_client.system_one(state=state, questions=questions, model=self.model, **jev_kwargs)
+                except TypeError:
+                    response = await typesafe_client.system_one(state=state, questions=questions, model=self.model)
 
-        # Extract typed answers
+        # Extract per-candidate choices and nouls
+        candidate_fits: list[tuple[int, str]] = []
+        should_specialize = 0.0
+        should_record_alias = 0.0
+
         if hasattr(response, "choices"):
-            coarseness = getattr(response.choices.get("coarseness_fit"), "choice", "optimal")
-            coverage = float(getattr(response.scores.get("coverage_depth"), "score", 1.0))
+            for i in range(len(structured_candidates)):
+                choice_obj = response.choices.get(f"candidate_{i}_fit")
+                fit_val = getattr(choice_obj, "choice", "unrelated") if choice_obj else "unrelated"
+                candidate_fits.append((i, fit_val))
             should_specialize = float(getattr(response.nouls.get("should_specialize_leaf"), "noul", 0.0))
             should_record_alias = float(getattr(response.nouls.get("should_record_alias"), "noul", 0.0))
         elif isinstance(response, dict):
-            coarseness = response.get("coarseness_fit", "optimal")
-            coverage = float(response.get("coverage_depth", 1.0))
+            for i in range(len(structured_candidates)):
+                fit_val = response.get(f"fit_{i}")
+                if not fit_val and i == 0:
+                    fit_val = response.get("coarseness_fit", "unrelated")
+                candidate_fits.append((i, fit_val or "unrelated"))
             should_specialize = float(response.get("should_specialize_leaf", 0.0))
             should_record_alias = float(response.get("should_record_alias", 0.0))
         else:
-            coarseness = "optimal"
-            coverage = 1.0
-            should_specialize = 0.0
-            should_record_alias = 0.0
+            candidate_fits = [(0, "optimal")]
+
+        # Determine best matching candidate: prefer optimal match, otherwise first candidate
+        best_candidate_idx: int | None = None
+        best_fit = "unrelated"
+        for idx, fit in candidate_fits:
+            if fit == "optimal":
+                best_candidate_idx = idx
+                best_fit = fit
+                break
+
+        if best_candidate_idx is None:
+            first_non_unrelated = next((item for item in candidate_fits if item[1] in ("too_broad", "too_narrow")), None)
+            if first_non_unrelated:
+                best_candidate_idx = first_non_unrelated[0]
+                best_fit = first_non_unrelated[1]
+            else:
+                best_candidate_idx = 0
+                best_fit = candidate_fits[0][1] if candidate_fits else "unrelated"
+
+        target_cand = structured_candidates[best_candidate_idx]
+        target_path = target_cand["path"]
+        target_title = target_cand["title"]
+        target_conf = target_cand["confidence"]
 
         # Decision Mapping
-        if should_specialize > 0.60 or coarseness in ("too_broad_parent", "tangential_mention", "unrelated"):
+        if should_specialize > 0.60 or best_fit != "optimal":
             miss_status = "[MISS:MANDATORY]" if criticality == "mandatory" else "[MISS:GAP]"
             return {
                 "status": miss_status,
@@ -270,25 +323,25 @@ class BookKeeperAgent(BaseHippoAgent):
                 "confidence": 0.30,
                 "title": "",
                 "keywords": [],
-                "rationale": f"Coarseness mismatch ({coarseness}, specialize={should_specialize:.2f}); warrants dedicated sub-document.",
+                "rationale": f"Candidate audit on {target_path} ({best_fit}, specialize={should_specialize:.2f}); warrants dedicated sub-document.",
                 "raw_response": str(response),
             }
 
         # HIT
-        if should_record_alias > 0.70 and self.store:
+        if should_record_alias > 0.65 and self.store:
             try:
-                asyncio.create_task(self._record_search_alias_async(top_path, query))
+                asyncio.create_task(self._record_search_alias_async(target_path, query))
             except Exception:
                 pass
 
-        final_conf = max(top_conf, 0.85)
+        final_conf = max(target_conf, 0.85)
         return {
             "status": "[HIT]",
-            "path": top_path,
+            "path": target_path,
             "confidence": final_conf,
-            "title": top_title,
+            "title": target_title,
             "keywords": [],
-            "rationale": f"Candidate matches query scope ({coarseness}, depth={coverage:.1f}).",
+            "rationale": f"Candidate {target_path} matches query scope (fit={best_fit}).",
             "raw_response": str(response),
         }
 

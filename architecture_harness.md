@@ -538,7 +538,7 @@ LibHippo's knowledge management system ([`architecture_knowledge.md`](architectu
        │     ├── read_file, write_file, search_file, run_command ...
        │     ├── query_knowledge (Tool Bridge - Mandatory First Step)
        │     ├── record_learning (Explicit Harvest Queue)
-       │     └── modify_knowledge (Disk Mutation Authority)
+       │     └── complete_retrieval (Deep Search Outcome Bridge)
        │              │
        │              ▼
        │     [LibHippo Knowledge Subsystem (architecture_knowledge.md)]

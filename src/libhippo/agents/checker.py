@@ -81,7 +81,7 @@ class CheckerAgent(BaseHippoAgent):
             "taxonomy_fit": Choice(
                 instructions=(
                     "Does `candidate.path` logically fit within `parent.path` "
-                    "and follow project directory naming conventions?"
+                    "and follow project path naming conventions?"
                 ),
                 criteria={
                     "optimal": "Path logically belongs to domain, follows same naming convention, matches content.",
@@ -179,12 +179,12 @@ class CheckerAgent(BaseHippoAgent):
             "tag_quality": Score(
                 instructions=(
                     "Assess whether `candidate.frontmatter.tags` provide crisp, highly-discriminating keyword "
-                    "identifiers specifically connecting queries to this document."
+                    "identifiers specifically connecting queries to `candidate`."
                 ),
                 criteria=[
                     "Bloated / Noisy: Overly generic words, redundant synonyms, or low signal.",
                     "Acceptable: Relevant keywords, but has slight redundancy or could be more specific.",
-                    "Crisp & Optimal: 3 to 10 high-signal, non-redundant, discriminative keyword tags.",
+                    "Crisp & Optimal: High-signal, non-redundant, discriminative keyword tags.",
                 ],
             ),
         }

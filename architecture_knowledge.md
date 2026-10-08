@@ -126,15 +126,15 @@ All model instantiations across AutoGen Chat Completion clients (OpenAI) and Typ
 - **Input**: User prompt, retrieved knowledge snippets.
 - **Output**: Implementation code draft, technical summary.
 
-### 3.2 `BookKeeperAgent` (Adaptive Librarian Subagent)
-- **Model**: `gpt-5-nano` (minimal reasoning).
+### 3.2 `BookKeeperAgent` (TypeSafe Jev System One Librarian)
+- **Model**: `TypeSafe Jev System One` (`jev-latest`, deterministic fast classification, $<150$ms latency, zero token streaming overhead).
 - **Operational Logic**:
-  - **Zero-Context Sandbox**: Operates without session history; every lookup is strictly independent.
-  - **Prompt Cache Write**: **DISABLED**: Stateless single-use queries avoid the cache write fee surcharge on prompts that are never re-read.
-  - **Zero Re-summarization**: Returns full document as-is.
-  - **Query Expansion & Confidence Boosting**: Decomposes natural language symptoms, checks synonyms, evaluates cross-references, outputs tags (`[HIT]`, `[MISS:MANDATORY]`, `[MISS:FALLBACK]`), and identifies search `keywords` to boost future retrieval confidence (persisted to frontmatter `tags` and vector `#keywords`).
+  - **Multi-Candidate Evaluation**: Evaluates up to top-3 vector candidates via per-candidate questions on Jev. Evaluates outline digests (~350 chars each) against query specificity.
+  - **Sharpened Choice Discrimination**: Uses `top_p = 0.65` (strictly lower than retrieval confidence thresholds) and tight token limits (64 tokens) to force decisive category routing.
+  - **Decayed Vector Alias Centroid**: Records search query synonyms as decayed vector centroids via exponential moving average in ChromaDB, enabling subsequent searches to hit on the fast path with zero markdown file churn.
+  - **High-Effort Handout**: On `effort="high"` misses, hands out exploration to `TaskSolverAgent` (`HANDOUT:EXPLORE`). When TaskSolver concludes exploration via `complete_retrieval(outcome="hit"|"create"|"forgive", path=..., note=...)`, all intermediate exploratory turns are evicted from `ContextMemory`, cleanly collapsing into a single retrieved hit, recorded knowledge gap, or fallback pointer.
 - **Input**: `query_knowledge(query, effort="medium"|"high", criticality)`, including candidate nodes from vector search.
-- **Output**: Target markdown file path, confidence score, keywords, hit/miss status tags.
+- **Output**: Target markdown file path, confidence score, rationale, hit/miss status tags.
 
 ### 3.3 `CuratorAgent` & `KnowledgeHarvestSidecar` (Knowledge Draftsmen)
 - **Model**: `gpt-6-luna` (low reasoning).
@@ -427,8 +427,18 @@ async def query_knowledge(
     query: str,
     effort: Literal["low", "medium", "high"] = "medium",
     criticality: Literal["mandatory", "preferred", "optional"] = "preferred",
+    feedback: Literal["too_broad", "too_narrow", "wrong_direction", "more_details"] | None = None,
+    rejected_path: str | None = None,
 ) -> KnowledgeRetrievalResult
 ```
+
+#### 5.2.0 Refinement (`refine_knowledge`)
+`refine_knowledge(feedback, query, rejected_path=None)` re-runs `query_knowledge` with feedback on the previous result. `rejected_path` defaults to the previous result's path; the previous output is superseded in `ContextMemory`.
+- Candidates are filtered and re-ranked by Hub-and-Leaf relation to `rejected_path` (`apply_rejection`):
+  - `too_broad` / `more_details`: drop it and its ancestors; prefer its children.
+  - `too_narrow`: drop it and its children; prefer its ancestors.
+  - `wrong_direction`: drop its whole subtree.
+- `BookKeeperAgent` receives `rejection` in Jev state; `HANDOUT:EXPLORE` mentions the rejected path.
 
 #### 5.2.1 3-Tier Staleness Routing
 When a retrieved document is flagged as stale (`freshness_status == "stale"`):

@@ -160,12 +160,45 @@ class ContextMemory:
                 if not tool_call_id and not tool_name:
                     msg.content = new_content
                     msg.raw_token_count = self.count_tokens(new_content)
-                    return True
         return False
 
+    def collapse_intermediate_turns(
+        self,
+        anchor_tool_name: str = "query_knowledge",
+        anchor_tool_call_id: str | None = None,
+        final_tool_content: str = "",
+    ) -> bool:
+        """Collapse and evict all intermediate turns between the anchor tool call and current state.
+
+        Locates the anchor tool output in Zone 2 history, updates its content to
+        final_tool_content, and deletes all assistant turns and exploratory tool
+        calls that occurred after the anchor.
+        """
+        anchor_idx: int | None = None
+        for idx in range(len(self.zone2_history) - 1, -1, -1):
+            msg = self.zone2_history[idx]
+            if msg.role == "tool":
+                if anchor_tool_call_id and msg.tool_call_id == anchor_tool_call_id:
+                    anchor_idx = idx
+                    break
+                if not anchor_tool_call_id and msg.metadata.get("tool_name") == anchor_tool_name:
+                    anchor_idx = idx
+                    break
+
+        if anchor_idx is None:
+            return False
+
+        # Update anchor tool message content
+        anchor_msg = self.zone2_history[anchor_idx]
+        anchor_msg.content = final_tool_content
+        anchor_msg.raw_token_count = self.count_tokens(final_tool_content)
+        anchor_msg.metadata["collapsed_exploration"] = True
+
+        # Evict all intermediate turns after the anchor
+        del self.zone2_history[anchor_idx + 1 :]
+        return True
 
     def get_total_tokens(self) -> int:
-        """Calculate total tokens currently active across Zone 1 and Zone 2."""
         z1 = sum(m.raw_token_count for m in self.zone1_prefix)
         z2 = sum(m.raw_token_count for m in self.zone2_history)
         return z1 + z2

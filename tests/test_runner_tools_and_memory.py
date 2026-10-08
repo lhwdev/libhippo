@@ -11,6 +11,7 @@ from libhippo.runner.project import ProjectManager
 from libhippo.runner.sandbox import BubblewrapSandboxRunner
 from libhippo.runner.tools import CodingToolSuite
 from libhippo.storage.store import KnowledgeStore
+from libhippo.tools.registry import ToolRegistry
 
 
 def test_context_memory_zone3_compaction():
@@ -156,7 +157,7 @@ async def test_pure_python_search_file_with_gitignore(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_modify_knowledge_tool(tmp_path: Path):
-    """Verify modify_knowledge tool creates, updates, and persists knowledge nodes."""
+    """Verify modify_knowledge is excluded from harness tools and exclusive to VerifierAgent."""
     ws = tmp_path / "workspace"
     ws.mkdir()
     k_dir = tmp_path / "knowledge"
@@ -167,10 +168,13 @@ async def test_modify_knowledge_tool(tmp_path: Path):
         sandbox = BubblewrapSandboxRunner(workspace_root=ws, project_manager=pm, tasks_dir=ws / "tasks")
         suite = CodingToolSuite(workspace_root=ws, sandbox=sandbox, project_manager=pm, store=store)
 
-        assert "modify_knowledge" in suite.tools
+        # Harness tool suite must NOT expose modify_knowledge to TaskRunner / Coding agents
+        assert "modify_knowledge" not in suite.tools
 
-        # Create knowledge note
-        create_res = await suite.modify_knowledge(
+        # VerifierAgent remains equipped with modify_knowledge tool via ToolRegistry
+        reg = ToolRegistry(store=store)
+        verifier_modify_tool = reg.get_modify_knowledge_tool()
+        create_res = await verifier_modify_tool(
             action="create",
             path="common/test_rule.md",
             content="# Test Rule\nAlways write unit tests.\n",

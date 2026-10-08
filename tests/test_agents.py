@@ -66,12 +66,46 @@ RATIONALE: No custom crypto encryption standard found in repository.
 
 @pytest.mark.asyncio
 async def test_book_keeper_lookup_no_candidates():
-    """Verify BookKeeper skips execution when candidates list is empty."""
+    """Verify BookKeeper skips execution when candidates list is empty, and correctly selects leaf candidate among multiple candidates."""
     agent = BookKeeperAgent()
     result = await agent.lookup(query="test query", candidates=[])
     assert result["status"] == "[MISS:FALLBACK]"
     assert result["path"] is None
     assert result["confidence"] == 0.0
+
+    # Test multi-candidate selection using mock client: parent overview vs leaf candidate
+    class MockCandidate:
+        def __init__(self, path: str, title: str, content: str, confidence: float = 0.70):
+            self.path = path
+            self.title = title
+            self.content = content
+            self.confidence = confidence
+
+    class MockTypeSafeClient:
+        async def system_one(self, *, state: dict, questions: dict, model: str | None = None, **kwargs):
+            # Assert that up to 3 candidates were structured with top_p and low max_tokens
+            assert len(state["candidates"]) == 2
+            assert "fit_0" in questions
+            assert "fit_1" in questions
+            assert kwargs.get("top_p") == 0.65
+            assert kwargs.get("max_tokens") == 64
+            # Candidate 0 is too broad parent; Candidate 1 is optimal leaf
+            return {
+                "fit_0": "too_broad",
+                "fit_1": "optimal",
+                "should_specialize_leaf": 0.1,
+                "should_record_alias": 0.8,
+            }
+
+    multi_agent = BookKeeperAgent(client=MockTypeSafeClient())
+    candidates = [
+        MockCandidate("common/react.md", "React Overview", "# React\nGeneral overview of UI components."),
+        MockCandidate("common/react/use_effect.md", "useEffect Parameters", "# useEffect\nDetailed parameters and cleanup function syntax."),
+    ]
+    multi_res = await multi_agent.lookup(query="react useEffect cleanup parameter", candidates=candidates)
+    assert multi_res["status"] == "[HIT]"
+    assert multi_res["path"] == "common/react/use_effect.md"
+    assert "common/react/use_effect.md" in multi_res["rationale"]
 
 
 # @pytest.mark.asyncio

@@ -186,6 +186,94 @@ Use requestAnimationFrame.
         )
         assert mand_miss["source"] == "curator"
         mock_curator.curate.assert_called_once()
+
+        # 4. High-effort preferred miss returns HANDOUT:EXPLORE for TaskSolver exploration
+        high_handout = await query_tool(
+            query="complex react reconciliation invariant",
+            effort="high",
+            criticality="preferred",
+        )
+        assert high_handout["status"] == "HANDOUT:EXPLORE"
+        assert "[HANDOUT:EXPLORE" in high_handout["content"]
+
+        # 5. complete_retrieval collapsing test in ContextMemory
+        from libhippo.runner.memory import ContextMemory
+        from libhippo.runner.tools.knowledge_tools import KnowledgeTools
+
+        mem = ContextMemory()
+        mem.append_assistant_turn("Looking for knowledge...")
+        mem.append_tool_output(
+            tool_name="query_knowledge",
+            content='{"status": "HANDOUT:EXPLORE", "query": "complex react reconciliation invariant"}',
+            tool_call_id="call-qk-1",
+        )
+        mem.append_assistant_turn("Let me search directory hierarchy.")
+        mem.append_tool_output(
+            tool_name="search_knowledge",
+            content="Found common/web/html/accessibility/aria_button.md",
+            tool_call_id="call-sk-1",
+        )
+        assert len(mem.zone2_history) == 4
+
+        kt = KnowledgeTools(store=populated_store, dispatcher=dispatcher)
+        kt.memory = mem
+        comp_res = await kt.complete_retrieval(
+            outcome="hit",
+            path="common/web/html/accessibility/aria_button",
+            note="Located accessible button interaction guide",
+        )
+        assert comp_res["status"] == "HIT"
+        # Verify intermediate exploratory turns were collapsed from memory
+        assert len(mem.zone2_history) == 2
+        anchor = mem.zone2_history[1]
+        assert anchor.tool_call_id == "call-qk-1"
+        assert "[HIT; You found knowledge `common/web/html/accessibility/aria_button`]" in anchor.content
+        assert "Located accessible button interaction guide" in anchor.content
+
+        # Test outcome="create" (invokes Curator to draft and commit new node)
+        mock_curator = AsyncMock()
+        mock_curator.curate.return_value = {
+            "path": "common/web/html/canvas",
+            "draft": """---
+title: "Canvas Guide"
+namespace: "common"
+---
+## Summary
+Canvas drawing APIs.
+""",
+        }
+        dispatcher.curator = mock_curator
+
+        mem.append_assistant_turn("Need dedicated canvas guide...")
+        mem.append_tool_output(tool_name="query_knowledge", content="{}", tool_call_id="call-qk-2")
+        mem.append_assistant_turn("Searching canvas...")
+        mem.append_tool_output(tool_name="search_knowledge", content="nothing", tool_call_id="call-sk-2")
+        curate_res = await kt.complete_retrieval(
+            outcome="create",
+            path="common/web/html/canvas",
+            note="Canvas guide not found; draft required",
+        )
+        assert curate_res["status"] == "HIT"
+        assert curate_res["path"] == "common/web/html/canvas"
+        mock_curator.curate.assert_called_once()
+        anchor_curated = mem.get_last_tool_output("query_knowledge")
+        assert anchor_curated is not None
+        assert "[HIT via Curator: common/web/html/canvas]" in anchor_curated.content
+        assert "Canvas drawing APIs" in anchor_curated.content
+
+        # Test outcome="forgive" (proceed with model internal knowledge)
+        mem.append_assistant_turn("Looking for helper...")
+        mem.append_tool_output(tool_name="query_knowledge", content="{}", tool_call_id="call-qk-3")
+        mem.append_assistant_turn("Searching helper...")
+        mem.append_tool_output(tool_name="search_knowledge", content="none", tool_call_id="call-sk-3")
+        forgive_res = await kt.complete_retrieval(
+            outcome="forgive",
+            note="Minor utility function, internal knowledge is sufficient",
+        )
+        assert forgive_res["status"] == "MISS:FALLBACK"
+        anchor_forgive = mem.get_last_tool_output("query_knowledge")
+        assert anchor_forgive is not None
+        assert "MISS:FALLBACK" in anchor_forgive.content
     finally:
         await populated_store.close()
 

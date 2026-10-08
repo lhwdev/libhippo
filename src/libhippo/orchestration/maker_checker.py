@@ -140,28 +140,31 @@ class MakerCheckerOrchestrator:
         self.on_event = on_event
 
     async def _emit(self, event: KnowledgeAgentEvent, on_event: Callable[[KnowledgeAgentEvent], Any] | None = None) -> None:
-        """Emit real-time observability event to stream and UI."""
+        """For logging/subscription purpose."""
         if not event.timestamp:
             event.timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-        summary = event.output_summary or event.input_summary or ""
 
-        status_style = "bold not dim green" if event.status in ("PASS", "READY", "COMMITTED", "MERGED") else (
-            "bold not dim red" if event.status in ("FAIL", "REJECTED", "ERROR") else "bold not dim cyan"
-        )
-        evt_t = Text("[", style="dim")
-        evt_t.append(event.timestamp, style="dim cyan")
-        evt_t.append("] ", style="dim")
-        evt_t.append(event.agent, style="bold not dim magenta")
-        evt_t.append(f" {event.action} ", style="yellow")
-        evt_t.append(f"({event.status})", style=status_style)
-        if summary:
-            evt_t.append(": ", style="dim")
-            evt_t.append(summary, style="dim")
+        if logger.isEnabledFor(logging.INFO): # 로-깅
+            summary = event.output_summary or event.input_summary or ""
 
-        buf = io.StringIO()
-        c = Console(file=buf, force_terminal=True, color_system="standard", width=1000, soft_wrap=True)
-        c.print(evt_t)
-        logger.info(buf.getvalue().rstrip("\n"))
+            status_style = "bold not dim green" if event.status in ("PASS", "READY", "COMMITTED", "MERGED") else (
+                "bold not dim red" if event.status in ("FAIL", "REJECTED", "ERROR") else "bold not dim cyan"
+            )
+            evt_t = Text("[", style="dim")
+            evt_t.append(event.timestamp, style="dim cyan")
+            evt_t.append("] ", style="dim")
+            evt_t.append(event.agent, style="bold not dim magenta")
+            evt_t.append(f" {event.action} ", style="yellow")
+            evt_t.append(f"({event.status})", style=status_style)
+            if summary:
+                evt_t.append(": ", style="dim")
+                evt_t.append(summary, style="dim")
+
+            buf = io.StringIO()
+            c = Console(file=buf, force_terminal=True, color_system="standard", width=1000, soft_wrap=True)
+            c.print(evt_t)
+            logger.info(buf.getvalue().rstrip("\n"))
+
         cb = on_event or self.on_event
         if cb:
             try:
@@ -204,7 +207,7 @@ class MakerCheckerOrchestrator:
             self.context_manager.add_turn(
                 GovernanceTurn(
                     round_index=round_idx,
-                    actor="Curator/Maker",
+                    actor="Curator",
                     action="propose_draft",
                     summary=f"Submitted draft for '{node.path}' ({tokens} tokens)",
                     token_count=tokens,
@@ -212,7 +215,6 @@ class MakerCheckerOrchestrator:
                 )
             )
 
-            # Emit draft proposed event
             await self._emit(
                 KnowledgeAgentEvent(
                     agent="CuratorAgent",
@@ -225,19 +227,19 @@ class MakerCheckerOrchestrator:
                 on_event,
             )
 
-            # Step 1: Audit via CheckerAgent
             await self._emit(
                 KnowledgeAgentEvent(
                     agent="CheckerAgent",
                     action="audit",
                     status="running",
                     target_path=node.path,
-                    input_summary=f"Auditing '{node.path}' ({tokens} tokens) via Jev model",
+                    input_summary=f"Auditing '{node.path}' ({tokens} tokens) via Jev",
                     details={"tokens": tokens, "round": round_idx},
                 ),
                 on_event,
             )
 
+            # Step 1: Audit via CheckerAgent
             report = await self.checker.check(node, context=context)
             round_idx += 1
 
@@ -299,7 +301,7 @@ class MakerCheckerOrchestrator:
                             action="commit",
                             status="completed",
                             target_path=node.path,
-                            output_summary=f"Committed directly to store at '{node.path}'",
+                            output_summary=f"Check succeed, committed to '{node.path}'",
                         ),
                         on_event,
                     )
@@ -311,7 +313,7 @@ class MakerCheckerOrchestrator:
                         committed_paths=[node.path],
                         retries_used=retries,
                         history=list(self.context_manager.turns),
-                        message=f"Draft successfully audited and committed to '{node.path}'.",
+                        message=f"Checks successful, created knowledge to '{node.path}'.",
                     )
                 except ReadOnlyMountError as e:
                     return MakerCheckerResult(

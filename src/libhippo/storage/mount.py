@@ -13,6 +13,11 @@ from pydantic import BaseModel
 
 class ReadOnlyMountError(PermissionError):
     """Raised when an operation attempts to write to a read-only knowledge mount."""
+    mount_dir: str
+
+    def __init__(self, mount_dir: str, *args: object):
+        super().__init__(*args)
+        self.mount_dir = mount_dir
 
 
 class MountConfig(BaseModel):
@@ -135,6 +140,7 @@ class MountManager:
         _, mount = self.resolve_virtual_path(virtual_path)
         if mount.read_only:
             raise ReadOnlyMountError(
+                mount.namespace_prefix,
                 f"Mount '{mount.namespace_prefix}' at '{mount.physical_path}' is read-only. "
                 f"Cannot mutate '{virtual_path}'. Draft overriding knowledge under 'project/' instead."
             )

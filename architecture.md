@@ -27,6 +27,7 @@ Maintains living, audited engineering knowledge across agent sessions.
   - `effort=high`: Broad vector seed + deep `BookKeeperAgent` exploration. Falls back to web research if criticality is mandatory.
   - `criticality`: `mandatory` (obligatory curation on miss), `preferred` (fallback to model weights, 0 web calls), `optional` (fail fast).
   - **Staleness Routing**: `optional`/`low` (No Fetch with advisory), `preferred` (Stale-While-Revalidate in background), `mandatory` + `high` (Wait for Latest). Forced updates centralized in `modify_knowledge(action="revalidate")`.
+  - **Refinement** (`refine_knowledge(feedback, query, rejected_path)`): Excludes the rejected candidate and re-ranks by Hub-and-Leaf relation (children for `too_broad`, ancestors for `too_narrow`).
 
 - **Agents Orchestration**: `GraphFlow`
   - `TaskSolverAgent` is related to general agent harness.
@@ -56,7 +57,7 @@ Provides an execution runtime for autonomous software engineering tasks.
   - **Filesystem**: `read_file` (windowed, max 800 lines), `write_file` (targeted line/string replace), `overwrite_file`, `delete_file`.
   - **Code Exploration**: Pure Python `search_file` (hierarchical `.gitignore` parsing) and `list_dir`.
   - **Terminal & Tasks**: Sandboxed `run_command` and background `manage_task` execution.
-  - **Knowledge**: `query_knowledge` (mandatory retrieval) and `refine_knowledge`, `record_learning` (learning queues), and `modify_knowledge`.
+  - **Knowledge**: `query_knowledge` (mandatory retrieval), `complete_retrieval`, and `record_learning` (learning queues), and `modify_knowledge` (only from VerifierAgent).
   - **Subagents**: `invoke_subagent`, `shorten_tool_output`, and `manage_subagents` for parallel delegation and LLM-driven output shortening.
   - **User Interaction**: Interactive `ask_question` modal and ambient `get_status`.
 

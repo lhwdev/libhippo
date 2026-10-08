@@ -265,22 +265,24 @@ def reconcile_candidate_frontmatter(
     importance: float | None = None,
     status: NodeStatus | None = None,
 ) -> KnowledgeCandidate:
-    """Silently drop agent-provided properties for categories 2-4 and replace with previous/actual values.
+    """
+    Replace some of agent-provided properties with previous/actual values.
 
     Categories:
-    1. Written by Agent (title, version, source, version_check, tags, related) -> preserved from candidate.
-    2. Classified by Checker (importance, status) -> replaced with actual audit value or previous value.
-    3. Systematically Resolved (namespace, nature, timestamps, counters) -> derived from path and storage.
-    4. User-Only (force_keep) -> replaced with previous value from disk (or False if new).
+    title, version, source, version_check, tags, related -> preserved.
+    importance, status -> replaced with from CheckerAgent.
+    namespace, nature, timestamps, counters -> derived from path and storage.
+    force_keep -> replaced with previous value.
     """
     if not candidate.frontmatter:
         return candidate
 
     fm = candidate.frontmatter
 
-    # Category 4: User-only force_keep (replace with previous value if modifying existing)
-    if previous_candidate and previous_candidate.frontmatter:
-        fm.force_keep = previous_candidate.frontmatter.force_keep
+    # Category 4: User-only force_keep
+    fm.force_keep = (previous_candidate.frontmatter.force_keep
+                     if previous_candidate and previous_candidate.frontmatter
+                     else False)
 
     # Category 2: Checker-classified importance & status
     if importance is not None:

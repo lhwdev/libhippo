@@ -15,11 +15,38 @@ logger = logging.getLogger(__name__)
 
 EffortTier = Literal["low", "medium", "high"]
 CriticalityTier = Literal["mandatory", "preferred", "optional"]
-RetrievalStatus = Literal["HIT", "MISS:FALLBACK", "MISS:MANDATORY", "MISS:OPTIONAL"]
+RetrievalStatus = Literal["HIT", "MISS:FALLBACK", "MISS:MANDATORY", "MISS:OPTIONAL", "HANDOUT:EXPLORE"]
+RefineFeedback = Literal["too_broad", "too_narrow", "wrong_direction", "more_details"]
 
 
 DEFAULT_THRESHOLD_LOW: float = 0.68
 DEFAULT_THRESHOLD_MEDIUM: float = 0.80
+
+
+def apply_rejection(matches: list[Any], feedback: RefineFeedback | None, rejected_path: str) -> list[Any]:
+    """Drop rejected candidate and re-rank by Hub-and-Leaf relation to it.
+
+    - too_broad / more_details: drop rejected path and its ancestors; prefer its children.
+    - too_narrow: drop rejected path and its children; prefer its ancestors.
+    - wrong_direction: drop rejected path and its whole subtree.
+    """
+    def is_child(p: str) -> bool:
+        return p.startswith(f"{rejected_path}/")
+
+    def is_ancestor(p: str) -> bool:
+        return rejected_path.startswith(f"{p}/")
+
+    if feedback in ("too_broad", "more_details"):
+        dropped, preferred = is_ancestor, is_child
+    elif feedback == "too_narrow":
+        dropped, preferred = is_child, is_ancestor
+    else:
+        dropped, preferred = is_child, None
+
+    kept = [m for m in matches if m.path != rejected_path and not dropped(m.path)]
+    if preferred:
+        kept.sort(key=lambda m: not preferred(m.path))
+    return kept
 
 
 class KnowledgeRetrievalResult(BaseModel):
@@ -65,11 +92,25 @@ class KnowledgeDispatcher:
         query: str,
         effort: EffortTier = "medium",
         criticality: CriticalityTier = "preferred",
+        feedback: RefineFeedback | None = None,
+        rejected_path: str | None = None,
     ) -> KnowledgeRetrievalResult:
-        """Execute 3-tier adaptive retrieval with confidence scoring, metadata visibility, and staleness routing."""
+        """Execute 3-tier adaptive retrieval with confidence scoring, metadata visibility, and staleness routing.
+
+        `feedback` and `rejected_path` refine a prior result: the rejected candidate is excluded and
+        remaining candidates are re-ranked by hierarchy relation (see `apply_rejection`).
+        """
+        rejection = {"path": rejected_path, "feedback": feedback} if feedback or rejected_path else None
+
+        async def search(top_k: int) -> list[Any]:
+            if not rejected_path:
+                return await self.store.search(query=query, top_k=top_k)
+            matches = await self.store.search(query=query, top_k=top_k + 5)
+            return apply_rejection(matches, feedback, rejected_path)[:top_k]
+
         # 1. Low Effort Tier: Fast local vector/FTS search, strict cutoff
         if effort == "low":
-            matches = await self.store.search(query=query, top_k=1)
+            matches = await search(top_k=1)
             if matches and matches[0].confidence >= self.threshold_low:
                 top = matches[0]
                 full_content = await self.store.read_knowledge(top.path) or top.content
@@ -89,7 +130,7 @@ class KnowledgeDispatcher:
 
         # 2. Medium Effort Tier: Optimistic fast path
         if effort == "medium":
-            matches = await self.store.search(query=query, top_k=3)
+            matches = await search(top_k=3)
             if matches and matches[0].confidence >= self.threshold_medium:
                 top = matches[0]
                 full_content = await self.store.read_knowledge(top.path) or top.content
@@ -107,7 +148,7 @@ class KnowledgeDispatcher:
 
             # Below medium threshold -> escalate to BookKeeperAgent if available and matches exist
             if self.book_keeper and matches:
-                bk_res = await self._invoke_bookkeeper(query, candidates=matches, criticality=criticality)
+                bk_res = await self._invoke_bookkeeper(query, candidates=matches, criticality=criticality, rejection=rejection)
                 if bk_res.status == "HIT":
                     return await self._apply_staleness_routing(bk_res, effort="medium", criticality=criticality)
                 return await self._handle_miss_async(query, effort="medium", criticality=criticality)
@@ -115,17 +156,16 @@ class KnowledgeDispatcher:
             # BookKeeper missed or not provided
             return await self._handle_miss_async(query, effort="medium", criticality=criticality)
 
-        # 3. High Effort Tier: Deep BookKeeper exploration
+        # 3. High Effort Tier: Deep BookKeeper exploration & TaskSolver exploration handout
         if effort == "high":
-            matches = await self.store.search(query=query, top_k=5)
+            matches = await search(top_k=5)
             if self.book_keeper and matches:
-                bk_res = await self._invoke_bookkeeper(query, candidates=matches, criticality=criticality)
+                bk_res = await self._invoke_bookkeeper(query, candidates=matches, criticality=criticality, rejection=rejection)
                 if bk_res.status == "HIT":
                     return await self._apply_staleness_routing(bk_res, effort="high", criticality=criticality)
-                return await self._handle_miss_async(query, effort="high", criticality=criticality)
 
-            # Fallback to top vector match only if no BookKeeper is configured
-            if matches and matches[0].confidence >= self.threshold_low:
+            # Fallback to top vector match only if high confidence
+            if matches and matches[0].confidence >= self.threshold_medium:
                 top = matches[0]
                 full_content = await self.store.read_knowledge(top.path) or top.content
                 res = KnowledgeRetrievalResult(
@@ -139,6 +179,22 @@ class KnowledgeDispatcher:
                     source="fast_path",
                 )
                 return await self._apply_staleness_routing(res, effort="high", criticality=criticality)
+
+            # High-effort miss: Hand out to TaskSolver for context-driven exploration
+            if criticality != "mandatory":
+                rejected_note = f" Previously rejected `{rejected_path}` ({feedback or 'rejected'}); do not settle on it." if rejected_path else ""
+                return KnowledgeRetrievalResult(
+                    status="HANDOUT:EXPLORE",
+                    effort_tier="high",
+                    criticality=criticality,
+                    source="none",
+                    content=(
+                        "[HANDOUT:EXPLORE: No exact match found for query. "
+                        "Use search_knowledge / read_knowledge to investigate knowledges, then you MUST complete retrieval with `complete_retrieval` tool. "
+                        f"you SHOULD ONLY run tasks related to searching knowledge related to \"query\".{rejected_note}]"
+                    ),
+                    details={"query": query, "handout_reason": "high_effort_miss", "rejection": rejection},
+                )
 
             return await self._handle_miss_async(query, effort="high", criticality=criticality)
 
@@ -201,7 +257,7 @@ class KnowledgeDispatcher:
         if criticality == "optional" or effort == "low":
             advisory = (
                 f"[NOTICE: This knowledge is outdated (upstream v{upstream or 'newer'} vs doc v{current}). "
-                f"Query with higher criticality/effort or use modify_knowledge(action='revalidate') to update.]\n\n"
+                f"Query with higher criticality/effort to update automatically.]\n\n"
             )
             result.content = f"{meta_banner}{advisory}{result.content}"
             result.details["staleness_action"] = "no_fetch_advisory"
@@ -347,12 +403,14 @@ class KnowledgeDispatcher:
         query: str,
         candidates: list[Any],
         criticality: CriticalityTier,
+        rejection: dict[str, Any] | None = None,
     ) -> KnowledgeRetrievalResult:
         """Invoke BookKeeperAgent for query expansion and cross-referencing."""
         if not self.book_keeper or not candidates:
             return self._handle_miss(query, effort="medium", criticality=criticality)
         try:
-            bk_response = await self.book_keeper.lookup(query=query, candidates=candidates, criticality=criticality)
+            extra: dict[str, Any] = {"rejection": rejection} if rejection else {}
+            bk_response = await self.book_keeper.lookup(query=query, candidates=candidates, criticality=criticality, **extra)
             if isinstance(bk_response, dict):
                 status_str = bk_response.get("status", "HIT")
                 status_tag: RetrievalStatus = (
