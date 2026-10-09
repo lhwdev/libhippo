@@ -116,7 +116,7 @@ Always use useActionState for form pending states in React 19.
         orchestrator=mock_orchestrator,
     )
 
-    memory = ContextMemory()
+    memory = ContextMemory(model_name="gpt-5-nano")
     memory.set_zone1_prefix("System persona", "Workspace", [])
     memory.append_user_turn("Fix form submit")
     memory.append_assistant_turn("Fixed form submit using useActionState")

@@ -31,7 +31,7 @@ class OpenAIResponsesClient(ChatCompletionClient):
 
     def __init__(
         self,
-        model: str = "gpt-6.1-sol",
+        model: str,
         api_key: str | None = None,
         base_url: str | None = None,
         reasoning_effort: str | None = "medium",
@@ -399,7 +399,7 @@ class OpenAIResponsesWebSocketClient(ChatCompletionClient):
 
     def __init__(
         self,
-        model: str = "gpt-6.1-sol",
+        model: str,
         api_key: str | None = None,
         base_url: str | None = None,
         ws_url: str = "wss://api.openai.com/v1/responses",

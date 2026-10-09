@@ -1,4 +1,4 @@
-"""CuratorAgent: Write-protected Knowledge Draftsman with gpt-6-luna."""
+"""CuratorAgent: Write-protected Knowledge Draftsman."""
 
 from __future__ import annotations
 

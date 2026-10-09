@@ -200,7 +200,7 @@ Use requestAnimationFrame.
         from libhippo.runner.memory import ContextMemory
         from libhippo.runner.tools.knowledge_tools import KnowledgeTools
 
-        mem = ContextMemory()
+        mem = ContextMemory(model_name="gpt-5-nano")
         mem.append_assistant_turn("Looking for knowledge...")
         mem.append_tool_output(
             tool_name="query_knowledge",

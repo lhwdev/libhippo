@@ -22,3 +22,10 @@
 # uv가 깔려있다 가정하면
 uv sync --extra dev # 빌드만 할거면 `--extra dev`
 ```
+
+## 실행하기
+
+1. `.env.example`을 `.env.local`로 복사하고, API 키를 입력해줍니다.
+   * 판별(`BookKeeperAgent`, `CheckerAgent`)에는 TypeSafe Jev가 사용되었으나, OpenAI Decisions API 등을 쓰도록 코드를 리펙토링해도 비슷하게 작동할거 같습니다.
+
+2. 실행되는 모델을 변경해야 할 경우, 

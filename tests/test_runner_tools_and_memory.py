@@ -16,7 +16,7 @@ from libhippo.tools.registry import ToolRegistry
 
 def test_context_memory_zone3_compaction():
     """Verify Zone 1 bitwise static prefix, Zone 2 metadata, and Zone 3 eviction target."""
-    mem = ContextMemory(model_name="gpt-4o")
+    mem = ContextMemory(model_name="gpt-5-nano")
     mem.set_zone1_prefix(
         system_persona="You are a coding agent.",
         repo_profile="A Python repository.",
@@ -49,7 +49,7 @@ def test_context_memory_zone3_compaction():
 def test_workload_governor_limits():
     """Verify governor turn limits, soft watermark warning, and circuit breaker."""
     cfg = HarnessConfig(max_turns=3, soft_token_watermark=100, hard_token_limit=300)
-    mem = ContextMemory()
+    mem = ContextMemory(model_name="gpt-5-nano")
     gov = WorkloadGovernor(config=cfg, memory=mem)
 
     # Turns
@@ -190,7 +190,7 @@ async def test_modify_knowledge_tool(tmp_path: Path):
 
 def test_context_memory_zone2_summarization_compaction():
     """Verify Zone 2 turn summarization when is_evictable=False messages exceed budget."""
-    mem = ContextMemory(model_name="gpt-4o")
+    mem = ContextMemory(model_name="gpt-5-nano")
     mem.set_zone1_prefix(system_persona="You are a coding assistant.")
 
     # Add multiple non-evictable turns

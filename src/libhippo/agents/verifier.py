@@ -1,4 +1,4 @@
-"""VerifierAgent: Knowledge Refactoring Authority and Escalation Arbitrator with gpt-6.1-sol."""
+"""VerifierAgent: Knowledge Refactoring Authority and Escalation Arbitrator."""
 
 from __future__ import annotations
 

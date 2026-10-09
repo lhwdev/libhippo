@@ -1,4 +1,4 @@
-"""TaskSolverAgent: Primary problem-solving and code generation agent with gpt-6.1-sol."""
+"""TaskSolverAgent: Primary problem-solving and code generation agent."""
 
 from __future__ import annotations
 

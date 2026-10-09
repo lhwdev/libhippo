@@ -192,7 +192,7 @@ class ModelRegistry:
             or config.extra_kwargs.get("model_info")
         )
         if not effective_model_info:
-            raise ValueError(f"model_info is strictly required for model '{model_name}'.")
+            raise ValueError(f"model_info is required for model '{model_name}'.")
         kwargs["model_info"] = effective_model_info
 
         # Filter out None values
