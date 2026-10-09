@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 from typing import Any
 
+from numpy import full
 import tiktoken
 
 from libhippo.runner.types import ContextMessage
@@ -63,6 +64,7 @@ class ContextMemory:
     def append_user_turn(
         self,
         user_content: str,
+        session_context: str | None = None,
         timestamp: str | None = None,
         session_elapsed: str | None = None,
         branch: str | None = None,
@@ -74,6 +76,9 @@ class ContextMemory:
         full_content = (f'<USER_PROMPT timestamp="{ts}" session_elapsed="{elapsed}" branch="{br}">\n' 
                         f'{user_content}\n'
                         '</USER_PROMPT>')
+        if session_context:
+            full_content = f"{session_context}\n{full_content}"
+            
         msg = ContextMessage(
             role="user",
             content=full_content,

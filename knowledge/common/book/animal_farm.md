@@ -9,7 +9,7 @@ source:
 tags: ["literature", "george_orwell", "animal_farm", "plot", "allegory", "russian_revolution",
   "stalinism", "political_satire"]
 related:
-  - common/literature.md
+  - common/book.md
 importance: 0.2
 version: 1.0.0
 ---

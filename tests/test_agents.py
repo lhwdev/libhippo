@@ -727,3 +727,69 @@ async def test_curator_stops_after_successful_commit():
     assert res.get("gov_result") is not None
     assert res["gov_result"].status == "COMMITTED"
 
+
+@pytest.mark.asyncio
+async def test_draftsman_commit_and_commit_all_return_revise_tag_on_audit_failure(tmp_path):
+    """Verify commit and commit_all return structured <revise> tag as tool output on audit failure."""
+    from libhippo.agents.draftsman import KnowledgeDraftSession
+    from libhippo.models.audit import JevAuditReport
+    from libhippo.orchestration.maker_checker import MakerCheckerResult
+
+    report = JevAuditReport(
+        verdict="REVISE_CONTENT",
+        size_status="undersized",
+        taxonomy_fit="optimal",
+        token_count=150,
+        effective_token_count=150,
+        importance_score=0.25,
+        content_errors=["Practical utility score below threshold (0.25 < 0.30)"],
+    )
+
+    mock_orch = AsyncMock()
+    mock_orch.run_governance.return_value = MakerCheckerResult(
+        status="REVISE_FAILED",
+        path="common/law",
+        verdict="REVISE_CONTENT",
+        report=report,
+        message="Audit verdict: REVISE_CONTENT\nSize status: undersized",
+    )
+
+    session = KnowledgeDraftSession(workspace_root=tmp_path, orchestrator=mock_orch)
+    try:
+        md = """---
+title: "Law Basics"
+version: "1.0.0"
+---
+## Summary
+Law summary.
+"""
+        await session.write_knowledge("common/law", md)
+
+        # Single commit test
+        res_single = await session.commit("common/law")
+        assert isinstance(res_single, str)
+        assert '<revise path="common/law">' in res_single
+        assert "<revise:AUDIT_FEEDBACK>" in res_single
+        assert "REVISE_CONTENT" in res_single
+        assert "Practical utility score below threshold" in res_single
+        assert "</revise>" in res_single
+        assert session.is_committed is False
+
+        # Verify auto_revise was False
+        mock_orch.run_governance.assert_called_with(
+            candidate=md,
+            target_path="common/law",
+            auto_revise=False,
+        )
+
+        # commit_all test
+        res_all = await session.commit_all()
+        assert isinstance(res_all, str)
+        assert '<revise path="common/law">' in res_all
+        assert "<revise:AUDIT_FEEDBACK>" in res_all
+        assert "</revise>" in res_all
+        assert session.is_committed is False
+    finally:
+        session.cleanup()
+
+

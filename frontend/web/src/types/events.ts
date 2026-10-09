@@ -71,8 +71,11 @@ export interface ConnectionEstablishedEvent {
   type: "connection_established";
   project_id: string;
   conversation_id: string;
+  conversation_name?: string;
+  conversation_metadata?: Record<string, any>;
   current_phase: LifecyclePhase;
   total_tokens: number;
+  chat_messages?: ChatMessage[];
 }
 
 export interface SidecarResponseEvent {

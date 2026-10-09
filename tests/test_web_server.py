@@ -161,11 +161,25 @@ async def test_web_session_and_knowledge_apis(test_harness: GeneralAgentHarness)
         kq_data = await kq_resp.json()
         assert "result" in kq_data
 
-        # 4. Session reset
+        # 4. Conversations listing and switching
+        convs_resp = await client.get("/api/conversations")
+        assert convs_resp.status == 200
+        convs_data = await convs_resp.json()
+        assert "conversations" in convs_data
+
+        curr_id = sess_data["conversation_id"]
+        load_resp = await client.post(f"/api/conversations/{curr_id}/load")
+        assert load_resp.status == 200
+        load_data = await load_resp.json()
+        assert load_data["status"] == "ok"
+        assert load_data["conversation_id"] == curr_id
+
+        # 5. Session reset
         reset_resp = await client.post("/api/session/reset")
         assert reset_resp.status == 200
         reset_data = await reset_resp.json()
         assert reset_data["status"] == "ok"
+
 
 
 @pytest.mark.asyncio

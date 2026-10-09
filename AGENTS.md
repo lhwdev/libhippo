@@ -26,7 +26,6 @@ In most time, read `architecture.md` first.
   try to refactor use cases.
 - Search for web when dealing with latest things, i.e. OpenAI models, API.
   * Do not mention legacy OpenAI models like o1; search.
-- Do not increase number of tests. To add one test function, remove first.
 
 ### Python Rules
 

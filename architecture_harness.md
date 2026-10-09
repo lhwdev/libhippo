@@ -646,7 +646,10 @@ Conversations are first-class, durable entities grouped cleanly under each proje
   - Project configuration: `~/.config/libhippo/projects/<project_id>.json`
   - Conversations directory: `~/.config/libhippo/projects/<project_id>/conversations/<conversation_id>/`
 - **Persisted State Entities**:
-  1. **Zone 2 History (`transcript.jsonl`)**:
+  1. **Conversation Metadata (`metadata.json`)**:
+     - Persists conversation identification and tracking: `id`, `name`, `created_at`, `updated_at`, and arbitrary metadata tags.
+     - **Automatic Naming**: Automatically extracts and assigns a concise, readable conversation title upon the first user prompt (or updates it if unnamed).
+  2. **Zone 2 History (`transcript.jsonl`)**:
      - Monotonically appended JSONL stream capturing every user turn, temporal metadata tag, assistant reasoning trace, tool invocation, and tool output.
   2. **Subagent Registry (`subagents/`)**:
      - Tracks all spawned child workers: conversation IDs, worker roles, execution states (`running`, `idle`, `completed`, `errored`), transcripts, and parent-child linkage.
@@ -657,6 +660,10 @@ Conversations are first-class, durable entities grouped cleanly under each proje
   4. **Background Tasks (`tasks/`)**:
      - Persists long-running detached process metadata: `task_id`, command string, working directory, process PID, start timestamp, exit code, and stdout/stderr stream logs (`tasks/<task_id>.log`).
      - Allows users and agents to reconnect, query status, or send input to running daemons across disconnections.
+- **Session Restoration & Web UI Synchronization**:
+  - `GeneralAgentHarness` auto-resumes the active conversation or latest non-empty session on boot, repopulating Zone 2 linear history and turn governors.
+  - Exposes programmatic APIs (`load_conversation`, `new_conversation`, `list_conversations`) and HTTP/WS endpoints (`GET /api/conversations`, `GET /api/conversations/{id}`, `POST /api/conversations/{id}/load`, `PATCH /api/conversations/{id}`).
+  - WebSocket initial handshake (`connection_established`) and `/api/session` include `conversation_name`, `conversation_metadata`, and structured `chat_messages` so web clients immediately restore titles, metadata, and full conversation histories across reloads.
 
 ---
 

@@ -70,6 +70,7 @@ class GeneralAgentHarness:
         dispatcher: KnowledgeDispatcher | None = None,
         sandbox: SandboxRunner | None = None,
         session: ConversationSession | None = None,
+        conversation_id: str | None = None,
     ) -> None:
         self.config = config or HarnessConfig()
         self.workspace_root = self.config.workspace_root.resolve()
@@ -110,9 +111,14 @@ class GeneralAgentHarness:
         self.agent_manager.curator.sandbox = self.sandbox
 
         # 2. Persistence Session
-        conv_id = f"conv-{uuid.uuid4().hex[:8]}"
+        if conversation_id:
+            conv_id = conversation_id
+        elif session is not None:
+            conv_id = session.conversation_id
+        else:
+            conv_id = self._find_latest_conversation_id() or f"conv-{uuid.uuid4().hex[:8]}"
         self.session = session or ConversationSession(
-            project_id=self.config.get_project_id(),
+            project_id=self.project_manager.project_id,
             conversation_id=conv_id,
             config=self.config,
         )
@@ -194,6 +200,126 @@ class GeneralAgentHarness:
 
         # Initialize Zone 1 static prefix
         self.init_prefix()
+
+        # 8. Restore conversation session
+        if hasattr(self, "subagents"):
+            self.subagents.session = self.session
+        self._restore_session_messages()
+        self._mark_active_conversation(self.session.conversation_id)
+
+    def _find_latest_conversation_id(self) -> str | None:
+        """Find most recent active conversation id if available."""
+        conv_dir = self.config.get_conversations_dir()
+        if not conv_dir.is_dir():
+            return None
+        active_file = conv_dir / ".active_conversation"
+        if active_file.is_file():
+            try:
+                cand = active_file.read_text(encoding="utf-8").strip()
+                if cand and (conv_dir / cand).is_dir():
+                    return cand
+            except OSError:
+                pass
+
+        newest_id: str | None = None
+        newest_mtime = 0.0
+        for p in conv_dir.iterdir():
+            if p.is_dir() and not p.name.startswith("."):
+                tf = p / "transcript.jsonl"
+                if tf.is_file() and tf.stat().st_size > 0:
+                    mtime = tf.stat().st_mtime
+                    if mtime > newest_mtime:
+                        newest_mtime = mtime
+                        newest_id = p.name
+        return newest_id
+
+    def _mark_active_conversation(self, conv_id: str) -> None:
+        """Persist currently active conversation id."""
+        try:
+            conv_dir = self.config.get_conversations_dir()
+            conv_dir.mkdir(parents=True, exist_ok=True)
+            active_file = conv_dir / ".active_conversation"
+            active_file.write_text(conv_id, encoding="utf-8")
+        except OSError:
+            pass
+
+    def _restore_session_messages(self) -> None:
+        """Restore messages from session into Zone 2 linear history."""
+        messages = self.session.get_messages()
+        self.memory.clear()
+        self.init_prefix()
+        user_turns = 0
+        for msg in messages:
+            if msg.zone in ("zone2_linear", "zone3_compacted"):
+                self.memory.zone2_history.append(msg)
+                if msg.role == "user":
+                    user_turns += 1
+        self.governor.reset()
+        self.governor.current_turns = user_turns
+
+    def load_conversation(self, conversation_id: str) -> bool:
+        """Load an existing conversation into harness context."""
+        self.session = ConversationSession(
+            project_id=self.project_manager.project_id,
+            conversation_id=conversation_id,
+            config=self.config,
+        )
+        if hasattr(self, "subagents"):
+            self.subagents.session = self.session
+        self._restore_session_messages()
+        self._mark_active_conversation(conversation_id)
+        self._is_paused = False
+        self._interrupt_event.clear()
+        return True
+
+    def new_conversation(self, conversation_id: str | None = None, name: str | None = None) -> str:
+        """Start a new empty conversation session."""
+        new_conv_id = conversation_id or f"conv-{uuid.uuid4().hex[:8]}"
+        self.session = ConversationSession(
+            project_id=self.project_manager.project_id,
+            conversation_id=new_conv_id,
+            config=self.config,
+            name=name,
+        )
+        if hasattr(self, "subagents"):
+            self.subagents.session = self.session
+        self.memory.clear()
+        self.init_prefix()
+        self.governor.reset()
+        self._mark_active_conversation(new_conv_id)
+        self._is_paused = False
+        self._interrupt_event.clear()
+        return new_conv_id
+
+    def list_conversations(self) -> list[dict[str, Any]]:
+        """List all tracked conversations for the active project."""
+        conv_dir = self.config.get_conversations_dir()
+        if not conv_dir.is_dir():
+            return []
+        results: list[dict[str, Any]] = []
+        for p in conv_dir.iterdir():
+            if not p.is_dir() or p.name.startswith("."):
+                continue
+            sess = ConversationSession(
+                project_id=self.project_manager.project_id,
+                conversation_id=p.name,
+                storage_dir=p,
+                config=self.config,
+            )
+            meta = sess.get_metadata()
+            name = meta.get("name") or sess.get_title()
+            results.append({
+                "id": p.name,
+                "name": name,
+                "title": name,
+                "updated_at": meta.get("updated_at") or sess.get_updated_at(),
+                "created_at": meta.get("created_at", ""),
+                "message_count": meta.get("message_count", 0),
+                "metadata": meta,
+                "is_active": p.name == self.session.conversation_id,
+            })
+        results.sort(key=lambda x: x["updated_at"], reverse=True)
+        return results
 
     def auto_discover(self) -> None:
         """Automatically discover project AGENTS.md, skills, and MCP configurations."""
@@ -327,8 +453,9 @@ class GeneralAgentHarness:
             if not continue_mode and not is_initial_turn:
                 self.memory.prune_past_tool_outputs()
 
+            session_context: str | None = None
             if is_initial_turn:
-                ambient_header = (
+                session_context = (
                     f"<session_context>\n"
                     f"- Current Date & Time: {local_str} (UTC: {start_time.isoformat()}, Timezone: {tz_offset})\n"
                     f"- Workspace: {self.workspace_root.resolve()} ({self.workspace_root.name})\n"
@@ -336,12 +463,10 @@ class GeneralAgentHarness:
                     f"- User & Platform: {getpass.getuser()} on {platform.system()} ({platform.machine()})\n"
                     f"</session_context>\n\n"
                 )
-                turn_content = f"{ambient_header}{user_input}"
-            else:
-                turn_content = user_input
 
             u_msg = self.memory.append_user_turn(
-                user_content=turn_content,
+                user_content=user_input,
+                session_context=session_context,
                 timestamp=start_time.isoformat(),
                 branch=branch,
             )

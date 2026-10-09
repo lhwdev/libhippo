@@ -86,7 +86,7 @@ def test_env_hierarchy_loading(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 @pytest.mark.asyncio
 async def test_conversation_persistence(tmp_path: Path):
-    """Test ConversationSession persists messages, artifacts, and tasks."""
+    """Test ConversationSession persists messages, metadata, artifacts, and tasks on demand."""
     storage = tmp_path / "session_storage"
     session = ConversationSession(
         project_id="test-proj",
@@ -94,7 +94,14 @@ async def test_conversation_persistence(tmp_path: Path):
         storage_dir=storage,
     )
 
-    # 1. Append message
+    # Verify metadata created and on-demand folders not yet created
+    assert session.metadata_file.exists()
+    assert session.get_metadata()["id"] == "conv-123"
+    assert not (storage / "artifacts").exists()
+    assert not (storage / "tasks").exists()
+    assert not (storage / "subagents").exists()
+
+    # 1. Append message and verify automatic naming
     msg = ContextMessage(
         role="user",
         content="Implement feature X",
@@ -105,22 +112,29 @@ async def test_conversation_persistence(tmp_path: Path):
     loaded = session.get_messages()
     assert len(loaded) == 1
     assert loaded[0].content == "Implement feature X"
+    assert session.get_name() == "Implement feature X"
+    assert session.get_metadata()["name"] == "Implement feature X"
+    assert session.get_metadata()["message_count"] == 1
 
-    # 2. Record artifact
+    # 2. Record artifact (creates artifacts folder on demand)
     art_path = await session.record_artifact(
         name="plan.md",
         content="# Plan\n1. Do X",
         metadata={"Summary": "Test plan", "UserFacing": True},
     )
     assert art_path.exists()
+    assert (storage / "artifacts").is_dir()
     artifacts = session.list_artifacts()
     assert len(artifacts) == 1
     assert artifacts[0]["name"] == "plan.md"
     assert artifacts[0]["metadata"]["UserFacing"] is True
 
-    # 3. Record task and subagent
+    # 3. Record task and subagent (creates folders on demand)
     await session.record_task("task-1", {"status": "completed", "exit_code": 0})
+    assert (storage / "tasks").is_dir()
+
     await session.record_subagent("sub-1", {"role": "reviewer", "state": "idle"})
+    assert (storage / "subagents").is_dir()
 
     subagents = session.list_subagents()
     assert len(subagents) == 1

@@ -158,7 +158,7 @@ def _format_tool_call(name: str, args_input: Any) -> list[str]:
         parsed_args = args_input
     elif isinstance(args_input, str):
         try:
-            parsed = json.loads(args_input)
+            parsed = json.loads(args_input, strict=False)
             if isinstance(parsed, dict):
                 parsed_args = parsed
         except Exception:
@@ -169,7 +169,8 @@ def _format_tool_call(name: str, args_input: Any) -> list[str]:
         if len(raw_str) > 120 or "\n" in raw_str:
             t = Text(f"{name}(...)", style="bold not dim yellow")
             res = [_render_ansi(t)]
-            res.append(f"    {_highlight_value(_truncate_text(raw_str))}")
+            rendered = _highlight_value(_truncate_text(raw_str))
+            res.extend(f"    {line}" for line in rendered.splitlines())
             return res
         tc_t = Text(name, style="bold not dim yellow")
         tc_t.append("(", style="dim")

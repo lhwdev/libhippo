@@ -22,6 +22,7 @@ export const App: React.FC = () => {
     totalTokens,
     projectId,
     conversationId,
+    conversationName,
     pendingApproval,
     pendingQuestion,
     sidecarMessages,
@@ -33,6 +34,7 @@ export const App: React.FC = () => {
     sendModalAnswer,
     sendSidecar,
     resetSession,
+    loadConversation,
     compactContext,
   } = useWebSocket();
 
@@ -43,10 +45,12 @@ export const App: React.FC = () => {
         connected={connected}
         projectId={projectId}
         conversationId={conversationId}
+        conversationName={conversationName}
         currentPhase={currentPhase}
         totalTokens={totalTokens}
         onReset={resetSession}
         onCompact={compactContext}
+        onSelectConversation={loadConversation}
       />
 
       {/* Navigation Tabs */}

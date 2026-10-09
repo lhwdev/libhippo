@@ -12,7 +12,7 @@ from autogen_core import CancellationToken
 from autogen_core.models import ChatCompletionClient
 
 from libhippo.agents.base import BaseHippoAgent
-from libhippo.agents.draftsman import KnowledgeDraftSession
+from libhippo.agents.draftsman import KnowledgeDraftSession, format_revise_prompt
 from libhippo.agents.prompts import get_agent_system_prompt
 from libhippo.models.knowledge import KnowledgeCandidate
 from libhippo.models.llm import create_chat_client
@@ -232,6 +232,8 @@ class CuratorAgent(AssistantAgent, BaseHippoAgent):
                 self.current_session.cleanup()
                 self.current_session = None
 
+    format_revise_prompt = staticmethod(format_revise_prompt)
+
     async def revise(
         self,
         candidate_markdown: str,
@@ -249,13 +251,7 @@ class CuratorAgent(AssistantAgent, BaseHippoAgent):
             current_session.drafts[norm_path] = draft_file
             current_session.active_path = norm_path
 
-            prompt = (
-                f'<revise path="{norm_path}">\n'
-                "Use content/line replacements with `write_knowledge` to make minimal, surgical edits to fix reported issues.\n"
-                f"When checks pass, call commit(path='{norm_path}').\n"
-                f"<revise:AUDIT_FEEDBACK>\n{feedback}\n</revise:AUDIT_FEEDBACK>\n"
-                "</revise>"
-            )
+            prompt = self.format_revise_prompt(norm_path, feedback)
 
             result = await self.run(task=prompt)
             last_message = result.messages[-1].content if result.messages else ""

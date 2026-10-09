@@ -181,6 +181,7 @@ class MakerCheckerOrchestrator:
         context: KnowledgeContext | None = None,
         max_retries: int = 2,
         on_event: Callable[[KnowledgeAgentEvent], Any] | None = None,
+        auto_revise: bool = True,
     ) -> MakerCheckerResult:
         """Execute Maker-Checker governance loop with dual-phase audit and safe commits."""
         current_markdown = candidate if isinstance(candidate, str) else candidate.markdown
@@ -569,13 +570,13 @@ class MakerCheckerOrchestrator:
                 )
 
             elif report.verdict in ("REVISE_SCHEMA", "REVISE_CONTENT"):
-                if retries < max_retries and self.curator:
-                    errors = report.schema_errors + report.content_errors
-                    feedback = (
-                        f"Audit verdict: {report.verdict}\n"
-                        f"Size status: {report.size_status}\n"
-                        f"Diagnostics:\n" + "\n".join(f"- {e}" for e in errors)
-                    )
+                errors = report.schema_errors + report.content_errors
+                feedback = (
+                    f"Audit verdict: {report.verdict}\n"
+                    f"Size status: {report.size_status}\n"
+                    f"Diagnostics:\n" + "\n".join(f"- {e}" for e in errors)
+                )
+                if auto_revise and retries < max_retries and self.curator:
                     round_idx += 1
                     await self._emit(
                         KnowledgeAgentEvent(
@@ -615,7 +616,7 @@ class MakerCheckerOrchestrator:
                         report=report,
                         retries_used=retries,
                         history=list(self.context_manager.turns),
-                        message=f"Revision retries ({retries}/{max_retries}) exhausted without passing audit.",
+                        message=feedback if not auto_revise else f"Revision retries ({retries}/{max_retries}) exhausted without passing audit.",
                     )
 
             # Unexpected verdict

@@ -132,6 +132,17 @@ def run_draft_sanity_checks(markdown: str) -> dict[str, Any]:
     }
 
 
+def format_revise_prompt(path: str, feedback: str) -> str:
+    """Format structured revision request tag for Maker-Checker feedback."""
+    return (
+        f'<revise path="{path}">\n'
+        "Use content/line replacements with `write_knowledge` to make minimal, surgical edits to fix reported issues.\n"
+        f"When checks pass, call commit(path='{path}').\n"
+        f"<revise:AUDIT_FEEDBACK>\n{feedback}\n</revise:AUDIT_FEEDBACK>\n"
+        "</revise>"
+    )
+
+
 class KnowledgeDraftSession:
     """Manages multi-draft workspace and deterministic checks for Curator and Harvester."""
 
@@ -532,6 +543,7 @@ class KnowledgeDraftSession:
             gov_res = await orch.run_governance(
                 candidate=content,
                 target_path=norm,
+                auto_revise=False,
             )
             if gov_res.status in ("COMMITTED", "MERGED"):
                 self.drafts.pop(norm, None)
@@ -548,13 +560,10 @@ class KnowledgeDraftSession:
                 errors = []
                 if gov_res.report:
                     errors = gov_res.report.schema_errors + gov_res.report.content_errors
-                return {
-                    "status": "error",
-                    "path": norm,
-                    "verdict": gov_res.verdict,
-                    "message": gov_res.message or f"Commit failed (${gov_res.status}). Surgically modify to fix.",
-                    "errors": errors,
-                }
+                feedback = gov_res.message or f"Commit failed ({gov_res.status})."
+                if errors and "Diagnostics:" not in feedback:
+                    feedback += "\nDiagnostics:\n" + "\n".join(f"- {e}" for e in errors)
+                return format_revise_prompt(norm, feedback)
 
         self.drafts.pop(norm, None)
         self.is_committed = len(self.drafts) == 0
@@ -565,7 +574,7 @@ class KnowledgeDraftSession:
             "remaining_drafts": list(self.drafts.keys()),
         }
 
-    async def commit_all(self) -> dict[str, Any]:
+    async def commit_all(self) -> dict[str, Any] | str:
         """Validate and commit all open drafts in the session."""
         if not self.drafts:
             return {
@@ -605,19 +614,18 @@ class KnowledgeDraftSession:
                 else:
                     validated[norm] = content
 
-        if failed:
-            return {
-                "status": "error",
-                "message": f"{len(failed)} draft(s) failed checks. Surgically modify to fix.",
-                "failed_drafts": failed,
-            }
-
         orch = self._get_orchestrator()
         if orch:
+            failed_revises: list[str] = []
+            if failed:
+                for fnorm, ferrs in failed.items():
+                    ffeedback = "Draft failed checks:\n" + "\n".join(f"- {e}" for e in ferrs)
+                    failed_revises.append(format_revise_prompt(fnorm, ffeedback))
+
             committed_paths: list[str] = []
             for norm, content in validated.items():
                 logger.info("Submitting draft '%s' to Maker-Checker governance loop", norm)
-                gov_res = await orch.run_governance(candidate=content, target_path=norm)
+                gov_res = await orch.run_governance(candidate=content, target_path=norm, auto_revise=False)
                 if gov_res.status in ("COMMITTED", "MERGED"):
                     committed_paths.append(norm)
                     self.drafts.pop(norm, None)
@@ -626,19 +634,26 @@ class KnowledgeDraftSession:
                     errors = []
                     if gov_res.report:
                         errors = gov_res.report.schema_errors + gov_res.report.content_errors
-                    return {
-                        "status": "error",
-                        "path": norm,
-                        "verdict": gov_res.verdict,
-                        "message": gov_res.message or f"Commit failed ({gov_res.status}). Surgically modify to fix.",
-                        "errors": errors,
-                        "remaining_drafts": list(self.drafts.keys()),
-                    }
+                    feedback = gov_res.message or f"Commit failed ({gov_res.status})."
+                    if errors and "Diagnostics:" not in feedback:
+                        feedback += "\nDiagnostics:\n" + "\n".join(f"- {e}" for e in errors)
+                    failed_revises.append(format_revise_prompt(norm, feedback))
+
+            if failed_revises:
+                return "\n\n".join(failed_revises)
+
             self.is_committed = len(self.drafts) == 0
             return {
                 "status": "committed",
                 "committed_paths": committed_paths,
                 "remaining_drafts": list(self.drafts.keys()),
+            }
+
+        if failed:
+            return {
+                "status": "error",
+                "message": f"{len(failed)} draft(s) failed checks. Surgically modify to fix.",
+                "failed_drafts": failed,
             }
 
         for norm in validated:

@@ -12,6 +12,7 @@ from typing import Any
 from aiohttp import WSMsgType, web
 
 from libhippo.runner.harness import GeneralAgentHarness
+from libhippo.runner.persistence import context_messages_to_chat_messages
 from libhippo.web.api import (
     setup_autocomplete_routes,
     setup_knowledge_routes,
@@ -96,8 +97,11 @@ def create_app(
                 "type": "connection_established",
                 "project_id": harness.project_manager.project_id,
                 "conversation_id": harness.session.conversation_id,
+                "conversation_name": harness.session.get_name(),
+                "conversation_metadata": harness.session.get_metadata(),
                 "is_running": harness.is_running,
                 "total_tokens": harness.memory.get_total_tokens(),
+                "chat_messages": context_messages_to_chat_messages(harness.memory.zone2_history),
             }
             await ws.send_json(init_state)
 

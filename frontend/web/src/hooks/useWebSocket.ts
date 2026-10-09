@@ -16,6 +16,7 @@ export function useWebSocket() {
   const [totalTokens, setTotalTokens] = useState(0);
   const [projectId, setProjectId] = useState("");
   const [conversationId, setConversationId] = useState("");
+  const [conversationName, setConversationName] = useState("");
 
   const [pendingApproval, setPendingApproval] = useState<ApprovalRequestEvent | null>(null);
   const [pendingQuestion, setPendingQuestion] = useState<ModalQuestionEvent | null>(null);
@@ -55,8 +56,13 @@ export function useWebSocket() {
           case "connection_established":
             setProjectId(data.project_id);
             setConversationId(data.conversation_id);
+            if (data.conversation_name) setConversationName(data.conversation_name);
             setCurrentPhase(data.current_phase);
             setTotalTokens(data.total_tokens);
+            setMessages(data.chat_messages || []);
+            try {
+              localStorage.setItem("libhippo_active_conv", data.conversation_id);
+            } catch (e) {}
             break;
 
           case "phase_transition":
@@ -300,12 +306,52 @@ export function useWebSocket() {
     wsRef.current.send(JSON.stringify({ type: "sidecar", query }));
   }, []);
 
-  const resetSession = useCallback(async () => {
-    await fetch("/api/session/reset", { method: "POST" });
+  const resetSession = useCallback(async (customName?: string) => {
+    const res = await fetch("/api/session/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: customName }),
+    });
+    const data = await res.json();
+    if (data && data.conversation_id) {
+      setConversationId(data.conversation_id);
+      setConversationName(data.name || "");
+      try {
+        localStorage.setItem("libhippo_active_conv", data.conversation_id);
+      } catch (e) {}
+    } else {
+      setConversationName("");
+    }
     setMessages([]);
     setStreamingResponse("");
     setIsStreaming(false);
     setCurrentPhase("alignment");
+  }, []);
+
+  const loadConversation = useCallback(async (convId: string) => {
+    try {
+      const res = await fetch(`/api/conversations/${encodeURIComponent(convId)}/load`, {
+        method: "POST",
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setConversationId(data.conversation_id);
+        if (data.name) setConversationName(data.name);
+        if (data.chat_messages && Array.isArray(data.chat_messages)) {
+          setMessages(data.chat_messages);
+        }
+        if (typeof data.total_tokens === "number") {
+          setTotalTokens(data.total_tokens);
+        }
+        setStreamingResponse("");
+        setIsStreaming(false);
+        try {
+          localStorage.setItem("libhippo_active_conv", data.conversation_id);
+        } catch (e) {}
+      }
+    } catch (err) {
+      console.error("Failed to load conversation:", err);
+    }
   }, []);
 
   const compactContext = useCallback(async () => {
@@ -324,6 +370,7 @@ export function useWebSocket() {
     totalTokens,
     projectId,
     conversationId,
+    conversationName,
     pendingApproval,
     pendingQuestion,
     sidecarMessages,
@@ -335,6 +382,7 @@ export function useWebSocket() {
     sendModalAnswer,
     sendSidecar,
     resetSession,
+    loadConversation,
     compactContext,
   };
 }

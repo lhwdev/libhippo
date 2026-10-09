@@ -170,7 +170,7 @@ class KnowledgeCandidate(BaseModel):
     @classmethod
     def from_markdown(cls, path: str, markdown: str) -> KnowledgeCandidate:
         """Parse markdown containing YAML frontmatter."""
-        pattern = r"^---\s*\n(.*?)\n---\s*(?:\n|\Z)(.*)$"
+        pattern = r"^\s*---\s*\n(.*?)\n\s*---\s*(?:\n|\Z)(.*)$"
         match = re.match(pattern, markdown, re.DOTALL)
         if not match:
             return cls(
@@ -280,9 +280,8 @@ def reconcile_candidate_frontmatter(
     fm = candidate.frontmatter
 
     # Category 4: User-only force_keep
-    fm.force_keep = (previous_candidate.frontmatter.force_keep
-                     if previous_candidate and previous_candidate.frontmatter
-                     else False)
+    if previous_candidate and previous_candidate.frontmatter:
+        fm.force_keep = previous_candidate.frontmatter.force_keep
 
     # Category 2: Checker-classified importance & status
     if importance is not None:
