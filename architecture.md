@@ -31,16 +31,18 @@ Maintains living, audited engineering knowledge across agent sessions.
 
 - **Agents Orchestration**: `GraphFlow`
   - `TaskSolverAgent` is related to general agent harness.
-  - `BookKeeperAgent`: Powered by Jev, inspects retrieval candidate, triggers `CuratorAgent` on `MISS:GAP`, and asynchronously maintains decayed vector search aliases.
+  - `BookKeeperAgent`: Powered by TypeSafe Jev (or OpenAI Decisions `gpt-6-luna`), inspects retrieval candidate, triggers `CuratorAgent` on `MISS:GAP`, and asynchronously maintains decayed vector search aliases.
   - **Maker-Checker Governance Loop (`libhippo.orchestration.maker_checker`)**
 
     1. `CuratorAgent` as maker generates candidate markdown drafts from web specifications upon mandatory retrieval misses.
-    2. `CheckerAgent` (TypeSafe Jev) as checker evaluates frontmatter, length bounds with hysteresis, content quality, and rule effectiveness and invokes `CuratorAgent` (for low quality) or `VerifierAgent` (for merge/split) if needed.
+    2. `CheckerAgent` (TypeSafe Jev or OpenAI Decisions) as checker evaluates frontmatter, length bounds with hysteresis, content quality, and rule effectiveness and invokes `CuratorAgent` (for low quality) or `VerifierAgent` (for merge/split) if needed.
     3. `VerifierAgent` as verifier handles escalations (splitting oversized nodes, merging undersized stubs) and holds exclusive disk write authority (`modify_knowledge`).
   - **Context Knowledge Harvesting (`KnowledgeHarvestObserver`, `KnowledgeHarvestSidecar`)**:
-    - `KnowledgeHarvestObserver` (TypeSafe Jev System One) evaluates completed turns/tasks for novel patterns and bug resolutions with zero LLM reasoning cost.
+    - `KnowledgeHarvestObserver` (TypeSafe Jev or OpenAI Decisions System One) evaluates completed turns/tasks for novel patterns and bug resolutions with zero LLM reasoning cost.
     - `KnowledgeHarvestSidecar` synthesizes drafts from warm KV-cache snapshots, submits to Maker-Checker governance, and commits without blocking interactive turns.
     - `TaskSolverAgent` can also explicitly queue discoveries via `record_learning(topic, insight, scope)`.
+  - **Unified Model Configuration (`libhippo.config.models`)**: Central source of truth for all models, reasoning efforts, caching policies, and decision backends (TypeSafe Jev vs. OpenAI Decisions `gpt-6-luna`).
+
 
 ---
 

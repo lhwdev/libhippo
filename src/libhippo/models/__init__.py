@@ -18,13 +18,18 @@ from libhippo.models.knowledge import (
     NodeStatus,
     SiblingReference,
 )
+from libhippo.models.decisions import (
+    DecisionResponse,
+    OpenAIDecisionsClient,
+    OpenAIDecisionsError,
+)
 from libhippo.models.llm import (
     AgentRole,
     ModelConfig,
     ModelProvider,
     ModelRegistry,
     create_chat_client,
-    create_typesafe_client,
+    create_decision_client,
     default_model_registry,
     format_cached_system_message,
     get_model_config,
@@ -33,6 +38,7 @@ from libhippo.models.llm import (
 __all__ = [
     "AgentRole",
     "AuditVerdict",
+    "DecisionResponse",
     "HubReference",
     "JevAuditReport",
     "KnowledgeCandidate",
@@ -45,12 +51,14 @@ __all__ = [
     "Namespace",
     "NodeNature",
     "NodeStatus",
+    "OpenAIDecisionsClient",
+    "OpenAIDecisionsError",
     "RedundancyStatus",
     "SiblingReference",
     "SizeStatus",
     "TaxonomyFit",
     "create_chat_client",
-    "create_typesafe_client",
+    "create_decision_client",
     "default_model_registry",
     "format_cached_system_message",
     "get_model_config",

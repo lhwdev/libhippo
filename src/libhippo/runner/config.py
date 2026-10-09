@@ -6,8 +6,9 @@ import hashlib
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
+from libhippo.config.models import DEFAULT_TASK_SOLVER_CONFIG, ModelConfig
 from libhippo.runner.types import ExecutionMode
 
 
@@ -92,7 +93,7 @@ def compute_project_id(workspace_root: Path) -> str:
 class HarnessConfig(BaseModel):
     """Runtime configuration for the General Coding Agent Harness."""
 
-    model: str = "gpt-6.1-sol"
+    model: ModelConfig = Field(default_factory=lambda: DEFAULT_TASK_SOLVER_CONFIG.model_copy())
     workspace_root: Path = Field(default_factory=Path.cwd)
     mode: ExecutionMode = ExecutionMode.DEFAULT
     soft_token_watermark: int = 60000
@@ -104,6 +105,11 @@ class HarnessConfig(BaseModel):
     transport_mode: Literal["websocket", "http"] = "websocket"
     enable_http_fallback: bool = True
     user_config_dir: Path = Field(default_factory=lambda: Path.home() / ".config" / "libhippo")
+
+    @property
+    def model_name(self) -> str:
+        """Return primary model name string."""
+        return self.model.model
 
     def get_project_id(self) -> str:
         """Derive project identifier for this workspace root."""

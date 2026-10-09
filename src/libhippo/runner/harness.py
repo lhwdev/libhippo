@@ -128,11 +128,13 @@ class GeneralAgentHarness:
             self.model_client = wrap_client_if_logging_enabled(model_client, agent_role="TaskSolverAgent")
         else:
             client_kwargs: dict[str, Any] = {}
+            if self.config.model.reasoning_effort is not None:
+                client_kwargs["reasoning_effort"] = self.config.model.reasoning_effort
 
             if self.config.transport_mode == "websocket":
                 self.model_client = wrap_client_if_logging_enabled(
                     OpenAIResponsesWebSocketClient(
-                        model=self.config.model,
+                        model=self.config.model.model,
                         enable_http_fallback=self.config.enable_http_fallback,
                         **client_kwargs,
                     ),
@@ -141,15 +143,14 @@ class GeneralAgentHarness:
             else:
                 self.model_client = wrap_client_if_logging_enabled(
                     create_chat_client(
-                        "task_solver",
-                        model=self.config.model,
+                        self.config.model,
                         **client_kwargs,
                     ),
                     agent_role="TaskSolverAgent",
                 )
 
         # 4. Context Memory & Workload Governor
-        self.memory = ContextMemory(model_name=self.config.model)
+        self.memory = ContextMemory(model_name=self.config.model.model)
         self.governor = WorkloadGovernor(config=self.config, memory=self.memory)
 
         # 5. Tool Suite

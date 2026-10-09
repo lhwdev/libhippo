@@ -96,13 +96,14 @@ graph TD
 
 ---
 
-### 3.0 Centralized Model Registry & Client Factory (`libhippo.models.llm`)
-All model instantiations across AutoGen Chat Completion clients (OpenAI) and TypeSafe System One (Jev) are centralized in `libhippo.models.llm`:
+### 3.0 Centralized Model Configuration & Factories (`libhippo.config.models`, `libhippo.models.llm`)
+All model configurations across AutoGen Chat Completion clients (OpenAI) and semantic judgment engines (TypeSafe Jev vs. OpenAI Decisions `gpt-6-luna`) are centralized in `libhippo.config.models` and `libhippo.models.llm`:
+- **Unified Configuration (`libhippo.config.models`)**: Single file to modify all agent models, reasoning effort, prompt caching, and judgment providers. Also supplies default model configuration for `HarnessConfig`.
 - **`ModelConfig` Schema**: Standardizes `provider` (`openai` | `typesafe`), `model`, `fallback_model`, `reasoning_effort`, `cache_write`, `model_info` (required), and authentication headers.
 - **Strict `model_info` Requirement**: AutoGen's client requires explicit `model_info` capabilities for frontier models (`gpt-6.1-sol`, `gpt-6-luna`, `gpt-5-nano`); `create_chat_client` strictly validates that `model_info` is declared either in `ModelConfig` or call arguments to eliminate implicit model capability assumptions.
 - **Factory Functions**:
   - `create_chat_client(role_or_config, ...)`: Instantiates `OpenAIChatCompletionClient` with role-specific defaults, mandatory `model_info`, and prompt caching flags.
-  - `create_typesafe_client(role_or_config, ...)`: Instantiates `AsyncTypeSafeClient` for TypeSafe Jev semantic judgments.
+  - `create_decision_client(role_or_config, ...)`: Instantiates either `AsyncTypeSafeClient` (for `provider="typesafe"`) or `OpenAIDecisionsClient` (for `provider="openai"`, calling `POST /v1/decisions` with `gpt-6-luna`).
   - `get_model_config(role_or_name)`: Reads default agent profile and applies environment overrides (`LIBHIPPO_<ROLE>_MODEL`).
 - **Model Specification**: Supports runtime overrides via environment variables (`LIBHIPPO_<ROLE>_MODEL`).
 

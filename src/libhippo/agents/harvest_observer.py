@@ -9,7 +9,7 @@ from typing import Any, Literal
 from typesafe_sdk import Choice, Noul
 
 from libhippo.agents.base import BaseHippoAgent
-from libhippo.models.llm import create_typesafe_client, default_model_registry, get_model_config
+from libhippo.models.llm import create_decision_client, default_model_registry, get_model_config
 
 logger = logging.getLogger(__name__)
 
@@ -83,8 +83,8 @@ class KnowledgeHarvestObserver(BaseHippoAgent):
             if client:
                 response = await client.system_one(state=state, questions=questions, model=self.model)
             else:
-                async with create_typesafe_client("checker", model=self.model) as typesafe_client:
-                    response = await typesafe_client.system_one(state=state, questions=questions, model=self.model)
+                async with create_decision_client("checker", model=self.model) as decision_client:
+                    response = await decision_client.system_one(state=state, questions=questions, model=self.model)
         except Exception as e:
             logger.warning(f"KnowledgeHarvestObserver evaluation skipped due to error: {e}")
             return HarvestEvaluation(

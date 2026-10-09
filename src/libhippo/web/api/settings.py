@@ -103,7 +103,7 @@ def setup_settings_routes(app: web.Application, harness: GeneralAgentHarness) ->
 
     async def get_runtime_config(request: web.Request) -> web.Response:
         return web.json_response({
-            "model": harness.config.model,
+            "model": harness.config.model.model,
             "mode": harness.config.mode.value,
             "transport_mode": harness.config.transport_mode,
             "soft_token_watermark": harness.config.soft_token_watermark,
@@ -115,8 +115,12 @@ def setup_settings_routes(app: web.Application, harness: GeneralAgentHarness) ->
 
     async def update_runtime_config(request: web.Request) -> web.Response:
         data = await request.json()
-        if "model" in data and isinstance(data["model"], str):
-            harness.config.model = data["model"]
+        if "model" in data:
+            if isinstance(data["model"], str):
+                harness.config.model.model = data["model"]
+            elif isinstance(data["model"], dict):
+                from libhippo.config.models import ModelConfig
+                harness.config.model = ModelConfig(**data["model"])
         if "mode" in data and isinstance(data["mode"], str):
             try:
                 harness.config.mode = ExecutionMode(data["mode"])

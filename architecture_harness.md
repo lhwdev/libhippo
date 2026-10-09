@@ -17,7 +17,7 @@ LibHippo cleanly decouples into two distinct architectural pillars:
 1. **Knowledge Management Subsystem ([`architecture_knowledge.md`](architecture_knowledge.md))**:
    - Cascading knowledge tree with dynamic namespace mounts (`project/`, `common/`, `user/`, `plugins/`).
    - 3-tier adaptive retrieval (`query_knowledge` with low/med/high effort tiers).
-   - Maker-Checker lifecycle governance (`CuratorAgent` drafting, `CheckerAgent`/TypeSafe Jev structural auditing, `VerifierAgent` escalation).
+   - Maker-Checker lifecycle governance (`CuratorAgent` drafting, `CheckerAgent`/TypeSafe Jev or OpenAI Decisions structural auditing, `VerifierAgent` escalation).
 2. **General Coding Agent Harness ([`architecture_harness.md`](architecture_harness.md))**:
    - Comprehensive execution environment for coding agents.
    - Token & workload governors with deterministic compaction.

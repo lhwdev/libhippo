@@ -2,11 +2,12 @@
 
 from unittest.mock import MagicMock
 
+from libhippo.models.decisions import OpenAIDecisionsClient
 from libhippo.models.llm import (
     ModelConfig,
     ModelRegistry,
     create_chat_client,
-    create_typesafe_client,
+    create_decision_client,
     get_model_config,
 )
 
@@ -68,7 +69,7 @@ def test_mock_client_injection():
     registry.set_mock_client("checker", mock_typesafe)
 
     assert registry.create_chat_client("book_keeper") is mock_chat
-    assert registry.create_typesafe_client("checker") is mock_typesafe
+    assert registry.create_decision_client("checker") is mock_typesafe
 
     registry.clear_mocks()
     assert registry.get_mock_client("book_keeper") is None
@@ -91,12 +92,18 @@ def test_create_chat_client_instantiation():
         assert isinstance(client._inner, (OpenAIChatCompletionClient, OpenAIResponsesClient))
 
 
-def test_create_typesafe_client_instantiation():
-    """Verify create_typesafe_client returns AsyncTypeSafeClient with correct model."""
-    client = create_typesafe_client("checker", api_key="test-api-key")
+def test_create_decision_client_instantiation():
+    """Verify create_decision_client returns appropriate client based on provider."""
+    # 1. TypeSafe provider
+    ts_client = create_decision_client("checker", api_key="test-api-key")
     from typesafe_sdk import AsyncTypeSafeClient
 
-    assert isinstance(client, AsyncTypeSafeClient)
+    assert isinstance(ts_client, AsyncTypeSafeClient)
+
+    # 2. OpenAI provider
+    openai_cfg = ModelConfig(provider="openai", model="gpt-6-luna", api_key="test-api-key")
+    oai_client = create_decision_client(openai_cfg)
+    assert isinstance(oai_client, OpenAIDecisionsClient)
 
 
 def test_format_cached_system_message():

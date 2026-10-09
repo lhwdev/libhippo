@@ -13,8 +13,7 @@ from libhippo.agents.base import BaseHippoAgent
 from libhippo.models.audit import AuditVerdict, JevAuditReport, SizeStatus, TaxonomyFit
 from libhippo.models.knowledge import KnowledgeCandidate, KnowledgeContext
 from libhippo.models.llm import (
-    create_typesafe_client,
-    default_model_registry,
+    create_decision_client,
     get_model_config,
 )
 
@@ -60,7 +59,7 @@ class CheckerAgent(BaseHippoAgent):
         self.model = model or cfg.resolve_model_name()
         self.token_count_bound = token_count_bound or TokenCountBoundary()
 
-        self.client = client or create_typesafe_client("checker", model=self.model)
+        self.client = client or create_decision_client("checker", model=self.model)
 
         try:
             self._tokenizer = tiktoken.get_encoding("cl100k_base")

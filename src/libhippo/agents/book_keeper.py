@@ -13,7 +13,7 @@ from typesafe_sdk import Choice, Noul
 
 from libhippo.agents.base import BaseHippoAgent
 from libhippo.models.llm import (
-    create_typesafe_client,
+    create_decision_client,
     default_model_registry,
     get_model_config,
 )
@@ -261,11 +261,11 @@ class BookKeeperAgent(BaseHippoAgent):
             except TypeError:
                 response = await client.system_one(state=state, questions=questions, model=self.model)
         else:
-            async with create_typesafe_client("book_keeper", model=self.model) as typesafe_client:
+            async with create_decision_client("book_keeper", model=self.model) as decision_client:
                 try:
-                    response = await typesafe_client.system_one(state=state, questions=questions, model=self.model, **jev_kwargs)
+                    response = await decision_client.system_one(state=state, questions=questions, model=self.model, **jev_kwargs)
                 except TypeError:
-                    response = await typesafe_client.system_one(state=state, questions=questions, model=self.model)
+                    response = await decision_client.system_one(state=state, questions=questions, model=self.model)
 
         # Extract per-candidate choices and nouls
         candidate_fits: list[tuple[int, str]] = []

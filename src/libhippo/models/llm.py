@@ -5,49 +5,13 @@ from __future__ import annotations
 import os
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
-from typesafe_sdk import AsyncTypeSafeClient
-
+from libhippo.config.models import (
+    AgentRole,
+    DEFAULT_AGENT_MODELS,
+    ModelConfig,
+)
+from libhippo.models.decisions import OpenAIDecisionsClient
 from libhippo.models.logging_client import wrap_client_if_logging_enabled
-
-AgentRole = Literal["task_solver", "book_keeper", "curator", "checker", "verifier"]
-ModelProvider = Literal["openai", "typesafe"]
-
-
-class ModelConfig(BaseModel):
-    """Configuration specification for an agent language/judgment model."""
-
-    provider: ModelProvider = "openai"
-    model: str
-    fallback_model: str | None = None
-    reasoning_effort: Literal["none", "minimal", "low", "medium", "high"] | None = None
-    cache_write: bool = False
-    cache_mode: Literal["auto", "explicit", "off"] = "auto"
-    cache_system_prompt_only: bool = False
-    prompt_cache_key: str | None = None
-    api_key: str | None = None
-    base_url: str | None = None
-    default_headers: dict[str, str] = Field(default_factory=dict)
-    extra_kwargs: dict[str, Any] = Field(default_factory=dict)
-    model_info: dict[str, Any] | None = None
-
-    def resolve_model_name(self) -> str:
-        """Resolve effective model name using fallback if configured or in test mode."""
-        use_fallback = os.getenv("LIBHIPPO_USE_FALLBACK_MODELS", "0") in ("1", "true", "True")
-        target = self.fallback_model if use_fallback and self.fallback_model else self.model
-        if self.provider == "typesafe" and target == "jev":
-            return "jev-latest"
-        return target
-
-
-DEFAULT_OPENAI_MODEL_INFO: dict[str, Any] = {
-    "vision": True,
-    "function_calling": True,
-    "json_output": True,
-    "family": "unknown",
-    "structured_output": True,
-    "multiple_system_messages": True,
-}
 
 
 def format_cached_system_message(
@@ -73,48 +37,6 @@ def format_cached_system_message(
             }
         ],
     }
-
-
-DEFAULT_AGENT_MODELS: dict[AgentRole, ModelConfig] = {
-    "task_solver": ModelConfig(
-        provider="openai",
-        model="gpt-6.1-sol",
-        reasoning_effort="medium",
-        cache_write=True,
-        cache_mode="auto",
-        cache_system_prompt_only=False,
-        model_info=DEFAULT_OPENAI_MODEL_INFO,
-    ),
-    "book_keeper": ModelConfig(
-        provider="typesafe",
-        model="jev-latest",
-        cache_write=False,
-    ),
-    "curator": ModelConfig(
-        provider="openai",
-        model="gpt-6-luna",
-        reasoning_effort="medium",
-        cache_write=False,
-        cache_mode="explicit",
-        cache_system_prompt_only=True,
-        prompt_cache_key="libhippo-curator",
-        model_info=DEFAULT_OPENAI_MODEL_INFO,
-    ),
-    "checker": ModelConfig(
-        provider="typesafe",
-        model="jev-latest",
-        cache_write=False,
-    ),
-    "verifier": ModelConfig(
-        provider="openai",
-        model="gpt-6.1-sol",
-        reasoning_effort="high",
-        cache_write=True,
-        cache_mode="auto",
-        cache_system_prompt_only=False,
-        model_info=DEFAULT_OPENAI_MODEL_INFO,
-    ),
-}
 
 
 
@@ -202,12 +124,12 @@ class ModelRegistry:
         client = OpenAIResponsesClient(**filtered_kwargs)
         return wrap_client_if_logging_enabled(client, agent_role=str(role_key) if role_key else None)
 
-    def create_typesafe_client(
+    def create_decision_client(
         self,
         role_or_config: AgentRole | str | ModelConfig = "checker",
         **override_kwargs: Any,
-    ) -> AsyncTypeSafeClient:
-        """Create an AsyncTypeSafeClient for TypeSafe System One judgments."""
+    ) -> Any:
+        """Create a decision client (AsyncTypeSafeClient or OpenAIDecisionsClient) for System One judgments."""
         role_key = role_or_config if isinstance(role_or_config, str) else None
         if role_key and role_key in self._mock_clients:
             return self._mock_clients[role_key]
@@ -218,11 +140,34 @@ class ModelRegistry:
             else self.get_config(str(role_or_config))
         )
 
+        model_name = override_kwargs.pop("model", None) or config.resolve_model_name()
+
+        if config.provider == "openai":
+            api_key = config.api_key or os.getenv("OPENAI_API_KEY")
+            base_url = config.base_url or os.getenv("OPENAI_BASE_URL")
+
+            kwargs: dict[str, Any] = {
+                "model": model_name,
+            }
+            if api_key:
+                kwargs["api_key"] = api_key
+            if base_url:
+                kwargs["base_url"] = base_url
+            if config.default_headers:
+                kwargs["default_headers"] = config.default_headers
+
+            kwargs.update(config.extra_kwargs)
+            kwargs.update(override_kwargs)
+            return OpenAIDecisionsClient(**kwargs)
+
+        # Fallback to TypeSafe Jev
+        from typesafe_sdk import AsyncTypeSafeClient
+
         api_key = config.api_key or os.getenv("TYPESAFE_API_KEY")
         base_url = config.base_url or os.getenv("TYPESAFE_BASE_URL")
 
-        kwargs: dict[str, Any] = {
-            "model": config.resolve_model_name(),
+        kwargs = {
+            "model": model_name,
         }
         if api_key:
             kwargs["api_key"] = api_key
@@ -247,5 +192,5 @@ def create_chat_client(role_or_config: AgentRole | str | ModelConfig, **kwargs: 
     return default_model_registry.create_chat_client(role_or_config, **kwargs)
 
 
-def create_typesafe_client(role_or_config: AgentRole | str | ModelConfig = "checker", **kwargs: Any):
-    return default_model_registry.create_typesafe_client(role_or_config, **kwargs)
+def create_decision_client(role_or_config: AgentRole | str | ModelConfig = "checker", **kwargs: Any) -> Any:
+    return default_model_registry.create_decision_client(role_or_config, **kwargs)
