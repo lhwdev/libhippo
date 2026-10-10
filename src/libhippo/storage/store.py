@@ -102,11 +102,13 @@ class KnowledgeStore:
         elif root_dir:
             self.cache_dir = Path(root_dir)
         else:
+            from libhippo.config.paths import get_cache_dir
+
             proj_mount = self.mount_manager.get_mount("project")
             self.cache_dir = (
                 (proj_mount.physical_path / ".cache")
                 if proj_mount
-                else (Path.cwd() / ".libhippo" / "cache")
+                else get_cache_dir(workspace_root=Path.cwd())
             )
 
         self.cache_dir.mkdir(parents=True, exist_ok=True)

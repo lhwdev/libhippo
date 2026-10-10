@@ -25,15 +25,17 @@ def setup_knowledge_routes(app: web.Application, harness: GeneralAgentHarness) -
                 })
         else:
             # Fallback to default expected layout
+            from libhippo.config.paths import get_project_data_dir, get_user_knowledge_dir
+
             mounts = [
                 {
                     "namespace": "project",
-                    "physical_path": str(harness.workspace_root / ".libhippo"),
+                    "physical_path": str(get_project_data_dir(harness.workspace_root)),
                     "read_only": False,
                 },
                 {
                     "namespace": "user",
-                    "physical_path": str(harness.config.user_config_dir / "knowledge"),
+                    "physical_path": str(get_user_knowledge_dir(harness.config.user_config_dir)),
                     "read_only": False,
                 },
                 {

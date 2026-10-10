@@ -9,6 +9,12 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator
 
 from libhippo.config.models import DEFAULT_TASK_SOLVER_CONFIG, ModelConfig
+from libhippo.config.paths import (
+    get_mcp_config_path,
+    get_user_config_dir,
+    get_user_knowledge_dir,
+)
+from libhippo.runner.env import load_env_hierarchy
 from libhippo.runner.types import ExecutionMode
 
 
@@ -104,7 +110,16 @@ class HarnessConfig(BaseModel):
     allow_sandbox_bypass: bool = False
     transport_mode: Literal["websocket", "http"] = "websocket"
     enable_http_fallback: bool = True
-    user_config_dir: Path = Field(default_factory=lambda: Path.home() / ".config" / "libhippo")
+    user_config_dir: Path = Field(default_factory=get_user_config_dir)
+
+    def model_post_init(self, __context: Any) -> None:
+        super().model_post_init(__context)
+        self.workspace_root = self.workspace_root.expanduser().resolve()
+        load_env_hierarchy(base_dir=self.workspace_root)
+        if "user_config_dir" not in self.model_fields_set:
+            self.user_config_dir = get_user_config_dir()
+        else:
+            self.user_config_dir = self.user_config_dir.expanduser().resolve()
 
     @property
     def model_name(self) -> str:
@@ -125,4 +140,8 @@ class HarnessConfig(BaseModel):
 
     def get_mcp_config_path(self) -> Path:
         """Return path to global MCP configuration file."""
-        return self.user_config_dir / "mcp.json"
+        return get_mcp_config_path(self.user_config_dir)
+
+    def get_knowledge_dir(self) -> Path:
+        """Return path to user knowledge directory."""
+        return get_user_knowledge_dir(self.user_config_dir)

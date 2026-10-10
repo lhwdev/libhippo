@@ -32,6 +32,7 @@ cd frontend/web && npm install
 1. '개발환경 설정'을 해줍니다.
 
 2. `.env.example`을 `.env.local`로 복사하고, API 키와 기타 설정을 입력해줍니다.
+   테스트할 때 home dir에 폴더 생기는게 싫으시다면 `LIBHIPPO_CONFIG_DIR`을 잘 수정해주세요.
 
 3. 실행되는 모델을 변경해야 할 경우, [models.py](src/libhippo/config/models.py)를 수정해주세요.
    * 원본 구현체에는 TypeSafe Jev가 사용되었으나, OpenAI Decisions API를 쓰도록 바꿔도 됩니다. 이 경우 `provider="openai", model="gpt-6-luna"`로 설정해주시면 됩니다.

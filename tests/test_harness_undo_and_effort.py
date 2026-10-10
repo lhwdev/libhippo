@@ -117,8 +117,8 @@ def test_harness_reasoning_effort_transitions(harness: GeneralAgentHarness):
     # Emulate transition to deep exploration
     prev = harness.reasoning_effort
     harness.set_reasoning_effort(DEFAULT_DEEP_EXPLORATION_REASONING_EFFORT)
-    assert harness.reasoning_effort == "high"
+    assert harness.reasoning_effort == DEFAULT_DEEP_EXPLORATION_REASONING_EFFORT
 
     # Emulate completion of deep exploration
     harness.set_reasoning_effort(prev)
-    assert harness.reasoning_effort == "high"
+    assert harness.reasoning_effort == prev

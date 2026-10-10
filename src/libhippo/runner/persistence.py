@@ -11,6 +11,7 @@ from typing import Any
 
 from libhippo.runner.config import HarnessConfig
 from libhippo.runner.types import ContextMessage
+from libhippo.config.paths import get_user_config_dir
 
 
 class ConversationSession:
@@ -31,7 +32,7 @@ class ConversationSession:
         elif config:
             self.storage_dir = (config.get_conversations_dir() / conversation_id).resolve()
         else:
-            self.storage_dir = (Path.home() / ".config" / "libhippo" / "projects" / project_id / "conversations" / conversation_id).resolve()
+            self.storage_dir = (get_user_config_dir() / "projects" / project_id / "conversations" / conversation_id).resolve()
 
         self.artifacts_dir = self.storage_dir / "artifacts"
         self.tasks_dir = self.storage_dir / "tasks"

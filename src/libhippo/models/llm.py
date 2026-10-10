@@ -9,6 +9,7 @@ from libhippo.config.models import (
     AgentRole,
     DEFAULT_AGENT_MODELS,
     ModelConfig,
+    ModelProvider,
 )
 from libhippo.models.decisions import OpenAIDecisionsClient
 from libhippo.models.logging_client import wrap_client_if_logging_enabled

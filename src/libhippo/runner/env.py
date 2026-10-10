@@ -21,7 +21,7 @@ def get_env_file_candidates(
     3. .env.{environment}       (e.g. .env.development, .env.production)
     4. .env
     """
-    root = Path(base_dir).resolve()
+    root = Path(base_dir).expanduser().resolve()
     env_name = (
         environment
         or os.environ.get("LIBHIPPO_ENV")
@@ -60,10 +60,10 @@ def load_env_hierarchy(
     override=True. Files are processed in priority order (highest first).
     Returns list of successfully loaded .env file paths.
     """
-    dirs: list[Path] = [Path(base_dir).resolve()]
+    dirs: list[Path] = [Path(base_dir).expanduser().resolve()]
     if extra_dirs:
         for d in extra_dirs:
-            p = Path(d).resolve()
+            p = Path(d).expanduser().resolve()
             if p not in dirs:
                 dirs.append(p)
 

@@ -153,13 +153,16 @@ def create_default_mounts(
     user_root: Path | None = None,
 ) -> MountManager:
     """Create a standard MountManager with default locations for LibHippo scopes."""
+    from libhippo.config.paths import get_project_data_dir, get_user_knowledge_dir
+
     ws = (workspace_root or Path.cwd()).resolve()
     inst = (install_root or (Path(__file__).parent.parent.parent.parent / "knowledge")).resolve()
-    usr = (user_root or (Path.home() / ".config" / "libhippo" / "knowledge")).resolve()
+    usr = (user_root or get_user_knowledge_dir()).resolve()
+    proj_data = get_project_data_dir(ws)
 
     return MountManager([
-        MountConfig(namespace_prefix="project", physical_path=ws / ".libhippo" / "knowledge", read_only=False),
+        MountConfig(namespace_prefix="project", physical_path=proj_data / "knowledge", read_only=False),
         MountConfig(namespace_prefix="common", physical_path=inst / "common", read_only=False),
         MountConfig(namespace_prefix="user", physical_path=usr, read_only=False),
-        MountConfig(namespace_prefix="plugins", physical_path=ws / ".libhippo" / "plugins", read_only=False),
+        MountConfig(namespace_prefix="plugins", physical_path=proj_data / "plugins", read_only=False),
     ])

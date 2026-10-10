@@ -21,7 +21,9 @@ class ResourceDiscovery:
 
     def discover_libhippo_dir(self) -> Path | None:
         """Locate project-scoped .libhippo directory if present."""
-        candidate = self.workspace_root / ".libhippo"
+        from libhippo.config.paths import get_project_data_dir
+
+        candidate = get_project_data_dir(self.workspace_root)
         return candidate if candidate.is_dir() else None
 
     def discover_agents_markdown(self) -> dict[str, str]:
@@ -29,7 +31,9 @@ class ResourceDiscovery:
         rules: dict[str, str] = {}
 
         # 1. Global user rules
-        global_paths = [self.config.user_config_dir / "AGENTS.md"]
+        from libhippo.config.paths import get_global_agents_md_path
+
+        global_paths = [get_global_agents_md_path(self.config.user_config_dir)]
         for p in global_paths:
             if p.is_file():
                 try:
@@ -52,10 +56,11 @@ class ResourceDiscovery:
         """Discover skills conforming to .agents/skills/*/SKILL.md convention."""
         skills: dict[str, SkillDefinition] = {}
 
+        from libhippo.config.paths import get_global_skills_dirs
+
         search_dirs = [
             # User global skills
-            Path.home() / ".agents" / "skills",
-            self.config.user_config_dir / "skills",
+            *get_global_skills_dirs(self.config.user_config_dir),
             # Project local skills
             self.workspace_root / ".agents" / "skills",
         ]

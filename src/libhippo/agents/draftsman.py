@@ -21,6 +21,7 @@ import tiktoken
 from ruamel.yaml import YAML
 
 from libhippo.storage.store import KnowledgeStore
+from libhippo.config.paths import get_project_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +157,7 @@ class KnowledgeDraftSession:
     ) -> None:
         self.session_id = session_id or uuid.uuid4().hex[:12]
         self.workspace_root = Path(workspace_root or Path.cwd()).resolve()
-        self.drafts_dir = self.workspace_root / ".libhippo" / "drafts" / self.session_id
+        self.drafts_dir = get_project_data_dir(self.workspace_root) / "drafts" / self.session_id
         self.drafts_dir.mkdir(parents=True, exist_ok=True)
         self.store = store
         self.sandbox = sandbox

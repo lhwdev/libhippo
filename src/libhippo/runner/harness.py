@@ -95,12 +95,13 @@ class GeneralAgentHarness:
         elif dispatcher is not None:
             self.store = dispatcher.store
         else:
-            libhippo_dir = self.discovery.discover_libhippo_dir()
+            from libhippo.config.paths import get_cache_dir
+
             mounts = create_default_mounts(
                 workspace_root=self.workspace_root,
-                user_root=self.config.user_config_dir / "knowledge",
+                user_root=self.config.get_knowledge_dir(),
             )
-            cache_dir = (libhippo_dir / "cache") if libhippo_dir else (self.workspace_root / ".libhippo" / "cache")
+            cache_dir = get_cache_dir(workspace_root=self.workspace_root, user_config_dir=self.config.user_config_dir)
             self.store = KnowledgeStore(mounts=mounts, cache_dir=cache_dir)
 
         # Knowledge Agent Manager: manages & reuses knowledge agents
