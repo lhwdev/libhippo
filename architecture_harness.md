@@ -126,6 +126,7 @@ Long-running background knowledge curation and harvesting tasks operate independ
 #### 1.3.6 Dynamic Reasoning Effort Control with 100% KV-Cache Reuse
 - Updates on reasoning effort should be done in way that allows reusing model KV cache: uses OpenAI `configuration_update` API.
 - For knowledge tasks that run inside same model and context as `TaskRunner`, `reasoning_efforts` are centralized in `libhippo.config.models`: i.e. `DEFAULT_HARVEST_REASONING_EFFORT`.
+- **KV-Cache Finalization Delay**: Post-task maintenance introduces a configurable settling delay (`HarnessConfig.harvest_delay_seconds`, default: 3.0s) before executing `KnowledgeHarvestSidecar`, allowing server-side prompt cache writes to finalize and guaranteeing maximum cache hit rates.
 
 ### 1.4 Tiered Network Transport Architecture: Targeted WebSockets with HTTP Fallback
 

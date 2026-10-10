@@ -20,6 +20,16 @@ from libhippo.storage.store import KnowledgeStore
 from libhippo.tools.registry import ToolRegistry
 
 
+class VerifierChildNode(BaseModel):
+    """Child node specification for partition or split refactoring."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(description="Knowledge path of the child node")
+    scope: str = Field(default="", description="Scope, title, or responsibility of the child node")
+    content: str = Field(default="", description="Optional markdown content of the child node")
+
+
 class VerifierDirective(BaseModel):
     """Structured response format for Verifier escalation resolution."""
 
@@ -34,8 +44,9 @@ class VerifierDirective(BaseModel):
         description="Refactoring action: split, merge, update, deprecate",
     )
     parent_hub: str | None = Field(default=None, description="Path to parent hub if promoting or splitting")
-    children: list[dict[str, str]] = Field(default_factory=list, description="Child nodes for split")
+    children: list[VerifierChildNode] = Field(default_factory=list, description="Child nodes for split")
     rationale: str = Field(default="", description="Architectural rationale for refactoring decision")
+
 
 
 class VerifierAgent(AssistantAgent, BaseHippoAgent):
@@ -115,7 +126,7 @@ class VerifierAgent(AssistantAgent, BaseHippoAgent):
                 "status": obj.status,
                 "action": obj.action,
                 "parent_hub": obj.parent_hub or "",
-                "children": obj.children,
+                "children": [c.model_dump() if hasattr(c, "model_dump") else c for c in obj.children],
                 "rationale": obj.rationale,
                 "raw_response": obj.model_dump_json(),
             }
@@ -132,7 +143,7 @@ class VerifierAgent(AssistantAgent, BaseHippoAgent):
                 await effective_store.modify_knowledge(
                     action="split",
                     path=hub_path,
-                    extra_paths=[c["path"] for c in parsed["children"]],
+                    extra_paths=[c["path"] if isinstance(c, dict) else c.path for c in parsed["children"]],
                 )
                 parsed["status"] = "MUTATION_EXECUTED"
             except ReadOnlyMountError as e:
@@ -146,13 +157,13 @@ class VerifierAgent(AssistantAgent, BaseHippoAgent):
         path: str,
         store: KnowledgeStore,
         hub_content: str,
-        child_nodes: list[dict[str, str]],
+        child_nodes: list[dict[str, str]] | list[VerifierChildNode],
     ) -> dict[str, Any]:
         """Perform deterministic leaf promotion to hub and save partition child leaves."""
         child_paths: list[str] = []
         for child in child_nodes:
-            c_path = child["path"]
-            c_content = child["content"]
+            c_path = child["path"] if isinstance(child, dict) else child.path
+            c_content = child.get("content", "") if isinstance(child, dict) else child.content
             await store.save_node(c_path, c_content)
             child_paths.append(c_path)
 

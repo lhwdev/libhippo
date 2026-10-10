@@ -14,7 +14,7 @@ from libhippo.agents.prompts import (
 from libhippo.agents.harvest_observer import HarvestEvaluation, KnowledgeHarvestObserver
 from libhippo.agents.manager import AgentManager
 from libhippo.agents.task_solver import TaskSolverAgent
-from libhippo.agents.verifier import VerifierAgent
+from libhippo.agents.verifier import VerifierAgent, VerifierChildNode, VerifierDirective
 
 __all__ = [
     "BOOK_KEEPER_SYSTEM_PROMPT",
@@ -31,6 +31,8 @@ __all__ = [
     "TaskSolverAgent",
     "TokenCountBoundary",
     "VerifierAgent",
+    "VerifierChildNode",
+    "VerifierDirective",
     "get_agent_system_prompt",
 ]
 

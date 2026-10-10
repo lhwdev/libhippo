@@ -110,6 +110,7 @@ class HarnessConfig(BaseModel):
     allow_sandbox_bypass: bool = False
     transport_mode: Literal["websocket", "http"] = "websocket"
     enable_http_fallback: bool = True
+    harvest_delay_seconds: float = 3.0
     user_config_dir: Path = Field(default_factory=get_user_config_dir)
 
     def model_post_init(self, __context: Any) -> None:

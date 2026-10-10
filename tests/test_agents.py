@@ -247,6 +247,21 @@ RATIONALE: Document exceeded 1800 tokens; separating styling and accessibility.
     assert parsed["children"][0]["path"] == "common/web/html/button/accessibility.md"
     assert parsed["children"][1]["path"] == "common/web/html/button/styling.md"
 
+def test_verifier_directive_strict_schema_compliance():
+    """Verify VerifierDirective generates valid OpenAI strict json schema without dict-induced required key mismatches."""
+    from openai.lib._pydantic import to_strict_json_schema
+    from libhippo.agents.verifier import VerifierDirective
+
+    schema = to_strict_json_schema(VerifierDirective)
+    assert schema["type"] == "object"
+    assert schema["additionalProperties"] is False
+    assert set(schema["properties"].keys()) == set(schema["required"])
+    assert "$defs" in schema
+    assert "VerifierChildNode" in schema["$defs"]
+    child_def = schema["$defs"]["VerifierChildNode"]
+    assert child_def["additionalProperties"] is False
+    assert set(child_def["properties"].keys()) == set(child_def["required"])
+
 
 @pytest.mark.asyncio
 async def test_verifier_split_and_merge_mutations(tmp_path):

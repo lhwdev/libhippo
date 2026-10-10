@@ -870,8 +870,12 @@ class GeneralAgentHarness:
         """Trigger explicit context compaction (Zone 3 eviction and Zone 2 summarization)."""
         return self.memory.compact_memory(self.config.compaction_target_tokens)
 
-    async def post_task_maintenance(self) -> None:
+    async def post_task_maintenance(self, delay_seconds: float | None = None) -> None:
         """Execute background maintenance (knowledge harvesting and vector compaction)."""
+        delay = delay_seconds if delay_seconds is not None else getattr(self.config, "harvest_delay_seconds", 3.0)
+        if delay > 0:
+            await asyncio.sleep(delay)
+
         # 1. Harvest explicit learnings queued during the turn
         had_explicit = False
         if hasattr(self.tools, "harvest_queue") and self.tools.harvest_queue:

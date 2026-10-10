@@ -170,7 +170,7 @@ async def test_harness_knowledge_bridge_and_maintenance(tmp_path: Path):
         assert "status" in result
 
         # Trigger maintenance
-        await harness.post_task_maintenance()
+        await harness.post_task_maintenance(delay_seconds=0.0)
 
 
 @pytest.mark.asyncio
@@ -743,7 +743,7 @@ async def test_harness_harvest_sidecar_runs_in_background_without_blocking(tmp_p
     ws_dir.mkdir(parents=True)
     cfg_dir = tmp_path / "cfg"
 
-    config = HarnessConfig(workspace_root=ws_dir, user_config_dir=cfg_dir)
+    config = HarnessConfig(workspace_root=ws_dir, user_config_dir=cfg_dir, harvest_delay_seconds=0.05)
     client = make_mock_client("Done.")
     harness = GeneralAgentHarness(config=config, model_client=client)
 
