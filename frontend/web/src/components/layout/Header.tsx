@@ -11,6 +11,9 @@ import {
   MessageSquare,
   Trash2,
   Brain,
+  Pencil,
+  Check,
+  X,
 } from "lucide-react";
 import { ConversationItem } from "../../types/api";
 
@@ -26,6 +29,7 @@ interface HeaderProps {
   onReset: () => void;
   onCompact: () => void;
   onSelectConversation?: (convId: string) => void;
+  onRenameConversation?: (convId: string, newName: string) => Promise<any> | void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -39,10 +43,13 @@ export const Header: React.FC<HeaderProps> = ({
   onReset,
   onCompact,
   onSelectConversation,
+  onRenameConversation,
 }) => {
   const [mode, setMode] = useState<string>("default");
   const [showConvDropdown, setShowConvDropdown] = useState(false);
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState<string>("");
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -58,6 +65,7 @@ export const Header: React.FC<HeaderProps> = ({
     const handleClickOutside = (e: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
         setShowConvDropdown(false);
+        setEditingId(null);
       }
     };
     document.addEventListener("mousedown", handleClickOutside);
@@ -79,8 +87,42 @@ export const Header: React.FC<HeaderProps> = ({
   const handleToggleDropdown = () => {
     if (!showConvDropdown) {
       loadConversations();
+    } else {
+      setEditingId(null);
     }
     setShowConvDropdown(!showConvDropdown);
+  };
+
+  const handleStartRename = (e: React.MouseEvent, c: ConversationItem) => {
+    e.stopPropagation();
+    setEditingId(c.id);
+    setEditingName(c.name || c.title || c.id);
+  };
+
+  const handleSaveRename = async (id: string) => {
+    const trimmed = editingName.trim();
+    if (trimmed) {
+      try {
+        if (onRenameConversation) {
+          await onRenameConversation(id, trimmed);
+        } else {
+          await fetch(`/api/conversations/${encodeURIComponent(id)}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: trimmed }),
+          });
+        }
+        await loadConversations();
+      } catch (err) {
+        console.error("Failed to rename conversation:", err);
+      }
+    }
+    setEditingId(null);
+  };
+
+  const handleCancelRename = (e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    setEditingId(null);
   };
 
   const handleDeleteConversation = async (e: React.MouseEvent, id: string) => {
@@ -153,6 +195,47 @@ export const Header: React.FC<HeaderProps> = ({
                 ) : (
                   conversations.map((c) => {
                     const isActive = c.id === conversationId;
+                    const isEditing = editingId === c.id;
+
+                    if (isEditing) {
+                      return (
+                        <div
+                          key={c.id}
+                          onClick={(e) => e.stopPropagation()}
+                          className="px-3 py-1.5 flex items-center justify-between gap-1.5 bg-slate-800/80 text-[11px]"
+                        >
+                          <input
+                            type="text"
+                            autoFocus
+                            value={editingName}
+                            onChange={(e) => setEditingName(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") handleSaveRename(c.id);
+                              if (e.key === "Escape") handleCancelRename();
+                            }}
+                            className="flex-1 bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-slate-100 font-sans text-[11px] focus:outline-none focus:border-sky-500"
+                            placeholder="Conversation name"
+                          />
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              onClick={() => handleSaveRename(c.id)}
+                              className="p-1 rounded hover:text-emerald-400 text-slate-400 transition"
+                              title="Save name"
+                            >
+                              <Check className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={handleCancelRename}
+                              className="p-1 rounded hover:text-rose-400 text-slate-400 transition"
+                              title="Cancel"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    }
+
                     return (
                       <div
                         key={c.id}
@@ -182,6 +265,13 @@ export const Header: React.FC<HeaderProps> = ({
                           {isActive && (
                             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
                           )}
+                          <button
+                            onClick={(e) => handleStartRename(e, c)}
+                            className="p-1 rounded opacity-0 group-hover:opacity-100 hover:text-sky-400 text-slate-500 transition"
+                            title="Rename conversation"
+                          >
+                            <Pencil className="w-3 h-3" />
+                          </button>
                           <button
                             onClick={(e) => handleDeleteConversation(e, c.id)}
                             className="p-1 rounded opacity-0 group-hover:opacity-100 hover:text-rose-400 text-slate-500 transition"

@@ -388,6 +388,25 @@ export function useWebSocket() {
     }
   }, []);
 
+  const renameConversation = useCallback(async (convId: string, newName: string) => {
+    try {
+      const res = await fetch(`/api/conversations/${encodeURIComponent(convId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newName }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (convId === conversationId) {
+          setConversationName(data.name || newName);
+        }
+        return data;
+      }
+    } catch (err) {
+      console.error("Failed to rename conversation:", err);
+    }
+  }, [conversationId]);
+
   const compactContext = useCallback(async () => {
     const res = await fetch("/api/session/compact", { method: "POST" });
     const data = await res.json();
@@ -464,5 +483,6 @@ export function useWebSocket() {
     undoMessage,
     stopKnowledgeWorkers,
     setReasoningEffort,
+    renameConversation,
   };
 }

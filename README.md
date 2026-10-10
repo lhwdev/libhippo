@@ -49,3 +49,5 @@ cd frontend/web && npm install
    ```shell
    cd frontend/web && npm run dev
    ```
+
+참고로 가끔 백엔드에서 `WebSocket connection closed with exception: Received frame with non-zero reserved bits`가 뜨고, 프론트엔드에서 세션 빨간불이 들어오면서 아무것도 안될 때가 있는데, 웹사이트 새로고침을 해주시면 고쳐집니다. 이거 고칠 시간이 없어서 죄송합니다...

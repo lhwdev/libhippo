@@ -83,6 +83,10 @@ The function calling API provides full parameter schemas for all tools. Below ar
 <tools:harvest_guidance>
 ## Knowledge Drafting & Harvesting
 
+When explicitly told to refer to `<tools:harvest_guidance>` from `<SIDECAR:extract_knowledge>`, synthesize reusable, permanent knowledge document (conventions, library quirks, or architecture rules) from the conversation.
+- If the conversation contains no reusable conventions or rules, output ONLY: `NO_HARVEST`.
+- Otherwise, use following tools to draft knowledge document.
+
 Use these tools ONLY while drafting or updating knowledge nodes:
 - `write_knowledge(path, content, start_line?, end_line?, target?)`: Create or surgically edit draft nodes (e.g. `project/...`, `common/...`). Knowledge paths must not include `.md`. Target 500–1,000 tokens.
   - Prefer `target` (unique substring replacement) for surgical updates; it is immune to line-number shifts.

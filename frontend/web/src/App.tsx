@@ -41,6 +41,7 @@ export const App: React.FC = () => {
     undoMessage,
     stopKnowledgeWorkers,
     setReasoningEffort,
+    renameConversation,
   } = useWebSocket();
 
   const [restoredText, setRestoredText] = useState<string>("");
@@ -66,6 +67,7 @@ export const App: React.FC = () => {
         onReset={resetSession}
         onCompact={compactContext}
         onSelectConversation={loadConversation}
+        onRenameConversation={renameConversation}
       />
 
       {/* Navigation Tabs */}

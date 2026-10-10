@@ -78,6 +78,9 @@ class ContextMemory:
                         '</USER_PROMPT>')
         if session_context:
             full_content = f"{session_context}\n{full_content}"
+
+        # 제발 knowledge 좀 자주 써주라
+        full_content += "\nUse `query_knowledge` tool actively, if necessary."
             
         msg = ContextMessage(
             role="user",
