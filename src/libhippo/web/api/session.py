@@ -185,9 +185,21 @@ def setup_session_routes(app: web.Application, harness: GeneralAgentHarness) -> 
             "metadata": meta,
         })
 
+    async def undo_message(request: web.Request) -> web.Response:
+        data = await request.json()
+        message_id = data.get("message_id", "")
+        res = await harness.undo(message_id)
+        return web.json_response(res)
+
+    async def stop_knowledge(request: web.Request) -> web.Response:
+        count = harness.stop_knowledge_workers()
+        return web.json_response({"status": "ok", "stopped_workers": count})
+
     app.router.add_get("/api/session", get_session_info)
     app.router.add_post("/api/session/compact", compact_session)
     app.router.add_post("/api/session/reset", reset_session)
+    app.router.add_post("/api/session/undo", undo_message)
+    app.router.add_post("/api/knowledge/stop", stop_knowledge)
     app.router.add_get("/api/projects", list_projects)
     app.router.add_get("/api/conversations", list_conversations)
     app.router.add_get("/api/conversations/{conv_id}", get_conversation)

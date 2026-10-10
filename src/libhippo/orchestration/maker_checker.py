@@ -179,7 +179,7 @@ class MakerCheckerOrchestrator:
         candidate: KnowledgeCandidate | str,
         target_path: str | None = None,
         context: KnowledgeContext | None = None,
-        max_retries: int = 2,
+        max_retries: int = 3,
         on_event: Callable[[KnowledgeAgentEvent], Any] | None = None,
         auto_revise: bool = True,
     ) -> MakerCheckerResult:
@@ -644,7 +644,7 @@ class MakerCheckerOrchestrator:
         topic: str,
         target_path: str | None = None,
         context: str = "",
-        max_retries: int = 2,
+        max_retries: int = 3,
         on_event: Callable[[KnowledgeAgentEvent], Any] | None = None,
     ) -> MakerCheckerResult:
         """End-to-end pipeline: research/draft candidate with Curator, then execute governance."""

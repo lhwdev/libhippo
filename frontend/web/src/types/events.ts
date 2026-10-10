@@ -75,6 +75,8 @@ export interface ConnectionEstablishedEvent {
   conversation_metadata?: Record<string, any>;
   current_phase: LifecyclePhase;
   total_tokens: number;
+  reasoning_effort?: string;
+  has_active_knowledge_workers?: boolean;
   chat_messages?: ChatMessage[];
 }
 
@@ -102,6 +104,32 @@ export interface KnowledgeAgentEvent {
   timestamp?: string;
 }
 
+export interface KnowledgeWorkerStatusEvent {
+  type: "knowledge_worker_status";
+  active: boolean;
+  count: number;
+}
+
+export interface UndoResultEvent {
+  type: "undo_result";
+  status: string;
+  prompt?: string;
+  message_index?: number;
+  chat_messages?: ChatMessage[];
+  total_tokens?: number;
+}
+
+export interface SessionUpdatedEvent {
+  type: "session_updated";
+  chat_messages: ChatMessage[];
+  total_tokens: number;
+}
+
+export interface ReasoningEffortUpdatedEvent {
+  type: "reasoning_effort_updated";
+  effort: string;
+}
+
 export type HarnessIncomingEvent =
   | TokenChunkEvent
   | PhaseTransitionEvent
@@ -115,13 +143,19 @@ export type HarnessIncomingEvent =
   | ConnectionEstablishedEvent
   | SidecarResponseEvent
   | SteerResultEvent
-  | KnowledgeAgentEvent;
+  | KnowledgeAgentEvent
+  | KnowledgeWorkerStatusEvent
+  | UndoResultEvent
+  | SessionUpdatedEvent
+  | ReasoningEffortUpdatedEvent;
 
 export interface ChatMessage {
   id: string;
   role: "system" | "user" | "assistant" | "tool" | "interrupt";
   content: string;
   timestamp?: string;
+  message_index?: number;
+  raw_prompt?: string;
   toolCalls?: Array<{
     id: string;
     name: string;

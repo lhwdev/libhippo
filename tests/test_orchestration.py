@@ -276,16 +276,16 @@ async def test_maker_checker_revision_loop_and_max_retries(tmp_path):
             curator=mock_curator,
         )
 
-        # Run with max_retries=2
+        # Run with max_retries=3
         result = await orchestrator.run_governance(
             candidate=flawed_doc,
             target_path="common/doc.md",
-            max_retries=2,
+            max_retries=3,
         )
 
         assert result.status == "REVISE_FAILED"
-        assert result.retries_used == 2
-        assert mock_curator.revise.await_count == 2
+        assert result.retries_used == 3
+        assert mock_curator.revise.await_count == 3
 
 
 @pytest.mark.asyncio

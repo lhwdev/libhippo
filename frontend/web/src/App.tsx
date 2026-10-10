@@ -26,6 +26,8 @@ export const App: React.FC = () => {
     pendingApproval,
     pendingQuestion,
     sidecarMessages,
+    reasoningEffort,
+    hasActiveKnowledgeWorkers,
     sendPrompt,
     sendContinue,
     sendSteer,
@@ -36,7 +38,18 @@ export const App: React.FC = () => {
     resetSession,
     loadConversation,
     compactContext,
+    undoMessage,
+    stopKnowledgeWorkers,
+    setReasoningEffort,
   } = useWebSocket();
+
+  const [restoredText, setRestoredText] = useState<string>("");
+
+  const handleUndo = (msg: any, displayContent: string) => {
+    const textToRestore = msg.raw_prompt || displayContent;
+    setRestoredText(textToRestore);
+    undoMessage(msg.id ?? msg.message_index ?? 0);
+  };
 
   return (
     <div className="flex flex-col h-screen w-screen bg-[#090d16] text-slate-100 overflow-hidden">
@@ -48,6 +61,8 @@ export const App: React.FC = () => {
         conversationName={conversationName}
         currentPhase={currentPhase}
         totalTokens={totalTokens}
+        reasoningEffort={reasoningEffort}
+        onReasoningEffortChange={setReasoningEffort}
         onReset={resetSession}
         onCompact={compactContext}
         onSelectConversation={loadConversation}
@@ -72,14 +87,19 @@ export const App: React.FC = () => {
               pendingQuestion={pendingQuestion}
               onRespondApproval={sendApproval}
               onSubmitQuestion={sendModalAnswer}
+              onUndo={handleUndo}
             />
             <InputBar
               isStreaming={isStreaming}
+              hasActiveKnowledgeWorkers={hasActiveKnowledgeWorkers}
               onSend={sendPrompt}
               onContinue={sendContinue}
               onInterrupt={() => sendInterrupt("paused_by_user")}
+              onStopKnowledgeWorkers={stopKnowledgeWorkers}
               onSteer={sendSteer}
               onOpenSidecar={() => setActiveTab("sidecar")}
+              restoredText={restoredText}
+              onClearRestoredText={() => setRestoredText("")}
             />
           </div>
         )}

@@ -112,6 +112,21 @@ When operating over standard stateless HTTP/SSE streaming endpoints:
 - The sidecar launches in a concurrent asynchronous task over a separate channel.
 - Reading the snapshot of the parent context (Zone 1 + Zone 2 up to turn start), the sidecar hits the provider's warm prompt cache and returns answers in ~1 second without touching or disturbing the primary agent's deep reasoning.
 
+#### 1.3.4 User Message Undo & Rollback
+Users can revert prompt directly from the Web UI timeline:
+1. **Interactive Trigger**: Each user message card renders a undo icon button.
+2. **Context Truncation**: Clicking undo on message with index $k$ removes $k$ and all subsequent messages ($k \dots N$) from context memory and truncates `transcript.jsonl`.
+3. **Task Cancellation**: All background tasks/processes in `sandbox.tasks` launched at or after message $k$'s timestamp are terminated.
+
+#### 1.3.5 Decoupled Worker Control (Main Harness vs. Knowledge Harvesters)
+Long-running background knowledge curation and harvesting tasks operate independently from the main coding agent:
+1. **Separation from Harness Interrupts**: Triggering `harness.interrupt()` or clicking the UI Stop button pauses/halts the main agent execution loop, but **does not cancel** active background knowledge workers.
+2. **Explicit Worker Halting**: Clicking "Stop Workers" sends a dedicated `stop_knowledge` event (`POST /api/knowledge/stop` or WebSocket `stop_knowledge`) which cancels all running knowledge tasks.
+
+#### 1.3.6 Dynamic Reasoning Effort Control with 100% KV-Cache Reuse
+- Updates on reasoning effort should be done in way that allows reusing model KV cache: uses OpenAI `configuration_update` API.
+- For knowledge tasks that run inside same model and context as `TaskRunner`, `reasoning_efforts` are centralized in `libhippo.config.models`: i.e. `DEFAULT_HARVEST_REASONING_EFFORT`.
+
 ### 1.4 Tiered Network Transport Architecture: Targeted WebSockets with HTTP Fallback
 
 To minimize client-to-server payload overhead while maintaining complete concurrency isolation, the harness implements a targeted multi-transport topology:

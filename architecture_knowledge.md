@@ -277,6 +277,10 @@ Modern OpenAI models enforce an automatic **1,024-token prefix threshold** and c
 2. **Zone 1 Static Prefix Caching (`TaskSolverAgent`, Refactoring Loop)**: In multi-turn sessions, static system prompt, tool schemas, and repository catalog summary are bundled into Zone 1 ($\ge 1,024$ tokens), written once and read at discounted rates across subsequent turns.
 3. **Explicit System-Prompt-Only Caching**: When configured with `cache_system_prompt_only = True` in `ModelConfig`, the client requests `prompt_cache_options.mode = "explicit"` with a `prompt_cache_breakpoint` on the system message, caching strictly the static prompt while keeping volatile user turns and dynamic retrieved snippets uncached at standard 1.0x rates.
 
+### 3.10 Background Worker Lifecycle & Reasoning Configuration
+- **Decoupled Worker Lifecycle**: `KnowledgeHarvestSidecar` and curation tasks run in isolated asynchronous tasks. User-initiated interrupts or message undos do not terminate these workers; they are tracked independently and can be stopped via `POST /api/knowledge/stop` or `stop_knowledge`.
+- **Predefined Reasoning Effort Constants** for knowledge tasks running directly on `TaskRunner` with previous context: i.e. `DEFAULT_HARVEST_REASONING_EFFORT`.
+
 ---
 
 

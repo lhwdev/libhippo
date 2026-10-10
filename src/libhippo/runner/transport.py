@@ -42,6 +42,7 @@ class OpenAIResponsesClient(ChatCompletionClient):
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         self.base_url = base_url
         self.reasoning_effort = reasoning_effort
+        self._applied_reasoning_effort: str | None = None
         kwargs.pop("temperature", None)
         self.kwargs = kwargs
         self.last_response_id: str | None = None
@@ -58,6 +59,10 @@ class OpenAIResponsesClient(ChatCompletionClient):
             "multiple_system_messages": True,
         }
         self._model_info = ModelInfo(**effective_info)
+
+    def set_reasoning_effort(self, effort: str | None) -> None:
+        """Update reasoning effort for upcoming turns."""
+        self.reasoning_effort = effort
 
     @property
     def model_info(self) -> ModelInfo:
@@ -308,7 +313,14 @@ class OpenAIResponsesClient(ChatCompletionClient):
 
         effort = extra_create_args.get("reasoning_effort", self.reasoning_effort)
         if effort and effort != "none":
-            req_kwargs["reasoning"] = {"effort": effort}
+            if prev_id and self._applied_reasoning_effort is not None and effort != self._applied_reasoning_effort:
+                req_kwargs["input"].insert(0, {
+                    "type": "configuration_update",
+                    "reasoning": {"effort": effort},
+                })
+            else:
+                req_kwargs["reasoning"] = {"effort": effort}
+            self._applied_reasoning_effort = effort
 
         if prev_id:
             req_kwargs["previous_response_id"] = prev_id
@@ -330,6 +342,8 @@ class OpenAIResponsesClient(ChatCompletionClient):
                 else:
                     req_kwargs.pop("instructions", None)
                 req_kwargs.pop("previous_response_id", None)
+                if effort and effort != "none":
+                    req_kwargs["reasoning"] = {"effort": effort}
                 response = await self._client.responses.create(**req_kwargs)
                 return self._parse_response(response)
             raise
@@ -359,7 +373,14 @@ class OpenAIResponsesClient(ChatCompletionClient):
 
         effort = extra_create_args.get("reasoning_effort", self.reasoning_effort)
         if effort and effort != "none":
-            req_kwargs["reasoning"] = {"effort": effort}
+            if prev_id and self._applied_reasoning_effort is not None and effort != self._applied_reasoning_effort:
+                req_kwargs["input"].insert(0, {
+                    "type": "configuration_update",
+                    "reasoning": {"effort": effort},
+                })
+            else:
+                req_kwargs["reasoning"] = {"effort": effort}
+            self._applied_reasoning_effort = effort
 
         if prev_id:
             req_kwargs["previous_response_id"] = prev_id
@@ -413,6 +434,7 @@ class OpenAIResponsesWebSocketClient(ChatCompletionClient):
         self.base_url = base_url
         self.ws_url = ws_url
         self.reasoning_effort = reasoning_effort
+        self._applied_reasoning_effort: str | None = None
         self.enable_http_fallback = enable_http_fallback
         kwargs.pop("temperature", None)
         self.kwargs = kwargs
@@ -444,6 +466,34 @@ class OpenAIResponsesWebSocketClient(ChatCompletionClient):
         )
 
         self._client: AsyncOpenAI | None = None
+
+    def set_reasoning_effort(self, effort: str | None) -> None:
+        """Update reasoning effort for upcoming turns."""
+        self.reasoning_effort = effort
+        if hasattr(self, "http_client") and self.http_client is not None:
+            self.http_client.set_reasoning_effort(effort)
+
+    async def update_configuration(self, effort: str) -> dict[str, Any]:
+        """Update configuration dynamically mid-session, sending configuration_update if connected."""
+        self.set_reasoning_effort(effort)
+        if self._is_connected and self._connection is not None:
+            try:
+                evt: dict[str, Any] = {
+                    "type": "response.create",
+                    "model": self.model,
+                    "input": [{
+                        "type": "configuration_update",
+                        "reasoning": {"effort": effort},
+                    }],
+                }
+                if self.last_response_id:
+                    evt["previous_response_id"] = self.last_response_id
+                await self._connection.send(evt)
+                self._applied_reasoning_effort = effort
+                return {"status": "configuration_updated_over_websocket", "effort": effort}
+            except Exception:
+                pass
+        return {"status": "configuration_staged", "effort": effort}
 
     @property
     def last_response_id(self) -> str | None:
@@ -554,7 +604,14 @@ class OpenAIResponsesWebSocketClient(ChatCompletionClient):
 
         effort = extra_create_args.get("reasoning_effort", self.reasoning_effort)
         if effort and effort != "none":
-            create_event["reasoning"] = {"effort": effort}
+            if prev_id and self._applied_reasoning_effort is not None and effort != self._applied_reasoning_effort:
+                create_event["input"].insert(0, {
+                    "type": "configuration_update",
+                    "reasoning": {"effort": effort},
+                })
+            else:
+                create_event["reasoning"] = {"effort": effort}
+            self._applied_reasoning_effort = effort
 
         for k, v in self.kwargs.items():
             if k not in create_event and k not in ("reasoning_effort", "model"):
@@ -615,7 +672,14 @@ class OpenAIResponsesWebSocketClient(ChatCompletionClient):
 
                 effort = extra_create_args.get("reasoning_effort", self.reasoning_effort)
                 if effort and effort != "none":
-                    create_event["reasoning"] = {"effort": effort}
+                    if prev_id and self._applied_reasoning_effort is not None and effort != self._applied_reasoning_effort:
+                        create_event["input"].insert(0, {
+                            "type": "configuration_update",
+                            "reasoning": {"effort": effort},
+                        })
+                    else:
+                        create_event["reasoning"] = {"effort": effort}
+                    self._applied_reasoning_effort = effort
 
                 for k, v in self.kwargs.items():
                     if k not in create_event and k not in ("reasoning_effort", "model", "stream"):

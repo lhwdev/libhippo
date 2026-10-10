@@ -13,6 +13,7 @@ interface ChatTimelineProps {
   pendingQuestion: ModalQuestionEvent | null;
   onRespondApproval: (requestId: string, approved: boolean) => void;
   onSubmitQuestion: (questionId: string, answers: any[]) => void;
+  onUndo?: (message: ChatMessage, promptText: string) => void;
 }
 
 export const ChatTimeline: React.FC<ChatTimelineProps> = ({
@@ -23,6 +24,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
   pendingQuestion,
   onRespondApproval,
   onSubmitQuestion,
+  onUndo,
 }) => {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -54,7 +56,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
       )}
 
       {messages.map((m) => (
-        <MessageCard key={m.id} message={m} />
+        <MessageCard key={m.id} message={m} onUndo={onUndo} />
       ))}
 
       {/* Live In-Flight Stream */}

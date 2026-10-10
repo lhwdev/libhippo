@@ -83,13 +83,15 @@ async def test_web_settings_apis(test_harness: GeneralAgentHarness):
         assert rt_resp.status == 200
         rt_data = await rt_resp.json()
         assert rt_data["mode"] == "default"
+        assert rt_data["reasoning_effort"] == "medium"
 
         rt_post = await client.post(
             "/api/settings/runtime",
-            json={"mode": "turbo"},
+            json={"mode": "turbo", "reasoning_effort": "high"},
         )
         assert rt_post.status == 200
         assert test_harness.config.mode.value == "turbo"
+        assert test_harness.reasoning_effort == "high"
 
 
 @pytest.mark.asyncio
@@ -129,8 +131,9 @@ async def test_web_autocomplete_apis(test_harness: GeneralAgentHarness):
 @pytest.mark.asyncio
 async def test_web_session_and_knowledge_apis(test_harness: GeneralAgentHarness):
     """Test session state, compaction, reset, and knowledge testbench endpoints."""
-    # Seed context memory
-    test_harness.memory.append_user_turn("Hello agent")
+    # Seed context memory and durable session
+    msg = test_harness.memory.append_user_turn("Hello agent")
+    await test_harness.session.append_message(msg)
 
     app = create_app(harness=test_harness)
     async with TestClient(TestServer(app)) as client:
@@ -174,7 +177,20 @@ async def test_web_session_and_knowledge_apis(test_harness: GeneralAgentHarness)
         assert load_data["status"] == "ok"
         assert load_data["conversation_id"] == curr_id
 
-        # 5. Session reset
+        # 5. Stop knowledge workers
+        stop_resp = await client.post("/api/knowledge/stop")
+        assert stop_resp.status == 200
+        stop_data = await stop_resp.json()
+        assert stop_data["status"] == "ok"
+
+        # 6. Undo session turn
+        undo_resp = await client.post("/api/session/undo", json={"message_id": 0})
+        assert undo_resp.status == 200
+        undo_data = await undo_resp.json()
+        assert undo_data["status"] == "undone"
+        assert undo_data["prompt"] == "Hello agent"
+
+        # 7. Session reset
         reset_resp = await client.post("/api/session/reset")
         assert reset_resp.status == 200
         reset_data = await reset_resp.json()
@@ -193,6 +209,8 @@ async def test_websocket_event_streaming(test_harness: GeneralAgentHarness):
         greeting = await ws.receive_json()
         assert greeting["type"] == "connection_established"
         assert greeting["project_id"] == test_harness.project_manager.project_id
+        assert greeting["reasoning_effort"] == "medium"
+        assert greeting["has_active_knowledge_workers"] is False
 
         # 2. Send prompt and receive streamed events
         await ws.send_json({"type": "prompt", "content": "Write hello world"})
@@ -228,15 +246,36 @@ async def test_websocket_event_streaming(test_harness: GeneralAgentHarness):
         steer_ack = await ws.receive_json()
         assert steer_ack["type"] == "steer_result"
 
-        # 4. Test sidecar query
+        # 5. Test sidecar query
         await ws.send_json({"type": "sidecar", "query": "What is the active branch?"})
         sidecar_resp = await ws.receive_json()
         assert sidecar_resp["type"] == "sidecar_response"
 
-        # 5. Test interrupt
+        # 6. Test interrupt
         await ws.send_json({"type": "interrupt", "reason": "user_stop"})
         int_resp = await ws.receive_json()
         assert int_resp["type"] == "interrupt_result"
+
+        # 7. Test set_reasoning_effort over websocket
+        await ws.send_json({"type": "set_reasoning_effort", "effort": "high"})
+        effort_resp = await ws.receive_json()
+        assert effort_resp["type"] == "reasoning_effort_updated"
+        assert effort_resp["reasoning_effort"] == "high"
+        assert test_harness.reasoning_effort == "high"
+
+        # 8. Test stop_knowledge over websocket
+        await ws.send_json({"type": "stop_knowledge"})
+        stop_ack = await ws.receive_json()
+        assert stop_ack["type"] == "stop_knowledge_result"
+        worker_status = await ws.receive_json()
+        assert worker_status["type"] == "knowledge_worker_status"
+        assert worker_status["has_active_knowledge_workers"] is False
+
+        # 9. Test undo over websocket
+        await ws.send_json({"type": "undo", "message_id": 0})
+        undo_resp = await ws.receive_json()
+        assert undo_resp["type"] == "undo_result"
+        assert undo_resp["status"] == "undone"
 
         await ws.close()
 

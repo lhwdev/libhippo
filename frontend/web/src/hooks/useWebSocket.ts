@@ -17,6 +17,8 @@ export function useWebSocket() {
   const [projectId, setProjectId] = useState("");
   const [conversationId, setConversationId] = useState("");
   const [conversationName, setConversationName] = useState("");
+  const [reasoningEffort, setReasoningEffortState] = useState<string>("medium");
+  const [hasActiveKnowledgeWorkers, setHasActiveKnowledgeWorkers] = useState<boolean>(false);
 
   const [pendingApproval, setPendingApproval] = useState<ApprovalRequestEvent | null>(null);
   const [pendingQuestion, setPendingQuestion] = useState<ModalQuestionEvent | null>(null);
@@ -57,6 +59,10 @@ export function useWebSocket() {
             setProjectId(data.project_id);
             setConversationId(data.conversation_id);
             if (data.conversation_name) setConversationName(data.conversation_name);
+            if (data.reasoning_effort) setReasoningEffortState(data.reasoning_effort);
+            if (data.has_active_knowledge_workers !== undefined) {
+              setHasActiveKnowledgeWorkers(data.has_active_knowledge_workers);
+            }
             setCurrentPhase(data.current_phase);
             setTotalTokens(data.total_tokens);
             setMessages(data.chat_messages || []);
@@ -229,6 +235,34 @@ export function useWebSocket() {
             ]);
             break;
 
+          case "knowledge_worker_status":
+            setHasActiveKnowledgeWorkers(data.active);
+            break;
+
+          case "undo_result":
+            setIsStreaming(false);
+            setStreamingResponse("");
+            if (data.chat_messages) {
+              setMessages(data.chat_messages);
+            }
+            if (typeof data.total_tokens === "number") {
+              setTotalTokens(data.total_tokens);
+            }
+            break;
+
+          case "session_updated":
+            if (data.chat_messages) {
+              setMessages(data.chat_messages);
+            }
+            if (typeof data.total_tokens === "number") {
+              setTotalTokens(data.total_tokens);
+            }
+            break;
+
+          case "reasoning_effort_updated":
+            setReasoningEffortState(data.effort);
+            break;
+
           default:
             break;
         }
@@ -361,6 +395,47 @@ export function useWebSocket() {
     return data.evicted_tokens;
   }, []);
 
+  const undoMessage = useCallback((messageId: string) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      fetch("/api/session/undo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message_id: messageId }),
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.chat_messages) setMessages(data.chat_messages);
+          if (typeof data.total_tokens === "number") setTotalTokens(data.total_tokens);
+        })
+        .catch((e) => console.error("Undo request failed:", e));
+      return;
+    }
+    wsRef.current.send(JSON.stringify({ type: "undo", message_id: messageId }));
+  }, []);
+
+  const stopKnowledgeWorkers = useCallback(() => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      fetch("/api/knowledge/stop", { method: "POST" }).catch((e) => console.error(e));
+      setHasActiveKnowledgeWorkers(false);
+      return;
+    }
+    wsRef.current.send(JSON.stringify({ type: "stop_knowledge" }));
+    setHasActiveKnowledgeWorkers(false);
+  }, []);
+
+  const setReasoningEffort = useCallback((effort: string) => {
+    setReasoningEffortState(effort);
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      fetch("/api/settings/runtime", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reasoning_effort: effort }),
+      }).catch((e) => console.error(e));
+      return;
+    }
+    wsRef.current.send(JSON.stringify({ type: "set_reasoning_effort", effort }));
+  }, []);
+
   return {
     connected,
     messages,
@@ -371,6 +446,8 @@ export function useWebSocket() {
     projectId,
     conversationId,
     conversationName,
+    reasoningEffort,
+    hasActiveKnowledgeWorkers,
     pendingApproval,
     pendingQuestion,
     sidecarMessages,
@@ -384,5 +461,8 @@ export function useWebSocket() {
     resetSession,
     loadConversation,
     compactContext,
+    undoMessage,
+    stopKnowledgeWorkers,
+    setReasoningEffort,
   };
 }

@@ -9,6 +9,7 @@ from autogen_core.models import AssistantMessage, ChatCompletionClient, SystemMe
 from libhippo.agents.curator import CuratorAgent
 from libhippo.agents.draftsman import KnowledgeDraftSession
 from libhippo.agents.prompts import load_prompt_file
+from libhippo.config.models import DEFAULT_HARVEST_REASONING_EFFORT
 from libhippo.runner.memory import ContextMemory
 
 
@@ -84,6 +85,7 @@ class KnowledgeHarvestSidecar:
         scope: str = "project",
         nature: str = "critical_rule",
         topic_hint: str | None = None,
+        reasoning_effort: str = DEFAULT_HARVEST_REASONING_EFFORT,
     ) -> Any:
         """Synthesize Hub/Leaf knowledge node from warm context and run Maker-Checker governance."""
         orchestrator = self._get_orchestrator()
@@ -116,7 +118,7 @@ class KnowledgeHarvestSidecar:
                 session.commit_all,
             ]
 
-            extra_args: dict[str, Any] = {"reasoning_effort": "low"}
+            extra_args: dict[str, Any] = {"reasoning_effort": reasoning_effort}
             try:
                 res = await self.model_client.create(messages=llm_messages, tools=tools, extra_create_args=extra_args)
             except Exception:

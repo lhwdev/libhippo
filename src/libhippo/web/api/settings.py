@@ -111,6 +111,7 @@ def setup_settings_routes(app: web.Application, harness: GeneralAgentHarness) ->
             "compaction_target_tokens": harness.config.compaction_target_tokens,
             "max_turns": harness.config.max_turns,
             "allow_sandbox_bypass": harness.config.allow_sandbox_bypass,
+            "reasoning_effort": harness.config.model.reasoning_effort or "medium",
         })
 
     async def update_runtime_config(request: web.Request) -> web.Response:
@@ -121,6 +122,13 @@ def setup_settings_routes(app: web.Application, harness: GeneralAgentHarness) ->
             elif isinstance(data["model"], dict):
                 from libhippo.config.models import ModelConfig
                 harness.config.model = ModelConfig(**data["model"])
+        if "reasoning_effort" in data and isinstance(data["reasoning_effort"], str):
+            harness.set_reasoning_effort(data["reasoning_effort"])
+            if hasattr(harness.model_client, "update_configuration"):
+                try:
+                    await harness.model_client.update_configuration(data["reasoning_effort"])
+                except Exception:
+                    pass
         if "mode" in data and isinstance(data["mode"], str):
             try:
                 harness.config.mode = ExecutionMode(data["mode"])

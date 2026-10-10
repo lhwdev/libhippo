@@ -1,5 +1,5 @@
 import React from "react";
-import { User, Bot, AlertOctagon, Terminal, Info, BookOpen } from "lucide-react";
+import { User, Bot, AlertOctagon, Terminal, Info, BookOpen, RotateCcw } from "lucide-react";
 import { ChatMessage } from "../../types/events";
 import { ToolCallCard } from "./ToolCallCard";
 import { KnowledgeAgentCard } from "./KnowledgeAgentCard";
@@ -7,13 +7,22 @@ import { MarkdownRenderer } from "../common/MarkdownRenderer";
 
 interface MessageCardProps {
   message: ChatMessage;
+  onUndo?: (message: ChatMessage, promptText: string) => void;
 }
 
-export const MessageCard: React.FC<MessageCardProps> = ({ message }) => {
+export const MessageCard: React.FC<MessageCardProps> = ({ message, onUndo }) => {
   const isUser = message.role === "user";
   const isAssistant = message.role === "assistant";
   const isInterrupt = message.role === "interrupt";
   const isSystem = message.role === "system";
+
+  let displayContent = message.content;
+  if (isUser) {
+    const promptMatch = displayContent.match(/<USER_PROMPT[^>]*>([\s\S]*?)(?:<\/USER_PROMPT>|$)/i);
+    if (promptMatch) {
+      displayContent = promptMatch[1].trim();
+    }
+  }
 
   return (
     <div
@@ -51,13 +60,25 @@ export const MessageCard: React.FC<MessageCardProps> = ({ message }) => {
             </div>
           )}
         </div>
-        {message.timestamp && (
-          <span className="text-[10px] text-slate-500 font-mono">{message.timestamp}</span>
-        )}
+        <div className="flex items-center gap-2">
+          {message.timestamp && (
+            <span className="text-[10px] text-slate-500 font-mono">{message.timestamp}</span>
+          )}
+          {isUser && onUndo && (
+            <button
+              onClick={() => onUndo(message, displayContent)}
+              className="flex items-center gap-1 text-[10px] text-slate-400 hover:text-sky-300 bg-sky-950/40 hover:bg-sky-900/60 border border-sky-800/40 px-1.5 py-0.5 rounded transition cursor-pointer"
+              title="Undo this message and restore to input box"
+            >
+              <RotateCcw className="w-3 h-3 text-sky-400" />
+              <span>Undo</span>
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="leading-relaxed font-sans text-sm selection:bg-sky-500/30 select-text">
-        <MarkdownRenderer content={message.content} />
+        <MarkdownRenderer content={displayContent} />
       </div>
 
       {message.toolCalls && message.toolCalls.length > 0 && (

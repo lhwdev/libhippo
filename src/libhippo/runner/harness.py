@@ -7,6 +7,7 @@ import datetime
 import getpass
 import json
 import platform
+import re
 import subprocess
 import uuid
 from typing import Any, AsyncIterator, Callable
@@ -24,11 +25,15 @@ from autogen_core.models import (
 from autogen_core.tools import ToolSchema
 
 
+from libhippo.config.models import (
+    DEFAULT_DEEP_EXPLORATION_REASONING_EFFORT,
+    DEFAULT_HARVEST_REASONING_EFFORT,
+)
 from libhippo.runner.config import HarnessConfig, SkillDefinition
 from libhippo.runner.discovery import ResourceDiscovery
 from libhippo.runner.governor import WorkloadGovernor
 from libhippo.runner.memory import ContextMemory
-from libhippo.runner.persistence import ConversationSession
+from libhippo.runner.persistence import ConversationSession, context_messages_to_chat_messages
 from libhippo.runner.project import ProjectManager
 from libhippo.runner.sandbox import BubblewrapSandboxRunner, SandboxRunner
 from libhippo.runner.sidecar import KnowledgeHarvestSidecar, SidecarExecutor
@@ -78,6 +83,7 @@ class GeneralAgentHarness:
         self._interrupt_event = asyncio.Event()
         self._is_paused: bool = False
         self._current_gen_task: asyncio.Task[Any] | None = None
+        self._in_deep_exploration: bool = False
 
         # 0. Discovery & Environment loading
         self.discovery = ResourceDiscovery(workspace_root=self.workspace_root, config=self.config)
@@ -495,6 +501,10 @@ class GeneralAgentHarness:
                 llm_messages = self._build_llm_messages()
 
                 extra_args: dict[str, Any] = {}
+                if self._in_deep_exploration:
+                    extra_args["reasoning_effort"] = DEFAULT_DEEP_EXPLORATION_REASONING_EFFORT
+                elif self.config.model.reasoning_effort is not None:
+                    extra_args["reasoning_effort"] = self.config.model.reasoning_effort
 
                 self._current_gen_task = asyncio.current_task()
                 try:
@@ -600,6 +610,17 @@ class GeneralAgentHarness:
                             result = await handler_task
                             yield ToolCallResultEvent(tool_call_id=call_id, name=tool_name, result=result, error=None)
                             result_str = str(result) if not isinstance(result, str) else result
+
+                            # Handle deep exploration effort transitions
+                            if tool_name == "query_knowledge" and ("HANDOUT:EXPLORE" in result_str or getattr(result, "status", None) == "HANDOUT:EXPLORE"):
+                                self._in_deep_exploration = True
+                                if hasattr(self.model_client, "set_reasoning_effort"):
+                                    self.model_client.set_reasoning_effort(DEFAULT_DEEP_EXPLORATION_REASONING_EFFORT)
+                            elif tool_name == "complete_retrieval":
+                                self._in_deep_exploration = False
+                                if hasattr(self.model_client, "set_reasoning_effort"):
+                                    self.model_client.set_reasoning_effort(self.config.model.reasoning_effort)
+
                             t_msg = self.memory.append_tool_output(
                                 tool_name=tool_name,
                                 content=result_str,
@@ -708,14 +729,141 @@ class GeneralAgentHarness:
             for tid in list(self.sandbox.active_tasks.keys()):
                 asyncio.create_task(self.sandbox.manage_task("kill", task_id=tid))
 
-        # 4. Cancel active background sidecar maintenance tasks
+        # Knowledge workers (harvest sidecars and curation) are intentionally NOT cancelled here,
+        # allowing them to finish unless explicitly stopped via stop_knowledge_workers().
+
+        # 4. Record interrupt event in memory and durable session
+        int_msg = self.memory.append_assistant_turn(f'<interrupt_event status="paused_by_user" reason="{reason}"/>')
+        asyncio.create_task(self.session.append_message(int_msg))
+
+    @property
+    def has_active_knowledge_workers(self) -> bool:
+        """Check whether background knowledge workers (harvest sidecars or curation) are running."""
+        return any(
+            not t.done() and not (hasattr(t, "cancelling") and bool(t.cancelling()))
+            for t in self._active_sidecar_tasks
+        )
+
+    def stop_knowledge_workers(self) -> int:
+        """Explicitly stop background knowledge curation and harvest workers."""
+        stopped = 0
         for bg_t in list(self._active_sidecar_tasks):
             if not bg_t.done():
                 bg_t.cancel()
+                stopped += 1
+        return stopped
 
-        # 5. Record interrupt event in memory and durable session
-        int_msg = self.memory.append_assistant_turn(f'<interrupt_event status="paused_by_user" reason="{reason}"/>')
-        asyncio.create_task(self.session.append_message(int_msg))
+    @property
+    def reasoning_effort(self) -> str:
+        """Get currently configured reasoning effort for main harness."""
+        return getattr(self.config.model, "reasoning_effort", "medium") or "medium"
+
+    def set_reasoning_effort(self, effort: str) -> None:
+        """Update main harness reasoning effort and notify model client."""
+        self.config.model.reasoning_effort = effort
+        if hasattr(self.model_client, "set_reasoning_effort"):
+            res = self.model_client.set_reasoning_effort(effort)
+            if asyncio.iscoroutine(res):
+                try:
+                    asyncio.create_task(res)
+                except RuntimeError:
+                    pass
+
+    async def undo(self, message_id_or_index: str | int) -> dict[str, Any]:
+        """Undo user message and all subsequent context turns and tasks.
+
+        - Halts any in-flight generation.
+        - Halts all sandbox background tasks started at or after the target message.
+        - Truncates Zone 2/3 memory before the target user message.
+        - Truncates transcript.jsonl and updates session metadata.
+        - Extracts original user prompt text to return to the input bar.
+        """
+        # 1. Stop active generation if running
+        if self._current_gen_task is not None and not self._current_gen_task.done():
+            self._current_gen_task.cancel()
+        if hasattr(self.model_client, "cancel"):
+            try:
+                await self.model_client.cancel()
+            except Exception:
+                pass
+        self.is_running = False
+
+        # 2. Identify target message index in zone2_history
+        target_idx = -1
+        if isinstance(message_id_or_index, int):
+            target_idx = message_id_or_index
+        else:
+            raw_id = str(message_id_or_index)
+            if raw_id.startswith("user-"):
+                try:
+                    target_idx = int(raw_id.split("-")[1])
+                except ValueError:
+                    target_idx = -1
+            if target_idx < 0 or target_idx >= len(self.memory.zone2_history):
+                for idx, m in enumerate(self.memory.zone2_history):
+                    if m.metadata.get("id") == raw_id or (m.role == "user" and raw_id in m.content):
+                        target_idx = idx
+                        break
+
+        if target_idx < 0 or target_idx >= len(self.memory.zone2_history):
+            return {
+                "status": "error",
+                "error": f"Message '{message_id_or_index}' not found in conversation history.",
+            }
+
+        target_msg = self.memory.zone2_history[target_idx]
+
+        # 3. Halt all tasks started at or after target message
+        msg_time_str = target_msg.metadata.get("timestamp")
+        msg_time = 0.0
+        if msg_time_str:
+            try:
+                dt = datetime.datetime.fromisoformat(msg_time_str)
+                msg_time = dt.timestamp()
+            except Exception:
+                pass
+
+        if hasattr(self.sandbox, "tasks"):
+            for tid, t_info in list(self.sandbox.tasks.items()):
+                start_t = getattr(t_info, "start_time", 0.0)
+                if isinstance(start_t, (int, float)) and start_t >= (msg_time - 1.0):
+                    proc = getattr(t_info, "process", None)
+                    if proc is None or getattr(proc, "returncode", None) is None:
+                        asyncio.create_task(self.sandbox.manage_task("kill", task_id=tid))
+
+        # 4. Extract raw prompt text for input bar
+        content = target_msg.content
+        match = re.search(r"<USER_PROMPT[^>]*>(?:(.*?)</USER_PROMPT>|(.*))", content, flags=re.DOTALL | re.IGNORECASE)
+        if match:
+            prompt_text = (match.group(1) if match.group(1) is not None else match.group(2)).strip()
+        else:
+            if "<session_context>" in content and "</session_context>" in content:
+                prompt_text = content.split("</session_context>")[-1].lstrip("\n")
+            else:
+                prompt_text = content.strip()
+
+        # 5. Truncate memory and durable transcript before target_idx
+        self.memory.zone2_history = self.memory.zone2_history[:target_idx]
+        self.session.truncate_before(target_idx)
+
+        # 6. Recalculate governor turn count and reset model client delta chaining
+        user_turns = sum(1 for m in self.memory.zone2_history if m.role == "user")
+        self.governor.current_turns = user_turns
+
+        if hasattr(self.model_client, "last_response_id"):
+            self.model_client.last_response_id = None
+        if hasattr(self, "model_client") and hasattr(self.model_client, "http_client"):
+            self.model_client.http_client.last_response_id = None
+
+        chat_messages = context_messages_to_chat_messages(self.memory.zone2_history)
+
+        return {
+            "status": "undone",
+            "message_index": target_idx,
+            "prompt": prompt_text,
+            "chat_messages": chat_messages,
+            "total_tokens": self.memory.get_total_tokens(),
+        }
 
     def compact_context(self) -> int:
         """Trigger explicit context compaction (Zone 3 eviction and Zone 2 summarization)."""
@@ -735,6 +883,7 @@ class GeneralAgentHarness:
                         scope=item.get("scope", "project"),
                         nature="critical_rule",
                         topic_hint=item.get("topic"),
+                        reasoning_effort=DEFAULT_HARVEST_REASONING_EFFORT,
                     )
                 except Exception:
                     pass
@@ -747,6 +896,7 @@ class GeneralAgentHarness:
                     parent_memory=self.memory,
                     scope="project",
                     nature="critical_rule",
+                    reasoning_effort=DEFAULT_HARVEST_REASONING_EFFORT,
                 )
             except Exception:
                 pass

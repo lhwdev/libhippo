@@ -10,6 +10,7 @@ import {
   Plus,
   MessageSquare,
   Trash2,
+  Brain,
 } from "lucide-react";
 import { ConversationItem } from "../../types/api";
 
@@ -20,6 +21,8 @@ interface HeaderProps {
   conversationName?: string;
   totalTokens: number;
   currentPhase?: string;
+  reasoningEffort?: string;
+  onReasoningEffortChange?: (effort: string) => void;
   onReset: () => void;
   onCompact: () => void;
   onSelectConversation?: (convId: string) => void;
@@ -31,6 +34,8 @@ export const Header: React.FC<HeaderProps> = ({
   conversationId,
   conversationName,
   totalTokens,
+  reasoningEffort,
+  onReasoningEffortChange,
   onReset,
   onCompact,
   onSelectConversation,
@@ -243,6 +248,23 @@ export const Header: React.FC<HeaderProps> = ({
         >
           <Minimize2 className="w-3.5 h-3.5" />
         </button>
+
+        {/* Reasoning Effort Selector */}
+        <div
+          className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded px-1.5 py-0.5"
+          title="Main harness reasoning effort (KV cache preserved)"
+        >
+          <Brain className="w-3 h-3 text-purple-400" />
+          <select
+            value={reasoningEffort || "medium"}
+            onChange={(e) => onReasoningEffortChange?.(e.target.value)}
+            className="bg-transparent text-slate-200 text-xs font-mono outline-none cursor-pointer"
+          >
+            <option value="low">effort: low</option>
+            <option value="medium">effort: med</option>
+            <option value="high">effort: high</option>
+          </select>
+        </div>
 
         {/* Mode Selector */}
         <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded px-1.5 py-0.5">

@@ -51,6 +51,11 @@ DEFAULT_OPENAI_MODEL_INFO: dict[str, Any] = {
 }
 
 
+# Predefined constant reasoning efforts for specialized modes
+DEFAULT_HARVEST_REASONING_EFFORT: Literal["none", "minimal", "low", "medium", "high"] = "low"
+DEFAULT_DEEP_EXPLORATION_REASONING_EFFORT: Literal["none", "minimal", "low", "medium", "high"] = "medium"
+
+
 DEFAULT_TASK_SOLVER_CONFIG = ModelConfig(
     provider="openai",
     model="gpt-6.1-sol",

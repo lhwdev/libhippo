@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import re
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -108,9 +109,13 @@ class ConversationSession:
 
     def _extract_name_from_user_prompt(self, prompt: str) -> str:
         """Extract a clean, concise title from user prompt."""
-        content = prompt
-        if "<session_context>" in content and "</session_context>" in content:
-            content = content.split("</session_context>")[-1].strip()
+        match = re.search(r"<USER_PROMPT[^>]*>(?:(.*?)</USER_PROMPT>|(.*))", prompt, flags=re.DOTALL | re.IGNORECASE)
+        if match:
+            content = (match.group(1) if match.group(1) is not None else match.group(2)).strip()
+        else:
+            content = prompt
+            if "<session_context>" in content and "</session_context>" in content:
+                content = content.split("</session_context>")[-1].strip()
         lines = [line.strip() for line in content.splitlines() if line.strip()]
         if not lines:
             return self._generate_default_name()
@@ -160,6 +165,24 @@ class ConversationSession:
                 except Exception:
                     pass
         return messages
+
+    def truncate_before(self, message_index: int) -> list[ContextMessage]:
+        """Truncate transcript.jsonl and history before message_index (retaining [:message_index])."""
+        messages = self.get_messages()
+        kept = messages[:message_index] if 0 <= message_index < len(messages) else messages
+        self._ensure_storage_dir()
+        try:
+            with open(self.transcript_file, "w", encoding="utf-8") as f:
+                for m in kept:
+                    f.write(json.dumps(asdict(m)) + "\n")
+        except OSError:
+            pass
+
+        meta = self.get_metadata()
+        meta["updated_at"] = self._current_timestamp()
+        meta["message_count"] = len(kept)
+        self.save_metadata(meta)
+        return kept
 
     async def record_artifact(
         self,
@@ -281,6 +304,11 @@ def context_messages_to_chat_messages(messages: list[ContextMessage]) -> list[di
 
         role = m.role
         ts = m.metadata.get("timestamp", "")
+        if not ts and role == "user":
+            ts_match = re.search(r'<USER_PROMPT[^>]*timestamp="([^"]+)"', m.content, flags=re.IGNORECASE)
+            if ts_match:
+                ts = ts_match.group(1)
+
         if isinstance(ts, str) and "T" in ts:
             try:
                 time_part = ts.split("T")[1].split(".")[0]
@@ -292,13 +320,19 @@ def context_messages_to_chat_messages(messages: list[ContextMessage]) -> list[di
 
         if role == "user":
             content = m.content
-            if "<session_context>" in content and "</session_context>" in content:
-                content = content.split("</session_context>")[-1].lstrip("\n")
+            match = re.search(r"<USER_PROMPT[^>]*>(?:(.*?)</USER_PROMPT>|(.*))", content, flags=re.DOTALL | re.IGNORECASE)
+            if match:
+                content = (match.group(1) if match.group(1) is not None else match.group(2)).strip()
+            else:
+                if "<session_context>" in content and "</session_context>" in content:
+                    content = content.split("</session_context>")[-1].lstrip("\n")
             chat_msgs.append({
                 "id": f"user-{i}",
                 "role": "user",
                 "content": content,
                 "timestamp": ts,
+                "message_index": i,
+                "raw_prompt": content,
             })
         elif role == "assistant":
             tool_calls = m.metadata.get("tool_calls")

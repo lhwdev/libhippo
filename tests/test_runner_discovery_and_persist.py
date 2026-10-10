@@ -6,7 +6,7 @@ import pytest
 
 from libhippo.runner.config import HarnessConfig
 from libhippo.runner.discovery import ResourceDiscovery
-from libhippo.runner.persistence import ConversationSession
+from libhippo.runner.persistence import ConversationSession, context_messages_to_chat_messages
 from libhippo.runner.types import ContextMessage
 
 
@@ -115,6 +115,22 @@ async def test_conversation_persistence(tmp_path: Path):
     assert session.get_name() == "Implement feature X"
     assert session.get_metadata()["name"] == "Implement feature X"
     assert session.get_metadata()["message_count"] == 1
+
+    # Verify extraction from USER_PROMPT tag
+    tag_prompt = (
+        "System preamble outside prompt\n"
+        '<USER_PROMPT timestamp="2026-10-10T09:32:45.885526+00:00" session_elapsed="0s" branch="main">\n'
+        "Hello?\n"
+        "</USER_PROMPT>\n"
+        "Trailing text outside prompt"
+    )
+    assert session._extract_name_from_user_prompt(tag_prompt) == "Hello?"
+    chat_list = context_messages_to_chat_messages([
+        ContextMessage(role="user", content=tag_prompt, zone="zone2_linear", raw_token_count=10)
+    ])
+    assert len(chat_list) == 1
+    assert chat_list[0]["content"] == "Hello?"
+    assert chat_list[0]["timestamp"] == "09:32:45"
 
     # 2. Record artifact (creates artifacts folder on demand)
     art_path = await session.record_artifact(

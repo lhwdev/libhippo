@@ -68,12 +68,24 @@ def create_app(
     if hasattr(harness, "tools") and harness.tools:
         harness.tools.event_callback = broadcast_tool_event
 
+    async def broadcast_worker_status() -> None:
+        msg = json.dumps({
+            "type": "knowledge_worker_status",
+            "active": harness.has_active_knowledge_workers,
+            "has_active_knowledge_workers": harness.has_active_knowledge_workers,
+            "count": len([t for t in harness._active_sidecar_tasks if not t.done()]),
+        })
+        coros = [ws.send_str(msg) for ws in list(active_websockets) if not ws.closed]
+        if coros:
+            await asyncio.gather(*coros, return_exceptions=True)
+
     async def broadcast_knowledge_event(event: Any) -> None:
         event_dict = asdict(event) if is_dataclass(event) else event
         msg = json.dumps(event_dict)
         coros = [ws.send_str(msg) for ws in list(active_websockets) if not ws.closed]
         if coros:
             await asyncio.gather(*coros, return_exceptions=True)
+        await broadcast_worker_status()
 
     if hasattr(harness, "on_event_broadcast"):
         harness.on_event_broadcast = broadcast_knowledge_event
@@ -101,6 +113,8 @@ def create_app(
                 "conversation_metadata": harness.session.get_metadata(),
                 "is_running": harness.is_running,
                 "total_tokens": harness.memory.get_total_tokens(),
+                "reasoning_effort": harness.config.model.reasoning_effort or "medium",
+                "has_active_knowledge_workers": harness.has_active_knowledge_workers,
                 "chat_messages": context_messages_to_chat_messages(harness.memory.zone2_history),
             }
             await ws.send_json(init_state)
@@ -209,6 +223,43 @@ def create_app(
                             "type": "compact_result",
                             "evicted_tokens": evicted,
                             "total_tokens": harness.memory.get_total_tokens(),
+                        })
+
+                    elif msg_type == "undo":
+                        msg_id = payload.get("message_id")
+                        undo_res = await harness.undo(msg_id)
+                        await ws.send_json({"type": "undo_result", **undo_res})
+                        await broadcast_worker_status()
+                        sync_msg = json.dumps({
+                            "type": "session_updated",
+                            "chat_messages": undo_res.get("chat_messages", []),
+                            "total_tokens": undo_res.get("total_tokens", 0),
+                        })
+                        for other_ws in list(active_websockets):
+                            if not other_ws.closed:
+                                try:
+                                    await other_ws.send_str(sync_msg)
+                                except Exception:
+                                    pass
+
+                    elif msg_type == "stop_knowledge":
+                        stopped = harness.stop_knowledge_workers()
+                        await asyncio.sleep(0)
+                        await ws.send_json({"type": "stop_knowledge_result", "stopped": stopped})
+                        await broadcast_worker_status()
+
+                    elif msg_type == "set_reasoning_effort":
+                        effort = payload.get("effort", "medium")
+                        harness.set_reasoning_effort(effort)
+                        if hasattr(harness.model_client, "update_configuration"):
+                            try:
+                                await harness.model_client.update_configuration(effort)
+                            except Exception:
+                                pass
+                        await ws.send_json({
+                            "type": "reasoning_effort_updated",
+                            "effort": effort,
+                            "reasoning_effort": effort,
                         })
 
                 elif msg.type == WSMsgType.ERROR:

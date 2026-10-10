@@ -1,27 +1,48 @@
-import React, { useState, useRef, KeyboardEvent } from "react";
-import { Send, Square, Sparkles, Compass, FileText, Terminal } from "lucide-react";
+import React, { useState, useRef, KeyboardEvent, useEffect } from "react";
+import { Send, Square, Sparkles, Compass, FileText, Terminal, BookOpen } from "lucide-react";
 import { useAutocomplete } from "../../hooks/useAutocomplete";
 import { CommandItem, FileItem } from "../../types/api";
 
 interface InputBarProps {
   isStreaming: boolean;
+  hasActiveKnowledgeWorkers?: boolean;
   onSend: (text: string) => void;
   onContinue?: (guidance?: string) => void;
   onInterrupt: () => void;
+  onStopKnowledgeWorkers?: () => void;
   onSteer: (guidance: string) => void;
   onOpenSidecar: () => void;
+  restoredText?: string;
+  onClearRestoredText?: () => void;
 }
 
 export const InputBar: React.FC<InputBarProps> = ({
   isStreaming,
+  hasActiveKnowledgeWorkers,
   onSend,
   onContinue,
   onInterrupt,
+  onStopKnowledgeWorkers,
   onSteer,
   onOpenSidecar,
+  restoredText,
+  onClearRestoredText,
 }) => {
   const [text, setText] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (restoredText !== undefined && restoredText !== null && restoredText !== "") {
+      setText(restoredText);
+      if (textareaRef.current) {
+        textareaRef.current.focus();
+        textareaRef.current.setSelectionRange(restoredText.length, restoredText.length);
+      }
+      if (onClearRestoredText) {
+        onClearRestoredText();
+      }
+    }
+  }, [restoredText, onClearRestoredText]);
 
   const autocomplete = useAutocomplete();
 
@@ -177,16 +198,25 @@ export const InputBar: React.FC<InputBarProps> = ({
             <Compass className="w-4 h-4" />
           </button>
 
-          {isStreaming && (
+          {isStreaming ? (
             <button
               onClick={onInterrupt}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-rose-600 hover:bg-rose-500 text-white font-medium transition shadow-sm animate-pulse"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-rose-600 hover:bg-rose-500 text-white font-medium transition shadow-sm animate-pulse cursor-pointer"
               title="Interrupt and stop execution"
             >
               <Square className="w-3.5 h-3.5 fill-current" />
               <span>Stop</span>
             </button>
-          )}
+          ) : hasActiveKnowledgeWorkers && onStopKnowledgeWorkers ? (
+            <button
+              onClick={onStopKnowledgeWorkers}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-purple-700 hover:bg-purple-600 text-white font-medium transition shadow-sm animate-pulse cursor-pointer"
+              title="Stop background knowledge curation/harvest workers"
+            >
+              <BookOpen className="w-3.5 h-3.5" />
+              <span>Stop Workers</span>
+            </button>
+          ) : null}
 
           <button
             onClick={handleSubmit}
