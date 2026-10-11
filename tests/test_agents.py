@@ -381,6 +381,97 @@ async def test_verifier_resolve_escalation_read_only(tmp_path):
         assert "ReadOnlyMountError" in res.get("error", "")
 
 
+@pytest.mark.asyncio
+async def test_verifier_accesses_drafts_via_read_and_write_knowledge(tmp_path):
+    """Verify VerifierAgent accesses and modifies draft knowledge files via read_knowledge/write_knowledge."""
+    from libhippo.agents.draftsman import KnowledgeDraftSession
+
+    comm_dir = tmp_path / "comm"
+    comm_dir.mkdir(parents=True, exist_ok=True)
+    mounts = [
+        MountConfig(namespace_prefix="common", physical_path=comm_dir, read_only=False),
+    ]
+
+    async with KnowledgeStore(mounts=mounts, cache_dir=tmp_path / "cache") as store:
+        await store.initialize()
+        session = KnowledgeDraftSession(store=store, workspace_root=tmp_path)
+
+        # 1. Draftsman creates an active draft in the session
+        draft_content = (
+            "---\n"
+            "title: React Patterns\n"
+            "namespace: common\n"
+            "version: 1.0.0\n"
+            "---\n"
+            "# React Patterns\n"
+            "Line 1: Hooks\n"
+            "Line 2: Effects\n"
+        )
+        write_res = await session.write_knowledge("common/react", draft_content)
+        assert "Successfully updated draft 'common/react'" in write_res
+
+        # 2. VerifierAgent wired with the same session can read the draft
+        agent = VerifierAgent(store=store, session=session)
+        read_res = await agent.read_knowledge("common/react")
+        assert '<knowledge path="common/react"' in read_res
+        assert "React Patterns" in read_res
+        assert "1: ---" in read_res
+        assert "Line 1: Hooks" in read_res
+
+        # 3. VerifierAgent can read slice of the draft with line addressing
+        slice_res = await agent.read_knowledge("common/react", start_line=5, end_line=6)
+        assert "5: ---" in slice_res
+        assert "6: # React Patterns" in slice_res
+
+        # 4. VerifierAgent can surgically edit the draft via write_knowledge
+        edit_res = await agent.write_knowledge(
+            "common/react",
+            "Line 2: Server Actions\n",
+            target="Line 2: Effects\n",
+        )
+        assert "Successfully updated draft 'common/react'" in edit_res
+
+        # 5. Verify the draft in the session reflects the edit
+        updated_read = await agent.read_knowledge("common/react")
+        assert "Line 2: Server Actions" in updated_read
+        assert "Line 2: Effects" not in updated_read
+
+        # 6. VerifierAgent can draft a child partition node via write_knowledge
+        child_draft = (
+            "---\n"
+            "title: React Hooks\n"
+            "namespace: common\n"
+            "version: 1.0.0\n"
+            "---\n"
+            "# React Hooks\n"
+            "Detailed rules for hooks.\n"
+        )
+        child_res = await agent.write_knowledge("common/react/hooks", child_draft)
+        assert "Successfully updated draft 'common/react/hooks'" in child_res
+        assert "common/react/hooks" in session.drafts
+
+        # 7. resolve_escalation ensures candidate is accessible via read_knowledge
+        candidate = KnowledgeCandidate.from_markdown(
+            "common/monolith",
+            "---\ntitle: Monolith\nnamespace: common\nversion: 1.0.0\n---\n# Monolith\nContent",
+        )
+        report = JevAuditReport(
+            verdict="ESCALATE_REFACTOR",
+            size_status="oversized",
+            taxonomy_fit="optimal",
+            token_count=2000,
+            effective_token_count=2000,
+        )
+        mock_client = make_mock_client('{"status": "APPROVED", "action": "update", "rationale": "OK"}')
+        agent_escalate = VerifierAgent(model_client=mock_client, store=store, session=session)
+        await agent_escalate.resolve_escalation(candidate=candidate, report=report)
+
+        # Candidate must now be readable as a draft
+        monolith_read = await agent_escalate.read_knowledge("common/monolith")
+        assert '<knowledge path="common/monolith"' in monolith_read
+        assert "Monolith" in monolith_read
+
+
 # --- TaskSolverAgent Tests ---
 
 @pytest.mark.asyncio

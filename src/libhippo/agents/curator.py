@@ -28,6 +28,8 @@ class CuratorAgent(AssistantAgent, BaseHippoAgent):
     Strictly write-protected from directly mutating the knowledge store.
     """
 
+    current_session: KnowledgeDraftSession | None = None
+
     def __init__(
         self,
         name: str = "CuratorAgent",

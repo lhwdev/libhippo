@@ -11,6 +11,7 @@ from autogen_core.models import ChatCompletionClient
 from pydantic import BaseModel, ConfigDict, Field
 
 from libhippo.agents.base import BaseHippoAgent
+from libhippo.agents.draftsman import KnowledgeDraftSession
 from libhippo.agents.prompts import get_agent_system_prompt
 from libhippo.models.audit import JevAuditReport
 from libhippo.models.knowledge import KnowledgeCandidate
@@ -48,12 +49,12 @@ class VerifierDirective(BaseModel):
     rationale: str = Field(default="", description="Architectural rationale for refactoring decision")
 
 
-
 class VerifierAgent(AssistantAgent, BaseHippoAgent):
     """Refactoring authority and sole reasoning agent equipped with modify_knowledge.
 
     Handles Maker-Checker escalations, Hub promotions, directory partitioning for
     oversized nodes, sibling coalescing for undersized nodes, and deprecation routing.
+    Can access and manipulate drafts via read_knowledge and write_knowledge just like draftsman.
     """
 
     def __init__(
@@ -62,45 +63,156 @@ class VerifierAgent(AssistantAgent, BaseHippoAgent):
         description: str = "Knowledge Refactoring Authority and Architectural Gatekeeper.",
         model_client: ChatCompletionClient | None = None,
         store: KnowledgeStore | None = None,
+        sandbox: Any | None = None,
+        session: KnowledgeDraftSession | None = None,
         tools: list[Any] | None = None,
         system_message: str | None = None,
         max_tool_iterations: int = 8,
     ) -> None:
         client = model_client or create_chat_client("verifier")
         sys_msg = system_message or get_agent_system_prompt("verifier")
+        self.store = store
+        self.sandbox = sandbox
+        self.current_session: KnowledgeDraftSession | None = session
 
-        if tools is None and store is not None:
-            reg = ToolRegistry(store=store)
-            tools = [
-                reg.get_modify_knowledge_tool(),
-                reg.get_read_knowledge_tool(),
-                reg.get_list_knowledge_tool(),
-                reg.get_exact_search_knowledge_tool(),
-                reg.get_write_knowledge_tool(),
-                reg.get_run_command_tool(),
-            ]
+        agent_tools = tools if tools is not None else [
+            self.modify_knowledge,
+            self.read_knowledge,
+            self.list_knowledge,
+            self.search_knowledge,
+            self.write_knowledge,
+            self.run_command,
+        ]
 
         AssistantAgent.__init__(
             self,
             name=name,
             model_client=client,
-            tools=tools or [],
+            tools=agent_tools,
             system_message=sys_msg,
             description=description,
             max_tool_iterations=max_tool_iterations,
             output_content_type=VerifierDirective,
         )
         BaseHippoAgent.__init__(self, name=name, description=description)
-        self.store = store
+
+    def _get_current_session(self) -> KnowledgeDraftSession:
+        if not self.current_session:
+            self.current_session = KnowledgeDraftSession(
+                store=self.store, sandbox=self.sandbox
+            )
+        return self.current_session
+
+    async def write_knowledge(
+        self,
+        path: str,
+        content: str,
+        start_line: int | None = None,
+        end_line: int | None = None,
+        target: str | None = None,
+    ) -> str:
+        """Edit or replace a draft document. Returns immediate deterministic sanity check results."""
+        return await self._get_current_session().write_knowledge(
+            path=path, content=content, start_line=start_line, end_line=end_line, target=target
+        )
+
+    async def read_knowledge(
+        self,
+        path: str,
+        start_line: int = 1,
+        end_line: int | None = None,
+    ) -> str:
+        """Read line-addressed slice of a draft document or existing store knowledge node."""
+        return await self._get_current_session().read_knowledge(
+            path=path, start_line=start_line, end_line=end_line
+        )
+
+    async def list_knowledge(self, path: str = ".", max_depth: int = 2) -> str:
+        """Structural listing of knowledge namespaces, documents, and active drafts."""
+        return await self._get_current_session().list_knowledge(path=path, max_depth=max_depth)
+
+    async def search_knowledge(
+        self,
+        path: str,
+        pattern: str = "*",
+        content_pattern: str | None = None,
+    ) -> str:
+        """Fast lexical path glob matching and optional regex search across knowledge documents and drafts."""
+        return await self._get_current_session().search_knowledge(
+            path=path, pattern=pattern, content_pattern=content_pattern
+        )
+
+    async def run_command(self, command_line: str) -> dict[str, Any]:
+        """Execute sandboxed terminal command to verify APIs or behavior."""
+        return await self._get_current_session().run_command(command_line=command_line)
+
+    async def modify_knowledge(
+        self,
+        action: str,
+        path: str,
+        content: str = "",
+        metadata: dict[str, Any] | None = None,
+        extra_paths: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Atomically commit markdown modifications, splits, merges, or deprecations to the knowledge base."""
+        if not self.store:
+            return {"status": "error", "message": "No knowledge store available to execute modify_knowledge."}
+
+        session = self._get_current_session()
+        norm_path = session._normalize_path(path)
+
+        # If content omitted but drafted in session, use drafted content
+        if not content and norm_path in session.drafts and session.drafts[norm_path].exists():
+            content = session.drafts[norm_path].read_text(encoding="utf-8")
+
+        # For split operations, save any child nodes that were drafted in the session
+        if action == "split" and extra_paths:
+            for ep in extra_paths:
+                norm_ep = session._normalize_path(ep)
+                if norm_ep in session.drafts and session.drafts[norm_ep].exists():
+                    child_text = session.drafts[norm_ep].read_text(encoding="utf-8")
+                    await self.store.save_node(norm_ep, child_text)
+
+        res = await self.store.modify_knowledge(
+            action=action,  # type: ignore
+            path=norm_path,
+            content=content,
+            metadata=metadata or {},
+            extra_paths=extra_paths,
+        )
+
+        # Cleanup committed drafts from session
+        if res.get("status") == "success":
+            session.drafts.pop(norm_path, None)
+            if extra_paths:
+                for ep in extra_paths:
+                    session.drafts.pop(session._normalize_path(ep), None)
+
+        return res
 
     async def resolve_escalation(
         self,
         candidate: KnowledgeCandidate,
         report: JevAuditReport,
         store: KnowledgeStore | None = None,
+        session: KnowledgeDraftSession | None = None,
     ) -> dict[str, Any]:
         """Arbitrate an ESCALATE_REFACTOR audit report by planning and executing refactoring."""
-        effective_store = store or self.store
+        if session:
+            self.current_session = session
+
+        effective_session = self._get_current_session()
+        effective_store = store or self.store or effective_session.store
+
+        # Ensure candidate is accessible as a draft in the active session
+        if candidate and candidate.path:
+            norm_c_path = effective_session._normalize_path(candidate.path)
+            if norm_c_path not in effective_session.drafts:
+                draft_file = effective_session.drafts_dir / f"{norm_c_path}.md"
+                draft_file.parent.mkdir(parents=True, exist_ok=True)
+                draft_file.write_text(candidate.markdown, encoding="utf-8")
+                effective_session.drafts[norm_c_path] = draft_file
+
         errors = report.schema_errors + report.content_errors
         diagnostics = "\n".join(f"- {d}" for d in errors) if errors else "None"
         prompt = (
@@ -140,12 +252,32 @@ class VerifierAgent(AssistantAgent, BaseHippoAgent):
         if effective_store and parsed.get("action") == "split" and parsed.get("children"):
             try:
                 hub_path = parsed.get("parent_hub") or candidate.path
+                norm_hub = effective_session._normalize_path(hub_path)
+                child_paths = []
+                for c in parsed["children"]:
+                    c_path = c["path"] if isinstance(c, dict) else c.path
+                    norm_child = effective_session._normalize_path(c_path)
+                    c_content = c.get("content", "") if isinstance(c, dict) else getattr(c, "content", "")
+                    if not c_content and norm_child in effective_session.drafts and effective_session.drafts[norm_child].exists():
+                        c_content = effective_session.drafts[norm_child].read_text(encoding="utf-8")
+                    if c_content:
+                        await effective_store.save_node(norm_child, c_content)
+                    child_paths.append(norm_child)
+
+                hub_content = ""
+                if norm_hub in effective_session.drafts and effective_session.drafts[norm_hub].exists():
+                    hub_content = effective_session.drafts[norm_hub].read_text(encoding="utf-8")
+
                 await effective_store.modify_knowledge(
                     action="split",
-                    path=hub_path,
-                    extra_paths=[c["path"] if isinstance(c, dict) else c.path for c in parsed["children"]],
+                    path=norm_hub,
+                    content=hub_content,
+                    extra_paths=child_paths,
                 )
                 parsed["status"] = "MUTATION_EXECUTED"
+                effective_session.drafts.pop(norm_hub, None)
+                for cp in child_paths:
+                    effective_session.drafts.pop(cp, None)
             except ReadOnlyMountError as e:
                 parsed["status"] = "REVISE_REJECTED"
                 parsed["error"] = f"ReadOnlyMountError: {e}"

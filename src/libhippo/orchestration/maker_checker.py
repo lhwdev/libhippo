@@ -182,6 +182,7 @@ class MakerCheckerOrchestrator:
         max_retries: int = 3,
         on_event: Callable[[KnowledgeAgentEvent], Any] | None = None,
         auto_revise: bool = True,
+        session: Any | None = None,
     ) -> MakerCheckerResult:
         """Execute Maker-Checker governance loop with dual-phase audit and safe commits."""
         current_markdown = candidate if isinstance(candidate, str) else candidate.markdown
@@ -506,10 +507,16 @@ class MakerCheckerOrchestrator:
                     ),
                     on_event,
                 )
+                active_session = session or getattr(self, "active_session", None)
+                if not hasattr(active_session, "drafts"):
+                    curator_session = getattr(self.curator, "current_session", None) if self.curator else None
+                    active_session = curator_session if hasattr(curator_session, "drafts") else None
+
                 verifier_res = await self.verifier.resolve_escalation(
                     candidate=node,
                     report=report,
                     store=self.store,
+                    session=active_session,
                 )
 
                 self.context_manager.add_turn(
@@ -684,9 +691,14 @@ class MakerCheckerOrchestrator:
             on_event,
         )
 
+        curator_session = getattr(self.curator, "current_session", None) if self.curator else None
+        if not hasattr(curator_session, "drafts"):
+            curator_session = None
+
         return await self.run_governance(
             candidate=curated["draft"],
             target_path=curated["path"],
             max_retries=max_retries,
             on_event=on_event,
+            session=curator_session,
         )

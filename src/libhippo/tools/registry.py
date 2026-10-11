@@ -30,9 +30,11 @@ class ToolRegistry:
         dispatcher: KnowledgeDispatcher | None = None,
         checker: Any | None = None,
         agent_manager: Any | None = None,
+        session: Any | None = None,
     ) -> None:
         self.store = store
         self.agent_manager = agent_manager
+        self.session = session
         if agent_manager is not None:
             self.checker = checker or agent_manager.checker
             self.dispatcher = dispatcher or agent_manager.create_dispatcher()
@@ -42,6 +44,9 @@ class ToolRegistry:
 
     def get_list_knowledge_tool(self) -> Callable[..., Any]:
         """Tool: list_knowledge(path: str = '.', max_depth: int = 2)."""
+        if self.session is not None and hasattr(self.session, "list_knowledge"):
+            return self.session.list_knowledge
+
         async def list_knowledge(path: str = ".", max_depth: int = 2) -> str:
             return await self.store.list_knowledge(path=path, max_depth=max_depth)
 
@@ -71,6 +76,9 @@ class ToolRegistry:
 
     def get_exact_search_knowledge_tool(self) -> Callable[..., Any]:
         """{ path: string, pattern: string = "*", content_pattern?: string }"""
+        if self.session is not None and hasattr(self.session, "search_knowledge"):
+            return self.session.search_knowledge
+
         async def search_knowledge(
             path: str = ".",
             pattern: str = "*",
@@ -88,6 +96,9 @@ class ToolRegistry:
 
     def get_read_knowledge_tool(self) -> Callable[..., Any]:
         """{ path: string, start_line: int = 1, end_line?: int }"""
+        if self.session is not None and hasattr(self.session, "read_knowledge"):
+            return self.session.read_knowledge
+
         async def read_knowledge(
             path: str | None = None,
             start_line: int = 1,
@@ -120,6 +131,9 @@ class ToolRegistry:
 
     def get_write_knowledge_tool(self) -> Callable[..., Any]:
         """Tool: write_knowledge(path, content, start_line=None, end_line=None, target=None)."""
+        if self.session is not None and hasattr(self.session, "write_knowledge"):
+            return self.session.write_knowledge
+
         async def write_knowledge(
             path: str,
             content: str,
@@ -152,6 +166,9 @@ class ToolRegistry:
 
     def get_run_command_tool(self) -> Callable[..., Any]:
         """Tool: run_command(command_line: str)."""
+        if self.session is not None and hasattr(self.session, "run_command"):
+            return self.session.run_command
+
         async def run_command(command_line: str) -> dict[str, Any]:
             import asyncio
             proc = await asyncio.create_subprocess_shell(

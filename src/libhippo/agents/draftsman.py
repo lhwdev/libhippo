@@ -542,6 +542,7 @@ class KnowledgeDraftSession:
 
         orch = self._get_orchestrator()
         if orch:
+            setattr(orch, "active_session", self)
             logger.info("Submitting draft '%s' to Maker-Checker governance loop", norm)
             gov_res = await orch.run_governance(
                 candidate=content,
@@ -628,7 +629,12 @@ class KnowledgeDraftSession:
             committed_paths: list[str] = []
             for norm, content in validated.items():
                 logger.info("Submitting draft '%s' to Maker-Checker governance loop", norm)
-                gov_res = await orch.run_governance(candidate=content, target_path=norm, auto_revise=False)
+                setattr(orch, "active_session", self)
+                gov_res = await orch.run_governance(
+                    candidate=content,
+                    target_path=norm,
+                    auto_revise=False,
+                )
                 if gov_res.status in ("COMMITTED", "MERGED"):
                     committed_paths.append(norm)
                     self.drafts.pop(norm, None)

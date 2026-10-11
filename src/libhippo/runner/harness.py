@@ -64,7 +64,7 @@ from libhippo.storage.store import KnowledgeStore
 from libhippo.tools.retrieval import KnowledgeDispatcher
 
 load_harness_template = load_prompt_template
-
+MAX_TOOL_ITERATIONS = 200
 
 class GeneralAgentHarness:
     """Production-grade execution harness coordinating autonomous coding phases."""
@@ -494,7 +494,7 @@ class GeneralAgentHarness:
                 yield TokenChunkEvent(delta=f"\n[Context compacted: {compaction_res['evicted_tokens']} tokens reclaimed]\n")
 
             tool_schemas = self.get_tool_schemas()
-            max_tool_iterations = 10
+            max_tool_iterations = MAX_TOOL_ITERATIONS
             current_iteration = 0
             out_content = ""
             turn_cached_tokens = 0
