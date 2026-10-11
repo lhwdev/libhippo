@@ -194,8 +194,13 @@ class GeneralAgentHarness:
         if self.dispatcher and hasattr(self.dispatcher, "on_event"):
             self.dispatcher.on_event = _on_knowledge_event
 
+        sidecar_model_client = (
+            self.model_client.http_client
+            if hasattr(self.model_client, "http_client") and self.model_client.http_client is not None
+            else self.model_client
+        )
         self.harvest_sidecar = KnowledgeHarvestSidecar(
-            model_client=self.model_client,
+            model_client=sidecar_model_client,
             store=self.store,
             orchestrator=self.agent_manager.orchestrator,
             on_event=_on_knowledge_event,
@@ -870,6 +875,83 @@ class GeneralAgentHarness:
         """Trigger explicit context compaction (Zone 3 eviction and Zone 2 summarization)."""
         return self.memory.compact_memory(self.config.compaction_target_tokens)
 
+    def extract_turn_delta_state(self, max_tool_lines: int = 3) -> dict[str, Any]:
+        """Extract simplified chronological transcript of latest turn for gatekeeper evaluation."""
+        history = self.memory.zone2_history
+        if not history:
+            return {"transcript": []}
+
+        last_user_idx = None
+        for i in range(len(history) - 1, -1, -1):
+            if history[i].role == "user":
+                last_user_idx = i
+                break
+
+        turn_messages = history[last_user_idx:] if last_user_idx is not None else history
+        transcript: list[dict[str, Any]] = []
+
+        excluded_param_keys = {
+            "content", "file_content", "text", "body", "patch",
+            "replacement_content", "target_content", "hub_content",
+        }
+
+        for m in turn_messages:
+            if m.role == "user":
+                raw_text = m.content or ""
+                transcript.append({
+                    "role": "user",
+                    "content": raw_text[:500] + ("..." if len(raw_text) > 500 else ""),
+                })
+            elif m.role == "assistant":
+                entry: dict[str, Any] = {"role": "assistant"}
+                thought = m.metadata.get("thought")
+                if thought:
+                    entry["thought"] = thought[:500] + ("..." if len(thought) > 500 else "")
+                tool_calls = m.metadata.get("tool_calls") or []
+                if tool_calls:
+                    formatted_calls: list[dict[str, Any]] = []
+                    for tc in tool_calls:
+                        fn_name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", "")
+                        fn_args = tc.get("arguments") if isinstance(tc, dict) else getattr(tc, "arguments", {})
+                        if isinstance(fn_args, str):
+                            try:
+                                fn_args = json.loads(fn_args)
+                            except Exception:
+                                fn_args = {}
+                        short_params: dict[str, Any] = {}
+                        if isinstance(fn_args, dict):
+                            for k, v in fn_args.items():
+                                if k in excluded_param_keys:
+                                    short_params[k] = f"<{len(str(v))} chars omitted>"
+                                elif isinstance(v, str) and len(v) > 80:
+                                    short_params[k] = v[:80] + "..."
+                                else:
+                                    short_params[k] = v
+                        formatted_calls.append({
+                            "tool": fn_name,
+                            "params": short_params,
+                        })
+                    entry["tool_calls"] = formatted_calls
+                if m.content:
+                    entry["content"] = m.content[:500] + ("..." if len(m.content) > 500 else "")
+                transcript.append(entry)
+            elif m.role == "tool":
+                raw_out = m.content or ""
+                lines = raw_out.strip().splitlines()
+                if len(lines) > max_tool_lines:
+                    short_out = "\n".join(lines[:max_tool_lines]) + f"\n... [{len(lines) - max_tool_lines} lines truncated]"
+                else:
+                    short_out = "\n".join(lines)
+
+                transcript.append({
+                    "role": "tool",
+                    "tool": m.metadata.get("tool_name") or m.file_path_reference or "unknown",
+                    "output_preview": short_out,
+                    "is_error": m.metadata.get("is_error", False),
+                })
+
+        return {"transcript": transcript}
+
     async def post_task_maintenance(self, delay_seconds: float | None = None) -> None:
         """Execute background maintenance (knowledge harvesting and vector compaction)."""
         delay = delay_seconds if delay_seconds is not None else getattr(self.config, "harvest_delay_seconds", 3.0)
@@ -893,18 +975,34 @@ class GeneralAgentHarness:
                 except Exception:
                     pass
 
-        # 2. Autonomous knowledge harvest sidecar on warm KV cache
-        # Unconditionally inspect context on sidecar after turn completion
+        # 2. Gatekeeper/Extractor: evaluate turn delta with KnowledgeHarvestObserver before extracting
         if not had_explicit:
-            try:
-                await self.harvest_sidecar.harvest_from_context(
-                    parent_memory=self.memory,
-                    scope="project",
-                    nature="critical_rule",
-                    reasoning_effort=DEFAULT_HARVEST_REASONING_EFFORT,
-                )
-            except Exception:
-                pass
+            eval_res = None
+            if self.harvest_observer is not None:
+                turn_state = self.extract_turn_delta_state()
+                try:
+                    eval_res = await self.harvest_observer.evaluate(turn_state)
+                except Exception as e:
+                    logger.warning(f"KnowledgeHarvestObserver evaluation skipped on error: {e}")
+
+            # Trigger harvest sidecar extractor if novel OR ambiguous
+            if eval_res is None or eval_res.should_harvest or eval_res.is_ambiguous:
+                target_scope = eval_res.target_scope if eval_res else "project"
+                target_nature = eval_res.knowledge_nature if eval_res else "critical_rule"
+                topic_hint = eval_res.topic_hint if eval_res and eval_res.topic_hint else None
+                if eval_res and eval_res.is_ambiguous and not eval_res.novelty_probability >= self.harvest_observer.threshold:
+                    topic_hint = topic_hint or "Evaluate ambiguous tool discoveries and gotchas"
+
+                try:
+                    await self.harvest_sidecar.harvest_from_context(
+                        parent_memory=self.memory,
+                        scope=target_scope,
+                        nature=target_nature,
+                        topic_hint=topic_hint,
+                        reasoning_effort=DEFAULT_HARVEST_REASONING_EFFORT,
+                    )
+                except Exception:
+                    pass
 
         # 3. Store maintenance (vector compaction & freshness)
         if self.store is not None:

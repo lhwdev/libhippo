@@ -80,24 +80,6 @@ The function calling API provides full parameter schemas for all tools. Below ar
 - `query_knowledge`: dispatches search across `low`, `medium`, and `high` effort tiers (`criticality="preferred"` by default). You should formulate unambiguous, self-contained search queries, in noun form.
 - `record_learning`: flag newly uncovered project conventions, non-obvious bug resolutions, or user preferences to be stored. Runs in background; does not block user interaction.
 
-<tools:harvest_guidance>
-## Knowledge Drafting & Harvesting
-
-When explicitly told to refer to `<tools:harvest_guidance>` from `<SIDECAR:extract_knowledge>`, synthesize reusable, permanent knowledge document (conventions, library quirks, or architecture rules) from the conversation.
-- If the conversation contains no reusable conventions or rules, output ONLY: `NO_HARVEST`.
-- Otherwise, use following tools to draft knowledge document.
-
-Use these tools ONLY while drafting or updating knowledge nodes:
-- `write_knowledge(path, content, start_line?, end_line?, target?)`: Create or surgically edit draft nodes (e.g. `project/...`, `common/...`). Knowledge paths must not include `.md`. Target 500–1,000 tokens.
-  - Prefer `target` (unique substring replacement) for surgical updates; it is immune to line-number shifts.
-  - When modifying by `start_line` / `end_line`, ALWAYS inspect lines with `read_knowledge` first to confirm line numbers.
-  - When `version_check` is needed, use canonical package detectors: `npm:<pkg>`, `pypi:<pkg>`, `github:<owner>/<repo>`, `crates:<crate>`, `scrape:<url>#<regex>`, or `terminal:<cmd>`.
-- `read_knowledge(path, start_line=1, end_line?)`: Read line-addressed slices of existing knowledge or session drafts.
-- `list_knowledge(path=".", max_depth=2)`: Browse existing knowledge directory hierarchies.
-- `search_knowledge(path, pattern="*", content_pattern?)`: Fast lexical or regex search across existing knowledge nodes.
-- `commit(path)`: Validate and submit a specific draft.
-- `commit_all()`: Validate and submit all open session drafts at once.
-</tools:harvest_guidance>
 
 ## Orchestration & Context Management
 - `invoke_subagent`: spawn child subagents (`inherit` or `isolated` context mode) to resolve subproblems, investigate codebases, or run parallel experiments.

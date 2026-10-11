@@ -79,6 +79,90 @@ async def test_harvest_observer_bypasses_routine_turns() -> None:
 
 
 @pytest.mark.asyncio
+async def test_harvest_observer_triggers_on_ambiguous_tool_output() -> None:
+    mock_typesafe_response = SimpleNamespace(
+        nouls={
+            "has_novel_learnings": SimpleNamespace(noul=0.30),
+            "is_ambiguous": SimpleNamespace(noul=0.75),
+        },
+        choices={
+            "target_scope": SimpleNamespace(choice="project"),
+            "knowledge_nature": SimpleNamespace(choice="critical_rule"),
+        },
+    )
+    mock_client = AsyncMock()
+    mock_client.system_one.return_value = mock_typesafe_response
+
+    observer = KnowledgeHarvestObserver(client=mock_client, threshold=0.70, ambiguity_threshold=0.50)
+    evaluation = await observer.evaluate({"transcript": [{"role": "tool", "tool": "run_command", "is_error": True}]})
+
+    assert evaluation.should_harvest is True
+    assert evaluation.is_ambiguous is True
+    assert evaluation.ambiguity_probability == 0.75
+    assert evaluation.novelty_probability == 0.30
+
+
+def test_extract_turn_delta_state_shortens_output_and_params() -> None:
+    from libhippo.runner.harness import GeneralAgentHarness
+    from libhippo.runner.config import HarnessConfig
+
+    harness = GeneralAgentHarness(config=HarnessConfig(), model_client=MagicMock())
+    harness.memory.append_user_turn("Fix bug in auth provider")
+    harness.memory.append_assistant_turn(
+        content="I will update auth.ts",
+        thought="Inspecting auth logic and fixing issue",
+        tool_calls=[
+            {
+                "id": "call_1",
+                "name": "write_file",
+                "arguments": {
+                    "path": "src/auth.ts",
+                    "content": "very long file content " * 100,
+                    "target": "export const auth",
+                },
+            }
+        ],
+    )
+    long_output = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6"
+    harness.memory.append_tool_output(
+        tool_name="write_file",
+        content=long_output,
+        tool_call_id="call_1",
+        is_error=False,
+    )
+    harness.memory.append_assistant_turn(content="Updated auth.")
+
+    state = harness.extract_turn_delta_state(max_tool_lines=3)
+    transcript = state["transcript"]
+    assert len(transcript) == 4
+
+    # 1. User
+    assert transcript[0]["role"] == "user"
+    assert "Fix bug in auth provider" in transcript[0]["content"]
+
+    # 2. Assistant with thought & tool calls
+    assert transcript[1]["role"] == "assistant"
+    assert transcript[1]["thought"] == "Inspecting auth logic and fixing issue"
+    assert transcript[1]["content"] == "I will update auth.ts"
+    tc = transcript[1]["tool_calls"][0]
+    assert tc["tool"] == "write_file"
+    assert tc["params"]["path"] == "src/auth.ts"
+    assert "omitted" in tc["params"]["content"]
+    assert tc["params"]["target"] == "export const auth"
+
+    # 3. Tool output
+    assert transcript[2]["role"] == "tool"
+    assert transcript[2]["tool"] == "write_file"
+    assert "Line 1\nLine 2\nLine 3" in transcript[2]["output_preview"]
+    assert "... [3 lines truncated]" in transcript[2]["output_preview"]
+    assert transcript[2]["is_error"] is False
+
+    # 4. Final assistant response
+    assert transcript[3]["role"] == "assistant"
+    assert transcript[3]["content"] == "Updated auth."
+
+
+@pytest.mark.asyncio
 async def test_harvest_sidecar_drafts_and_submits_to_governance() -> None:
     draft_markdown = """---
 title: "React 19 Form Action Idiom"

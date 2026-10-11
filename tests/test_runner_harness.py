@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 from autogen_core.models import CreateResult, RequestUsage
 
+from libhippo.agents.harvest_observer import HarvestEvaluation
 from libhippo.agents.task_solver import TaskSolverAgent
 from libhippo.runner.config import HarnessConfig
 from libhippo.runner.harness import GeneralAgentHarness
@@ -756,6 +757,16 @@ async def test_harness_harvest_sidecar_runs_in_background_without_blocking(tmp_p
         return None
 
     harness.harvest_sidecar.harvest_from_context = mock_harvest
+    harness.harvest_observer.evaluate = AsyncMock(
+        return_value=HarvestEvaluation(
+            should_harvest=True,
+            novelty_probability=0.85,
+            is_ambiguous=False,
+            ambiguity_probability=0.0,
+            target_scope="project",
+            knowledge_nature="critical_rule",
+        )
+    )
 
     turn_completed = False
     async for event in harness.stream("Perform simple task"):

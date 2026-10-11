@@ -130,10 +130,11 @@ def test_common_knowledge_spec_and_harness_separation():
     assert "modify_knowledge" in VERIFIER_SYSTEM_PROMPT
     assert "<knowledge:spec>" in VERIFIER_SYSTEM_PROMPT
 
-    # Harness includes offloaded knowledge drafting guidance
-    assert "<tools:harvest_guidance>" in HARNESS_SYSTEM_PROMPT
+    # Harness offloads knowledge drafting guidance to harvest sidecar for prompt cost optimization
+    assert "<tools:harvest_guidance>" not in HARNESS_SYSTEM_PROMPT
+    assert "<tools:harvest_guidance>" in HARVEST_SIDECAR_PROMPT
 
-    # Harvest sidecar is lightweight tail instruction
+    # Harvest sidecar contains execution tools and governance commit
     assert "<SIDECAR:extract_knowledge>" in HARVEST_SIDECAR_PROMPT
     assert "write_knowledge" in HARVEST_SIDECAR_PROMPT
     assert "commit_all" in HARVEST_SIDECAR_PROMPT
