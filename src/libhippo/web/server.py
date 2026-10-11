@@ -24,6 +24,41 @@ from libhippo.web.api import (
 logger = logging.getLogger(__name__)
 
 
+from libhippo.web.serializer import safe_json_dumps
+
+
+class SafeWebSocketSender:
+    """Coroutine-safe WebSocket message sender preventing concurrent frame writes and serialization crashes."""
+
+    def __init__(self, ws: web.WebSocketResponse) -> None:
+        self.ws = ws
+        self.lock = asyncio.Lock()
+
+    async def send_json(self, data: Any) -> bool:
+        if self.ws.closed:
+            return False
+        try:
+            payload = safe_json_dumps(data)
+            async with self.lock:
+                if not self.ws.closed:
+                    await self.ws.send_str(payload)
+                    return True
+        except (ConnectionResetError, web.WebSocketError, RuntimeError) as exc:
+            logger.debug("WebSocket send dropped (closed/reset): %s", exc)
+        except Exception as exc:
+            logger.warning("WebSocket send error: %s", exc)
+        return False
+
+
+def get_ws_sender(ws: web.WebSocketResponse) -> SafeWebSocketSender:
+    """Retrieve or create the per-socket safe sender instance."""
+    sender = getattr(ws, "_hippo_sender", None)
+    if sender is None:
+        sender = SafeWebSocketSender(ws)
+        setattr(ws, "_hippo_sender", sender)
+    return sender
+
+
 @web.middleware
 async def cors_middleware(request: web.Request, handler: Any) -> web.Response:
     """Allow CORS for local dev server (e.g. Vite on 5173)."""
@@ -58,33 +93,32 @@ def create_app(
     active_websockets: set[web.WebSocketResponse] = set()
     app[WEBSOCKETS_KEY] = active_websockets
 
+    async def broadcast_json(data: Any) -> None:
+        sockets = [ws for ws in list(active_websockets) if not ws.closed]
+        if not sockets:
+            return
+        coros = [get_ws_sender(ws).send_json(data) for ws in sockets]
+        await asyncio.gather(*coros, return_exceptions=True)
+
     # Register tool event callback to broadcast interactive events (approvals, questions)
     async def broadcast_tool_event(event_data: dict[str, Any]) -> None:
-        msg = json.dumps(event_data)
-        coros = [ws.send_str(msg) for ws in list(active_websockets) if not ws.closed]
-        if coros:
-            await asyncio.gather(*coros, return_exceptions=True)
+        await broadcast_json(event_data)
 
     if hasattr(harness, "tools") and harness.tools:
         harness.tools.event_callback = broadcast_tool_event
 
     async def broadcast_worker_status() -> None:
-        msg = json.dumps({
+        status_data = {
             "type": "knowledge_worker_status",
             "active": harness.has_active_knowledge_workers,
             "has_active_knowledge_workers": harness.has_active_knowledge_workers,
             "count": len([t for t in harness._active_sidecar_tasks if not t.done()]),
-        })
-        coros = [ws.send_str(msg) for ws in list(active_websockets) if not ws.closed]
-        if coros:
-            await asyncio.gather(*coros, return_exceptions=True)
+        }
+        await broadcast_json(status_data)
 
     async def broadcast_knowledge_event(event: Any) -> None:
         event_dict = asdict(event) if is_dataclass(event) else event
-        msg = json.dumps(event_dict)
-        coros = [ws.send_str(msg) for ws in list(active_websockets) if not ws.closed]
-        if coros:
-            await asyncio.gather(*coros, return_exceptions=True)
+        await broadcast_json(event_dict)
         await broadcast_worker_status()
 
     if hasattr(harness, "on_event_broadcast"):
@@ -102,6 +136,32 @@ def create_app(
         ws = web.WebSocketResponse(heartbeat=30.0)
         await ws.prepare(request)
         active_websockets.add(ws)
+        sender = get_ws_sender(ws)
+        stream_task: asyncio.Task[None] | None = None
+
+        async def stream_worker(content: str, continue_mode: bool) -> None:
+            try:
+                async for event in harness.stream(content, continue_mode=continue_mode):
+                    if ws.closed:
+                        break
+                    event_dict = asdict(event) if is_dataclass(event) else event
+                    await sender.send_json(event_dict)
+            except asyncio.CancelledError:
+                logger.info("Stream worker task cancelled")
+                raise
+            except Exception as exc:
+                logger.exception("Error during turn stream: %s", exc)
+                if not ws.closed:
+                    await sender.send_json({"type": "error", "message": f"Execution error: {exc}"})
+                    await sender.send_json({
+                        "type": "turn_completed",
+                        "turn_index": getattr(harness.governor, "current_turns", 0),
+                        "total_tokens": harness.memory.get_total_tokens(),
+                        "duration_seconds": 0.0,
+                        "response": f"[Error: {exc}]",
+                        "interrupted": True,
+                        "error": str(exc),
+                    })
 
         try:
             # Send initial greeting and session state
@@ -117,14 +177,14 @@ def create_app(
                 "has_active_knowledge_workers": harness.has_active_knowledge_workers,
                 "chat_messages": context_messages_to_chat_messages(harness.memory.zone2_history),
             }
-            await ws.send_json(init_state)
+            await sender.send_json(init_state)
 
             async for msg in ws:
                 if msg.type == WSMsgType.TEXT:
                     try:
                         payload = json.loads(msg.data)
                     except Exception as e:
-                        await ws.send_json({"type": "error", "message": f"Invalid JSON: {e}"})
+                        await sender.send_json({"type": "error", "message": f"Invalid JSON: {e}"})
                         continue
 
                     msg_type = payload.get("type")
@@ -140,14 +200,11 @@ def create_app(
                                     k: v if isinstance(v, (str, int, float, bool, list, dict, type(None))) else str(v)
                                     for k, v in result.items()
                                 }
-                            if not ws.closed:
-                                await ws.send_json({"type": "steer_result", "guidance": content, "result": res_clean})
+                            await sender.send_json({"type": "steer_result", "guidance": content, "result": res_clean})
                         else:
-                            # Stream turn events to client
-                            async for event in harness.stream(content, continue_mode=continue_mode):
-                                event_dict = asdict(event) if is_dataclass(event) else event
-                                if not ws.closed:
-                                    await ws.send_json(event_dict)
+                            if stream_task and not stream_task.done():
+                                stream_task.cancel()
+                            stream_task = asyncio.create_task(stream_worker(content, continue_mode=continue_mode))
 
                     elif msg_type == "continue":
                         content = payload.get("content") or "Continue working on the previous task."
@@ -159,13 +216,11 @@ def create_app(
                                     k: v if isinstance(v, (str, int, float, bool, list, dict, type(None))) else str(v)
                                     for k, v in result.items()
                                 }
-                            if not ws.closed:
-                                await ws.send_json({"type": "steer_result", "guidance": content, "result": res_clean})
+                            await sender.send_json({"type": "steer_result", "guidance": content, "result": res_clean})
                         else:
-                            async for event in harness.stream(content, continue_mode=True):
-                                event_dict = asdict(event) if is_dataclass(event) else event
-                                if not ws.closed:
-                                    await ws.send_json(event_dict)
+                            if stream_task and not stream_task.done():
+                                stream_task.cancel()
+                            stream_task = asyncio.create_task(stream_worker(content, continue_mode=True))
 
                     elif msg_type == "steer":
                         guidance = payload.get("guidance", "")
@@ -176,25 +231,25 @@ def create_app(
                                 k: v if isinstance(v, (str, int, float, bool, list, dict, type(None))) else str(v)
                                 for k, v in result.items()
                             }
-                        await ws.send_json({"type": "steer_result", "guidance": guidance, "result": res_clean})
+                        await sender.send_json({"type": "steer_result", "guidance": guidance, "result": res_clean})
 
                     elif msg_type == "interrupt":
                         reason = payload.get("reason", "paused_by_user")
                         steer_text = payload.get("steer_text")
                         harness.interrupt(reason=reason, steer_text=steer_text)
-                        await ws.send_json({"type": "interrupt_result", "status": "paused_by_user"})
+                        await sender.send_json({"type": "interrupt_result", "status": "paused_by_user"})
 
                     elif msg_type == "sidecar":
                         query = payload.get("query", "")
                         try:
                             sidecar_res = await harness.ask_sidecar(query)
-                            await ws.send_json({
+                            await sender.send_json({
                                 "type": "sidecar_response",
                                 "query": query,
                                 "response": sidecar_res,
                             })
                         except Exception as ex:
-                            await ws.send_json({
+                            await sender.send_json({
                                 "type": "sidecar_error",
                                 "query": query,
                                 "error": str(ex),
@@ -205,7 +260,7 @@ def create_app(
                         approved = payload.get("approved", False)
                         if hasattr(harness, "tools") and req_id:
                             harness.tools._interactive_responses[req_id] = approved
-                        await ws.send_json({"type": "approval_acknowledged", "request_id": req_id, "approved": approved})
+                        await sender.send_json({"type": "approval_acknowledged", "request_id": req_id, "approved": approved})
 
                     elif msg_type == "modal_answer":
                         q_id = payload.get("question_id")
@@ -215,11 +270,11 @@ def create_app(
                                 "status": "answered",
                                 "answers": answers,
                             }
-                        await ws.send_json({"type": "modal_acknowledged", "question_id": q_id})
+                        await sender.send_json({"type": "modal_acknowledged", "question_id": q_id})
 
                     elif msg_type == "compact":
                         evicted = harness.compact_context()
-                        await ws.send_json({
+                        await sender.send_json({
                             "type": "compact_result",
                             "evicted_tokens": evicted,
                             "total_tokens": harness.memory.get_total_tokens(),
@@ -228,24 +283,21 @@ def create_app(
                     elif msg_type == "undo":
                         msg_id = payload.get("message_id")
                         undo_res = await harness.undo(msg_id)
-                        await ws.send_json({"type": "undo_result", **undo_res})
+                        await sender.send_json({"type": "undo_result", **undo_res})
                         await broadcast_worker_status()
-                        sync_msg = json.dumps({
+                        sync_msg = {
                             "type": "session_updated",
                             "chat_messages": undo_res.get("chat_messages", []),
                             "total_tokens": undo_res.get("total_tokens", 0),
-                        })
+                        }
                         for other_ws in list(active_websockets):
-                            if not other_ws.closed:
-                                try:
-                                    await other_ws.send_str(sync_msg)
-                                except Exception:
-                                    pass
+                            if other_ws != ws and not other_ws.closed:
+                                await get_ws_sender(other_ws).send_json(sync_msg)
 
                     elif msg_type == "stop_knowledge":
                         stopped = harness.stop_knowledge_workers()
                         await asyncio.sleep(0)
-                        await ws.send_json({"type": "stop_knowledge_result", "stopped": stopped})
+                        await sender.send_json({"type": "stop_knowledge_result", "stopped": stopped})
                         await broadcast_worker_status()
 
                     elif msg_type == "set_reasoning_effort":
@@ -256,7 +308,7 @@ def create_app(
                                 await harness.model_client.update_configuration(effort)
                             except Exception:
                                 pass
-                        await ws.send_json({
+                        await sender.send_json({
                             "type": "reasoning_effort_updated",
                             "effort": effort,
                             "reasoning_effort": effort,
@@ -267,6 +319,8 @@ def create_app(
 
         finally:
             active_websockets.discard(ws)
+            if stream_task and not stream_task.done():
+                stream_task.cancel()
 
         return ws
 

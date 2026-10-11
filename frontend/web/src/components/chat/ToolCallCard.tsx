@@ -23,11 +23,11 @@ export const ToolCallCard: React.FC<ToolCallCardProps> = ({ toolCall }) => {
         onClick={() => setExpanded(!expanded)}
         className="flex items-center justify-between px-3 py-2 bg-slate-900/60 cursor-pointer hover:bg-slate-900 transition"
       >
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-1 min-w-0">
           {expanded ? <ChevronDown className="w-3.5 h-3.5 text-slate-400" /> : <ChevronRight className="w-3.5 h-3.5 text-slate-400" />}
           <Terminal className="w-3.5 h-3.5 text-sky-400" />
           <span className="font-semibold text-slate-200">{toolCall.name}</span>
-          <span className="text-slate-500 text-[11px] truncate max-w-[280px]">
+          <span className="text-slate-500 text-[11px] truncate flex-1 min-w-0 pe-4">
             {JSON.stringify(toolCall.arguments)}
           </span>
         </div>

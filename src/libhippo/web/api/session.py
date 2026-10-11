@@ -12,6 +12,7 @@ from aiohttp import web
 
 from libhippo.runner.harness import GeneralAgentHarness
 from libhippo.runner.persistence import ConversationSession, context_messages_to_chat_messages
+from libhippo.web.serializer import safe_json_dumps
 import shutil
 
 
@@ -36,7 +37,7 @@ def setup_session_routes(app: web.Application, harness: GeneralAgentHarness) -> 
             "is_paused": harness._is_paused,
             "messages": msgs,
             "chat_messages": chat_msgs,
-        })
+        }, dumps=safe_json_dumps)
 
     async def compact_session(request: web.Request) -> web.Response:
         evicted = harness.compact_context()
