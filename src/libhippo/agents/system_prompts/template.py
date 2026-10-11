@@ -84,8 +84,14 @@ def format_workspace_info(workspace_root: Path) -> str:
     )
 
 
+def strip_frontmatter(text: str) -> str:
+    """Strip YAML frontmatter ('---' ... '---') from markdown text."""
+    pattern = r"^\s*---\s*\n.*?\n\s*---\s*(?:\n|\Z)"
+    return re.sub(pattern, "", text, count=1, flags=re.DOTALL).strip()
+
+
 def format_root_knowledges(store: Any = None) -> str:
-    """Format root mount knowledges (project, user, plugins, common) as unnumbered <knowledge> XML blocks."""
+    """Format root mount knowledges (project, user, plugins, common) as unnumbered <knowledge> XML blocks without frontmatter."""
     if not store:
         return "No root knowledges available."
     from libhippo.runner.tools.knowledge_tools import format_knowledge_document
@@ -101,9 +107,11 @@ def format_root_knowledges(store: Any = None) -> str:
 
     blocks: list[str] = []
     for node in root_nodes:
+        raw_text = getattr(node, "markdown", str(node))
         doc_str = format_knowledge_document(
             path=node.path,
-            content=node.markdown,
+            content=raw_text,
+            frontmatter="stripped",
             with_line_numbers=False,
         )
         blocks.append(doc_str)

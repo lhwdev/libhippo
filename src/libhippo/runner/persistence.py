@@ -336,9 +336,39 @@ def context_messages_to_chat_messages(messages: list[ContextMessage]) -> list[di
                 "raw_prompt": content,
             })
         elif role == "assistant":
+            # Group all intermediate assistant steps within the current turn into the same assistant ChatMessage
+            curr_asst: dict[str, Any]
+            if chat_msgs and chat_msgs[-1]["role"] == "assistant":
+                curr_asst = chat_msgs[-1]
+            else:
+                curr_asst = {
+                    "id": f"asst-{i}",
+                    "role": "assistant",
+                    "content": "",
+                    "timestamp": ts,
+                    "items": [],
+                    "toolCalls": [],
+                    "knowledgeEvents": [],
+                }
+                chat_msgs.append(curr_asst)
+
+            # 1. Reasoning / Thought
+            thought = m.metadata.get("thought")
+            if thought:
+                curr_asst["items"].append({
+                    "type": "reasoning",
+                    "id": f"reasoning-{i}",
+                    "content": thought,
+                    "timestamp": ts,
+                })
+                if not curr_asst.get("thought"):
+                    curr_asst["thought"] = thought
+                else:
+                    curr_asst["thought"] += f"\n\n{thought}"
+
+            # 2. Tool calls
             tool_calls = m.metadata.get("tool_calls")
             if tool_calls:
-                parsed_tools = []
                 for tc in tool_calls:
                     raw_args = tc.get("arguments", "{}")
                     if isinstance(raw_args, str):
@@ -348,44 +378,72 @@ def context_messages_to_chat_messages(messages: list[ContextMessage]) -> list[di
                             args = {}
                     else:
                         args = raw_args
-                    parsed_tools.append({
+                    tc_item = {
+                        "type": "tool_call",
                         "id": tc.get("id", f"call_{i}"),
                         "name": tc.get("name", "tool"),
                         "arguments": args,
                         "result": None,
                         "error": None,
-                    })
-                chat_msgs.append({
-                    "id": f"asst-{i}",
-                    "role": "assistant",
-                    "content": "",
-                    "toolCalls": parsed_tools,
-                    "timestamp": ts,
-                })
-            else:
-                if chat_msgs and chat_msgs[-1]["role"] == "assistant" and not chat_msgs[-1]["content"] and chat_msgs[-1].get("toolCalls"):
-                    chat_msgs[-1]["content"] = m.content
-                else:
-                    chat_msgs.append({
-                        "id": f"asst-{i}",
-                        "role": "assistant",
-                        "content": m.content,
                         "timestamp": ts,
-                    })
+                    }
+                    curr_asst["items"].append(tc_item)
+                    curr_asst["toolCalls"].append(tc_item)
+
+            # 3. Knowledge events attached to assistant metadata
+            ke_list = m.metadata.get("knowledge_events")
+            if ke_list:
+                for ke in ke_list:
+                    ke_dict = dict(ke) if isinstance(ke, dict) else asdict(ke)
+                    ke_dict["type"] = "knowledge_agent"
+                    if ts and not ke_dict.get("timestamp"):
+                        ke_dict["timestamp"] = ts
+                    curr_asst["items"].append(ke_dict)
+                    curr_asst["knowledgeEvents"].append(ke_dict)
+
+            # 4. Text content
+            if not tool_calls and m.content:
+                if not m.content.startswith("[Tool calls:"):
+                    if not curr_asst["content"]:
+                        curr_asst["content"] = m.content
+                    else:
+                        curr_asst["content"] += f"\n\n{m.content}"
+
         elif role == "tool":
             call_id = m.tool_call_id
-            matched = False
-            for prev in reversed(chat_msgs):
-                if prev["role"] == "assistant" and prev.get("toolCalls"):
-                    for tc in prev["toolCalls"]:
-                        if tc["id"] == call_id:
-                            tc["result"] = m.content
-                            if m.metadata.get("is_error"):
-                                tc["error"] = m.content
-                            matched = True
-                            break
-                if matched:
-                    break
+            curr_asst = None
+            if chat_msgs and chat_msgs[-1]["role"] == "assistant":
+                curr_asst = chat_msgs[-1]
+            else:
+                for prev in reversed(chat_msgs):
+                    if prev["role"] == "assistant":
+                        curr_asst = prev
+                        break
+
+            if curr_asst:
+                for tc in curr_asst.get("toolCalls", []):
+                    if tc.get("id") == call_id:
+                        tc["result"] = m.content
+                        if m.metadata.get("is_error"):
+                            tc["error"] = m.content
+
+                for item in curr_asst.get("items", []):
+                    if item.get("type") == "tool_call" and item.get("id") == call_id:
+                        item["result"] = m.content
+                        if m.metadata.get("is_error"):
+                            item["error"] = m.content
+
+                # Check if this tool message recorded knowledge events
+                ke_list = m.metadata.get("knowledge_events")
+                if ke_list:
+                    for ke in ke_list:
+                        ke_dict = dict(ke) if isinstance(ke, dict) else asdict(ke)
+                        ke_dict["type"] = "knowledge_agent"
+                        if ts and not ke_dict.get("timestamp"):
+                            ke_dict["timestamp"] = ts
+                        curr_asst["items"].append(ke_dict)
+                        curr_asst["knowledgeEvents"].append(ke_dict)
+
         elif role in ("system", "interrupt"):
             chat_msgs.append({
                 "id": f"{role}-{i}",

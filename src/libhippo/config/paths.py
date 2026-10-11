@@ -43,12 +43,12 @@ def get_user_config_dir(env: Mapping[str, str] | None = None) -> Path:
     """Return user configuration directory (default: ~/.config/libhippo).
 
     Stateless lookup configurable via LIBHIPPO_CONFIG_DIR or LIBHIPPO_USER_CONFIG_DIR.
-    Relative paths are resolved relative to Path.home().
+    Relative paths are resolved relative to cwd, while tilde paths (~/...) resolve relative to user home.
     """
     env_map = os.environ if env is None else env
     env_val = env_map.get("LIBHIPPO_CONFIG_DIR") or env_map.get("LIBHIPPO_USER_CONFIG_DIR")
     if env_val:
-        return resolve_subpath(env_val, base_dir=Path.home(), env_map=env_map)
+        return resolve_subpath(env_val, base_dir=Path.cwd(), env_map=env_map)
     return DEFAULT_USER_CONFIG_DIR.resolve()
 
 

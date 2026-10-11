@@ -443,3 +443,42 @@ Wrap data fetches in useData.
         assert namespaces == {"common", "project"}
 
 
+def test_create_default_mounts_resolution(tmp_path, monkeypatch):
+    """Verify default paths and explicit override options for create_default_mounts."""
+    from libhippo.storage.mount import create_default_mounts
+
+    cfg_dir = tmp_path / "cfg"
+    monkeypatch.setenv("LIBHIPPO_CONFIG_DIR", str(cfg_dir))
+
+    # 1. Defaults: common and user placed in user config dir
+    ws = tmp_path / "workspace"
+    mgr_default = create_default_mounts(workspace_root=ws)
+    mounts = {m.namespace_prefix: m for m in mgr_default.get_all_mounts()}
+
+    assert mounts["common"].physical_path == (cfg_dir / "knowledge" / "common").resolve()
+    assert mounts["user"].physical_path == (cfg_dir / "knowledge" / "user").resolve()
+    assert mounts["project"].physical_path == (ws / ".libhippo" / "knowledge").resolve()
+
+    # 2. Explicit common_root and user_root
+    custom_comm = tmp_path / "custom_common"
+    custom_user = tmp_path / "custom_user"
+    mgr_custom = create_default_mounts(
+        workspace_root=ws,
+        common_root=custom_comm,
+        user_root=custom_user,
+    )
+    custom_mounts = {m.namespace_prefix: m for m in mgr_custom.get_all_mounts()}
+    assert custom_mounts["common"].physical_path == custom_comm.resolve()
+    assert custom_mounts["user"].physical_path == custom_user.resolve()
+
+    # 3. install_root fallback when common_root is omitted
+    custom_inst = tmp_path / "install_knowledge"
+    mgr_inst = create_default_mounts(
+        workspace_root=ws,
+        install_root=custom_inst,
+    )
+    inst_mounts = {m.namespace_prefix: m for m in mgr_inst.get_all_mounts()}
+    assert inst_mounts["common"].physical_path == (custom_inst / "common").resolve()
+
+
+

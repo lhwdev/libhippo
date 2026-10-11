@@ -112,8 +112,7 @@ def test_common_knowledge_spec_and_harness_separation():
     )
 
     assert "<knowledge:spec>" in COMMON_KNOWLEDGE_SPEC
-    assert "LowerTarget = 500" in COMMON_KNOWLEDGE_SPEC
-    assert "UpperTarget = 1,000" in COMMON_KNOWLEDGE_SPEC
+    assert "Token Bounds" in COMMON_KNOWLEDGE_SPEC
     assert "force_keep" not in COMMON_KNOWLEDGE_SPEC
     assert "nature:" not in COMMON_KNOWLEDGE_SPEC
 

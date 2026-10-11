@@ -22,6 +22,7 @@ from ruamel.yaml import YAML
 
 from libhippo.storage.store import KnowledgeStore
 from libhippo.config.paths import get_project_data_dir
+from libhippo.tools.formatting import format_knowledge_document
 
 logger = logging.getLogger(__name__)
 
@@ -317,12 +318,13 @@ class KnowledgeDraftSession:
         if s_line > total_lines:
             return f"[Draft '{norm}': start_line {s_line} exceeds file line count {total_lines}]"
 
-        selected = lines[s_line - 1 : e_line]
-        formatted = "\n".join(f"{idx}: {line}" for idx, line in enumerate(selected, start=s_line))
-        return (
-            f'<knowledge path="{norm}" lines="{s_line}:{e_line}" total_lines="{total_lines}">\n'
-            f"{formatted}\n"
-            "</knowledge>"
+        return format_knowledge_document(
+            path=norm,
+            content=text,
+            start_line=s_line,
+            end_line=e_line,
+            frontmatter="raw",
+            with_line_numbers=True,
         )
 
     async def write_knowledge(

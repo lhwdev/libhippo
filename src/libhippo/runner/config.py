@@ -105,7 +105,7 @@ class HarnessConfig(BaseModel):
     soft_token_watermark: int = 60000
     hard_token_limit: int = 100000
     compaction_target_tokens: int = 40000
-    max_turns: int = 16
+    max_turns: int = 200
     command_timeout_ms: int = 30000
     allow_sandbox_bypass: bool = False
     transport_mode: Literal["websocket", "http"] = "websocket"

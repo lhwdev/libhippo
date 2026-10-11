@@ -182,20 +182,36 @@ class MountManager:
 
 def create_default_mounts(
     workspace_root: Path | None = None,
-    install_root: Path | None = None,
     user_root: Path | None = None,
+    common_root: Path | None = None,
+    install_root: Path | None = None,
 ) -> MountManager:
-    """Create a standard MountManager with default locations for LibHippo scopes."""
+    """Create a standard MountManager with default locations for LibHippo scopes.
+
+    Defaults:
+    - common: <user_config_dir>/knowledge/common (or common_root, or install_root / 'common')
+    - user: <user_config_dir>/knowledge/user (or user_root)
+    - project: <workspace_root>/.libhippo/knowledge
+    - plugins: <workspace_root>/.libhippo/plugins
+    """
     from libhippo.config.paths import get_project_data_dir, get_user_knowledge_dir
 
     ws = (workspace_root or Path.cwd()).resolve()
-    inst = (install_root or (Path(__file__).parent.parent.parent.parent / "knowledge")).resolve()
-    usr = (user_root or get_user_knowledge_dir()).resolve()
+    usr_base = get_user_knowledge_dir()
+
+    usr = (user_root or (usr_base / "user")).resolve()
+    if common_root is not None:
+        comm = common_root.resolve()
+    elif install_root is not None:
+        comm = (install_root / "common").resolve()
+    else:
+        comm = (usr_base / "common").resolve()
+
     proj_data = get_project_data_dir(ws)
 
     return MountManager([
         MountConfig(namespace_prefix="project", physical_path=proj_data / "knowledge", read_only=False),
-        MountConfig(namespace_prefix="common", physical_path=inst / "common", read_only=False),
+        MountConfig(namespace_prefix="common", physical_path=comm, read_only=False),
         MountConfig(namespace_prefix="user", physical_path=usr, read_only=False),
         MountConfig(namespace_prefix="plugins", physical_path=proj_data / "plugins", read_only=False),
     ])

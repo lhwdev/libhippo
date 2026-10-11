@@ -99,6 +99,12 @@ class PhaseTransitionEvent:
 
 
 @dataclass
+class ReasoningEvent:
+    content: str
+    type: str = "reasoning"
+
+
+@dataclass
 class TurnCompletedEvent:
     turn_index: int
     total_tokens: int
@@ -106,6 +112,7 @@ class TurnCompletedEvent:
     response: str = ""
     cached_tokens: int = 0
     cache_hit_rate: float = 0.0
+    thought: str | None = None
     type: str = "turn_completed"
 
 
@@ -130,5 +137,6 @@ HarnessEvent = (
     | TurnCompletedEvent
     | InterruptEvent
     | KnowledgeAgentEvent
+    | ReasoningEvent
 )
 

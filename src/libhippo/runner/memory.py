@@ -98,13 +98,18 @@ class ContextMemory:
         content: str,
         tool_calls: list[dict[str, Any]] | None = None,
         thought: str | None = None,
+        knowledge_events: list[dict[str, Any]] | None = None,
+        timestamp: str | None = None,
     ) -> ContextMessage:
         """Append model assistant response (reasoning trace, text, or tool calls)."""
-        metadata: dict[str, Any] = {}
+        ts = timestamp or datetime.datetime.now(datetime.timezone.utc).isoformat()
+        metadata: dict[str, Any] = {"timestamp": ts}
         if tool_calls:
             metadata["tool_calls"] = tool_calls
         if thought:
             metadata["thought"] = thought
+        if knowledge_events:
+            metadata["knowledge_events"] = knowledge_events
 
         msg = ContextMessage(
             role="assistant",
@@ -125,8 +130,15 @@ class ContextMemory:
         file_path_reference: str | None = None,
         is_evictable: bool = True,
         is_error: bool = False,
+        metadata: dict[str, Any] | None = None,
+        timestamp: str | None = None,
     ) -> ContextMessage:
         """Append tool output into Zone 2 with evictability flag for Zone 3 compaction."""
+        ts = timestamp or datetime.datetime.now(datetime.timezone.utc).isoformat()
+        meta: dict[str, Any] = {"tool_name": tool_name, "is_error": is_error, "timestamp": ts}
+        if metadata:
+            meta.update(metadata)
+
         msg = ContextMessage(
             role="tool",
             content=content,
@@ -135,7 +147,7 @@ class ContextMemory:
             file_path_reference=file_path_reference or tool_name,
             raw_token_count=self.count_tokens(content),
             is_evictable=is_evictable,
-            metadata={"tool_name": tool_name, "is_error": is_error},
+            metadata=meta,
         )
         self.zone2_history.append(msg)
         return msg

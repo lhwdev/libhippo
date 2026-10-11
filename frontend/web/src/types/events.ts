@@ -130,6 +130,11 @@ export interface ReasoningEffortUpdatedEvent {
   effort: string;
 }
 
+export interface ReasoningEvent {
+  type: "reasoning";
+  content: string;
+}
+
 export type HarnessIncomingEvent =
   | TokenChunkEvent
   | PhaseTransitionEvent
@@ -147,7 +152,29 @@ export type HarnessIncomingEvent =
   | KnowledgeWorkerStatusEvent
   | UndoResultEvent
   | SessionUpdatedEvent
-  | ReasoningEffortUpdatedEvent;
+  | ReasoningEffortUpdatedEvent
+  | ReasoningEvent;
+
+export interface ToolCallItem {
+  type: "tool_call";
+  id: string;
+  name: string;
+  arguments: Record<string, any>;
+  result?: any;
+  error?: string;
+  timestamp?: string;
+}
+
+export interface ReasoningItem {
+  type: "reasoning";
+  id?: string;
+  content: string;
+  timestamp?: string;
+}
+
+export type KnowledgeEventItem = KnowledgeAgentEvent;
+
+export type TurnItem = ToolCallItem | ReasoningItem | KnowledgeEventItem;
 
 export interface ChatMessage {
   id: string;
@@ -156,12 +183,15 @@ export interface ChatMessage {
   timestamp?: string;
   message_index?: number;
   raw_prompt?: string;
+  thought?: string;
+  items?: TurnItem[];
   toolCalls?: Array<{
     id: string;
     name: string;
     arguments: Record<string, any>;
     result?: any;
     error?: string;
+    timestamp?: string;
   }>;
   knowledgeEvents?: KnowledgeAgentEvent[];
 }

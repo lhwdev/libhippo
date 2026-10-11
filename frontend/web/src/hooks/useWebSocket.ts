@@ -5,6 +5,9 @@ import {
   ApprovalRequestEvent,
   ModalQuestionEvent,
   HarnessIncomingEvent,
+  ToolCallItem,
+  ReasoningItem,
+  KnowledgeEventItem,
 } from "../types/events";
 
 export function useWebSocket() {
@@ -79,19 +82,20 @@ export function useWebSocket() {
             setStreamingResponse((prev) => prev + data.delta);
             break;
 
-          case "tool_call_start": {
-            const toolCall = {
-              id: data.tool_call_id,
-              name: data.name,
-              arguments: data.arguments,
+          case "reasoning": {
+            const timeStr = new Date().toLocaleTimeString();
+            const reasoningItem: ReasoningItem = {
+              type: "reasoning",
+              id: `reasoning-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              content: data.content,
+              timestamp: timeStr,
             };
-            activeToolCallsRef.current.set(data.tool_call_id, toolCall);
-            // Append or update active tool in messages
             setMessages((prev) => {
               const last = prev[prev.length - 1];
               if (last && last.role === "assistant") {
-                const tools = last.toolCalls ? [...last.toolCalls, toolCall] : [toolCall];
-                return [...prev.slice(0, -1), { ...last, toolCalls: tools }];
+                const items = last.items ? [...last.items, reasoningItem] : [reasoningItem];
+                const thought = last.thought ? `${last.thought}\n\n${data.content}` : data.content;
+                return [...prev.slice(0, -1), { ...last, items, thought }];
               } else {
                 return [
                   ...prev,
@@ -99,8 +103,49 @@ export function useWebSocket() {
                     id: `asst-${Date.now()}`,
                     role: "assistant",
                     content: "",
+                    items: [reasoningItem],
+                    toolCalls: [],
+                    knowledgeEvents: [],
+                    thought: data.content,
+                    timestamp: timeStr,
+                  },
+                ];
+              }
+            });
+            break;
+          }
+
+          case "tool_call_start": {
+            const timeStr = new Date().toLocaleTimeString();
+            const toolCall = {
+              id: data.tool_call_id,
+              name: data.name,
+              arguments: data.arguments,
+              timestamp: timeStr,
+            };
+            const toolItem: ToolCallItem = {
+              type: "tool_call",
+              ...toolCall,
+            };
+            activeToolCallsRef.current.set(data.tool_call_id, toolCall);
+            // Append or update active tool in messages
+            setMessages((prev) => {
+              const last = prev[prev.length - 1];
+              if (last && last.role === "assistant") {
+                const items = last.items ? [...last.items, toolItem] : [toolItem];
+                const tools = last.toolCalls ? [...last.toolCalls, toolCall] : [toolCall];
+                return [...prev.slice(0, -1), { ...last, items, toolCalls: tools }];
+              } else {
+                return [
+                  ...prev,
+                  {
+                    id: `asst-${Date.now()}`,
+                    role: "assistant",
+                    content: "",
+                    items: [toolItem],
                     toolCalls: [toolCall],
-                    timestamp: new Date().toLocaleTimeString(),
+                    knowledgeEvents: [],
+                    timestamp: timeStr,
                   },
                 ];
               }
@@ -116,13 +161,24 @@ export function useWebSocket() {
             }
             setMessages((prev) => {
               return prev.map((msg) => {
-                if (msg.role === "assistant" && msg.toolCalls) {
-                  const hasCall = msg.toolCalls.some((t) => t.id === data.tool_call_id);
-                  if (hasCall) {
-                    const updated = msg.toolCalls.map((t) =>
-                      t.id === data.tool_call_id ? { ...t, result: data.result, error: data.error ?? undefined } : t
-                    );
-                    return { ...msg, toolCalls: updated };
+                if (msg.role === "assistant") {
+                  let changed = false;
+                  const updatedItems = (msg.items || []).map((item) => {
+                    if (item.type === "tool_call" && item.id === data.tool_call_id) {
+                      changed = true;
+                      return { ...item, result: data.result, error: data.error ?? undefined };
+                    }
+                    return item;
+                  });
+                  const updatedTools = (msg.toolCalls || []).map((t) => {
+                    if (t.id === data.tool_call_id) {
+                      changed = true;
+                      return { ...t, result: data.result, error: data.error ?? undefined };
+                    }
+                    return t;
+                  });
+                  if (changed) {
+                    return { ...msg, items: updatedItems, toolCalls: updatedTools };
                   }
                 }
                 return msg;
@@ -151,13 +207,19 @@ export function useWebSocket() {
             break;
 
           case "knowledge_agent": {
+            const timeStr = data.timestamp || new Date().toLocaleTimeString();
+            const keItem: KnowledgeEventItem = {
+              ...data,
+              timestamp: timeStr,
+            };
             setMessages((prev) => {
               const last = prev[prev.length - 1];
               if (last && last.role === "assistant") {
+                const items = last.items ? [...last.items, keItem] : [keItem];
                 const current = last.knowledgeEvents || [];
                 return [
                   ...prev.slice(0, -1),
-                  { ...last, knowledgeEvents: [...current, data] },
+                  { ...last, items, knowledgeEvents: [...current, data] },
                 ];
               } else {
                 return [
@@ -166,8 +228,10 @@ export function useWebSocket() {
                     id: `asst-${Date.now()}`,
                     role: "assistant",
                     content: "",
+                    items: [keItem],
+                    toolCalls: [],
                     knowledgeEvents: [data],
-                    timestamp: new Date().toLocaleTimeString(),
+                    timestamp: timeStr,
                   },
                 ];
               }
@@ -181,7 +245,7 @@ export function useWebSocket() {
             if (data.response) {
               setMessages((prev) => {
                 const last = prev[prev.length - 1];
-                if (last && last.role === "assistant" && (!last.content || last.content === "")) {
+                if (last && last.role === "assistant") {
                   return [...prev.slice(0, -1), { ...last, content: data.response }];
                 }
                 return [

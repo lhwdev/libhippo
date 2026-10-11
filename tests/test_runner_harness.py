@@ -649,7 +649,7 @@ async def test_harness_root_knowledges_embedded_in_zone1(tmp_path: Path):
     k_dir.mkdir(parents=True)
     proj_md = k_dir / "project.md"
     proj_md.write_text(
-        "---\ntitle: Project Architecture\nnamespace: project\n---\n# App Architecture\nCore design rules.\n",
+        "---\ntitle: App Architecture\nnamespace: project\n---\n# App Architecture\nCore design rules.\n",
         encoding="utf-8",
     )
 
@@ -661,11 +661,19 @@ async def test_harness_root_knowledges_embedded_in_zone1(tmp_path: Path):
     harness = GeneralAgentHarness(config=config, model_client=client)
 
     prompt = harness.assemble_system_prompt()
-    assert '<knowledge path="project" total_lines="6">' in prompt
-    assert "# App Architecture\nCore design rules." in prompt
+    assert '<root_knowledges>' in prompt
+    assert '</root_knowledges>' in prompt
+
+    root_section = prompt[prompt.find("<root_knowledges>") : prompt.find("</root_knowledges>")]
+    assert '<knowledge path="project" total_lines="2">' in root_section
+    assert "# App Architecture\nCore design rules." in root_section
+    # Guarantee frontmatter is removed for embedded root mounts
+    assert "title: Project Architecture" not in root_section
+    assert "namespace: project" not in root_section
+    assert "---" not in root_section
     # Guarantee no line numbers in Zone 1 static context
-    assert "1: ---" not in prompt
-    assert "5: # App Architecture" not in prompt
+    assert "1: ---" not in root_section
+    assert "1: # App Architecture" not in root_section
 
 
 

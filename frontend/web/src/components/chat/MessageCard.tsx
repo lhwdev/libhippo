@@ -1,8 +1,9 @@
-import React from "react";
-import { User, Bot, AlertOctagon, Terminal, Info, BookOpen, RotateCcw } from "lucide-react";
-import { ChatMessage } from "../../types/events";
+import React, { useMemo } from "react";
+import { User, Bot, AlertOctagon, Info, RotateCcw } from "lucide-react";
+import { ChatMessage, TurnItem } from "../../types/events";
 import { ToolCallCard } from "./ToolCallCard";
 import { KnowledgeAgentCard } from "./KnowledgeAgentCard";
+import { ReasoningCard } from "./ReasoningCard";
 import { MarkdownRenderer } from "../common/MarkdownRenderer";
 
 interface MessageCardProps {
@@ -23,6 +24,34 @@ export const MessageCard: React.FC<MessageCardProps> = ({ message, onUndo }) => 
       displayContent = promptMatch[1].trim();
     }
   }
+
+  const items: TurnItem[] = useMemo(() => {
+    if (message.items && message.items.length > 0) {
+      return message.items;
+    }
+    const fallback: TurnItem[] = [];
+    if (message.thought) {
+      fallback.push({
+        type: "reasoning",
+        content: message.thought,
+        timestamp: message.timestamp,
+      });
+    }
+    if (message.toolCalls) {
+      for (const tc of message.toolCalls) {
+        fallback.push({
+          type: "tool_call",
+          ...tc,
+        });
+      }
+    }
+    if (message.knowledgeEvents) {
+      for (const ke of message.knowledgeEvents) {
+        fallback.push(ke);
+      }
+    }
+    return fallback;
+  }, [message.items, message.thought, message.toolCalls, message.knowledgeEvents, message.timestamp]);
 
   return (
     <div
@@ -77,31 +106,44 @@ export const MessageCard: React.FC<MessageCardProps> = ({ message, onUndo }) => 
         </div>
       </div>
 
-      <div className="leading-relaxed font-sans text-sm selection:bg-sky-500/30 select-text">
-        <MarkdownRenderer content={displayContent} />
-      </div>
-
-      {message.toolCalls && message.toolCalls.length > 0 && (
-        <div className="mt-3 pt-2 border-t border-slate-800/80">
-          <div className="flex items-center gap-1.5 text-[11px] text-slate-400 font-mono mb-1">
-            <Terminal className="w-3 h-3 text-sky-400" />
-            <span>Tool Executions ({message.toolCalls.length}):</span>
-          </div>
-          {message.toolCalls.map((tc) => (
-            <ToolCallCard key={tc.id} toolCall={tc} />
-          ))}
+      {/* Sequential Turn Activities (Reasoning, Tools, Knowledge Agents ordered chronologically) */}
+      {items.length > 0 && (
+        <div className="my-2 space-y-1.5">
+          {items.map((item, idx) => {
+            if (item.type === "reasoning") {
+              return (
+                <ReasoningCard
+                  key={item.id || `reasoning-${idx}`}
+                  content={item.content}
+                  timestamp={item.timestamp}
+                />
+              );
+            }
+            if (item.type === "tool_call") {
+              return (
+                <ToolCallCard
+                  key={item.id || `tool-${idx}`}
+                  toolCall={item}
+                />
+              );
+            }
+            if (item.type === "knowledge_agent") {
+              return (
+                <KnowledgeAgentCard
+                  key={`ke-${idx}-${item.agent}-${item.action}`}
+                  event={item}
+                />
+              );
+            }
+            return null;
+          })}
         </div>
       )}
 
-      {message.knowledgeEvents && message.knowledgeEvents.length > 0 && (
-        <div className="mt-3 pt-2 border-t border-slate-800/80">
-          <div className="flex items-center gap-1.5 text-[11px] text-purple-400 font-mono mb-1">
-            <BookOpen className="w-3 h-3 text-purple-400" />
-            <span>Knowledge Agents ({message.knowledgeEvents.length}):</span>
-          </div>
-          {message.knowledgeEvents.map((ke, idx) => (
-            <KnowledgeAgentCard key={`ke-${idx}-${ke.agent}-${ke.action}`} event={ke} />
-          ))}
+      {/* Response Text Content */}
+      {displayContent && (
+        <div className="leading-relaxed font-sans text-sm selection:bg-sky-500/30 select-text mt-2">
+          <MarkdownRenderer content={displayContent} />
         </div>
       )}
     </div>

@@ -35,12 +35,12 @@ def setup_knowledge_routes(app: web.Application, harness: GeneralAgentHarness) -
                 },
                 {
                     "namespace": "user",
-                    "physical_path": str(get_user_knowledge_dir(harness.config.user_config_dir)),
+                    "physical_path": str(get_user_knowledge_dir(harness.config.user_config_dir) / "user"),
                     "read_only": False,
                 },
                 {
                     "namespace": "common",
-                    "physical_path": "knowledge/common",
+                    "physical_path": str(get_user_knowledge_dir(harness.config.user_config_dir) / "common"),
                     "read_only": False,
                 },
             ]

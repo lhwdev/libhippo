@@ -5,6 +5,7 @@ from __future__ import annotations
 import difflib
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -14,46 +15,16 @@ from libhippo.runner.tools.base import BaseToolSuite, ToolExecutionError
 from libhippo.runner.types import ToolDefinition
 from libhippo.storage.store import KnowledgeStore
 from libhippo.tools.retrieval import KnowledgeDispatcher, RefineFeedback, apply_rejection
+from libhippo.tools.formatting import (
+    format_knowledge_document,
+    process_frontmatter_and_title as _process_frontmatter_and_title,
+)
 
 logger = logging.getLogger(__name__)
 
 
 def _normalize_path(path: str) -> str:
     return path.strip("/. ").replace("\\", "/").removesuffix(".md")
-
-
-def format_knowledge_document(
-    path: str,
-    content: str,
-    total_lines: int | None = None,
-    start_line: int = 1,
-    end_line: int | None = None,
-    with_line_numbers: bool = False,
-) -> str:
-    """Format knowledge content as <knowledge path="..." total_lines="..."> XML block."""
-    lines = content.splitlines()
-    actual_count = len(lines)
-    tot = total_lines if total_lines is not None else actual_count
-    s_line = max(1, start_line)
-    e_line = min(tot, end_line) if end_line is not None else tot
-
-    if total_lines is not None and total_lines != actual_count:
-        if with_line_numbers:
-            selected_text = "\n".join(f"{idx}: {line}" for idx, line in enumerate(lines, start=s_line))
-        else:
-            selected_text = content
-    else:
-        if s_line > actual_count:
-            selected_text = ""
-        else:
-            selected = lines[s_line - 1 : e_line]
-            if with_line_numbers:
-                selected_text = "\n".join(f"{idx}: {line}" for idx, line in enumerate(selected, start=s_line))
-            else:
-                selected_text = "\n".join(selected)
-
-    lines_attr = f' lines="{s_line}:{e_line}"' if (s_line > 1 or e_line < tot) else ""
-    return f'<knowledge path="{path}"{lines_attr} total_lines="{tot}">\n{selected_text}\n</knowledge>'
 
 
 class ReadKnowledgeResult(dict):
@@ -67,9 +38,37 @@ class ReadKnowledgeResult(dict):
                 total_lines=self.get("total_lines"),
                 start_line=self.get("start_line", 1),
                 end_line=self.get("end_line"),
+                frontmatter="raw",
                 with_line_numbers=False,
             )
         return str(self.get("message", super().__str__()))
+
+
+class QueryKnowledgeResult(dict):
+    """Dictionary result for query_knowledge with XML string representation."""
+
+    def __str__(self) -> str:
+        if self.get("status") == "HIT":
+            query = self.get("query", "")
+            effort = self.get("effort_tier", self.get("effort", "medium"))
+            criticality = self.get("criticality", "preferred")
+            confidence = self.get("confidence", 1.0)
+            if isinstance(confidence, float):
+                conf_str = f"{confidence:.2f}"
+            else:
+                conf_str = str(confidence)
+            doc_str = format_knowledge_document(
+                path=self.get("path", ""),
+                content=self.get("content", ""),
+                frontmatter="essential",
+                with_line_numbers=False,
+            )
+            return (
+                f'<query_knowledge.hit query="{query}" effort="{effort}" criticality="{criticality}" confidence="{conf_str}">\n'
+                f"  {doc_str}\n"
+                f"</query_knowledge.hit>"
+            )
+        return str(self.get("content", self.get("message", super().__str__())))
 
 
 class KnowledgeTools(BaseToolSuite):
@@ -164,6 +163,10 @@ class KnowledgeTools(BaseToolSuite):
                             rejected_path = parsed.get("path")
                     except Exception:
                         pass
+                    if not rejected_path:
+                        m = re.search(r'<knowledge\s+path="([^"]+)"', prev.content)
+                        if m:
+                            rejected_path = m.group(1)
                 rejected_desc = f" `{rejected_path}`" if rejected_path else ""
                 if self.memory:
                     self.memory.replace_tool_output(
@@ -185,7 +188,7 @@ class KnowledgeTools(BaseToolSuite):
             if res.status == "HIT" and res.confidence < 0.90:
                 hint = f"\n\n[Hint: If this document is too broad or you need a deeper subtopic leaf, invoke refine_knowledge(feedback='too_broad', query='{query} <subtopic>').]"
 
-            return {
+            return QueryKnowledgeResult({
                 "status": res.status,
                 "query": query,
                 "path": res.path,
@@ -195,20 +198,20 @@ class KnowledgeTools(BaseToolSuite):
                 "effort_tier": res.effort_tier,
                 "criticality": res.criticality,
                 "source": res.source,
-            }
+            })
         elif self.store:
             nodes = await self.store.search(query=query, top_k=3 if not rejected_path else 8)
             if rejected_path:
                 nodes = apply_rejection(nodes, feedback, rejected_path)[:3]
-            return {
+            return QueryKnowledgeResult({
                 "status": "success",
                 "query": query,
                 "retrieved_nodes": [
                     {"path": n.path, "content": n.content, "confidence": n.confidence}
                     for n in nodes
                 ],
-            }
-        return {"status": "error", "message": "No knowledge store or dispatcher available"}
+            })
+        return QueryKnowledgeResult({"status": "error", "message": "No knowledge store or dispatcher available"})
 
     async def refine_knowledge(
         self,
@@ -255,6 +258,10 @@ class KnowledgeTools(BaseToolSuite):
                             last_query = parsed.get("query", "")
                     except Exception:
                         pass
+                    if not last_query:
+                        m = re.search(r'<query_knowledge\.hit\s+query="([^"]+)"', prev.content)
+                        if m:
+                            last_query = m.group(1)
 
         # Case 1: HIT
         if outcome == "hit":
@@ -449,7 +456,8 @@ class KnowledgeTools(BaseToolSuite):
                 "message": f"Knowledge path '{norm}' not found.{suggest}",
             })
 
-        lines = text.splitlines()
+        processed = _process_frontmatter_and_title(text, mode="essential")
+        lines = processed.splitlines()
         total_lines = len(lines)
         s_line = max(1, start_line)
         e_line = min(total_lines, end_line) if end_line is not None else total_lines

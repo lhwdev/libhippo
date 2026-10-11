@@ -10,6 +10,7 @@ import platform
 import re
 import subprocess
 import uuid
+from dataclasses import asdict, is_dataclass
 from typing import Any, AsyncIterator, Callable
 
 from autogen_core import FunctionCall
@@ -44,6 +45,7 @@ from libhippo.runner.types import (
     HarnessEvent,
     KnowledgeAgentEvent,
     PhaseTransitionEvent,
+    ReasoningEvent,
     TokenChunkEvent,
     ToolCallResultEvent,
     ToolCallStartEvent,
@@ -548,6 +550,10 @@ class GeneralAgentHarness:
                 finally:
                     self._current_gen_task = None
 
+                step_thought = getattr(res, "thought", None)
+                if step_thought:
+                    yield ReasoningEvent(content=step_thought)
+
                 tool_calls = None
                 if isinstance(res.content, list) and len(res.content) > 0 and all(hasattr(c, "name") for c in res.content):
                     tool_calls = res.content
@@ -567,7 +573,7 @@ class GeneralAgentHarness:
                     as_msg = self.memory.append_assistant_turn(
                         content=as_summary,
                         tool_calls=tool_calls_meta,
-                        thought=getattr(res, "thought", None),
+                        thought=step_thought,
                     )
                     await self.session.append_message(as_msg)
 
@@ -598,21 +604,26 @@ class GeneralAgentHarness:
                             await self.session.append_message(t_msg)
                             continue
 
+                        knowledge_events_collected: list[dict[str, Any]] = []
                         try:
                             handler_task = asyncio.create_task(tool_def.handler(**args))
                             while not handler_task.done():
                                 try:
-                                    k_evt = await asyncio.wait_for(queue.get(), timeout=0.08)
-                                    yield k_evt
-                                    summary = k_evt.output_summary or k_evt.input_summary
-                                    yield TokenChunkEvent(delta=f"\n[Knowledge: {k_evt.agent} {k_evt.action} ({k_evt.status}) - {summary}]\n")
+                                    knowledge_event = await asyncio.wait_for(queue.get(), timeout=0.08)
+                                    yield knowledge_event
+                                    knowledge_dict = asdict(knowledge_event) if is_dataclass(knowledge_event) else (knowledge_event if isinstance(knowledge_event, dict) else knowledge_event.__dict__)
+                                    knowledge_events_collected.append(knowledge_dict)
+                                    summary = knowledge_event.output_summary or knowledge_event.input_summary
+                                    yield TokenChunkEvent(delta=f"\n[Knowledge: {knowledge_event.agent} {knowledge_event.action} ({knowledge_event.status}) - {summary}]\n")
                                 except asyncio.TimeoutError:
                                     pass
                             while not queue.empty():
-                                k_evt = queue.get_nowait()
-                                yield k_evt
-                                summary = k_evt.output_summary or k_evt.input_summary
-                                yield TokenChunkEvent(delta=f"\n[Knowledge: {k_evt.agent} {k_evt.action} ({k_evt.status}) - {summary}]\n")
+                                knowledge_event = queue.get_nowait()
+                                yield knowledge_event
+                                knowledge_dict = asdict(knowledge_event) if is_dataclass(knowledge_event) else (knowledge_event if isinstance(knowledge_event, dict) else knowledge_event.__dict__)
+                                knowledge_events_collected.append(knowledge_dict)
+                                summary = knowledge_event.output_summary or knowledge_event.input_summary
+                                yield TokenChunkEvent(delta=f"\n[Knowledge: {knowledge_event.agent} {knowledge_event.action} ({knowledge_event.status}) - {summary}]\n")
 
                             result = await handler_task
                             yield ToolCallResultEvent(tool_call_id=call_id, name=tool_name, result=result, error=None)
@@ -634,6 +645,7 @@ class GeneralAgentHarness:
                                 tool_call_id=call_id,
                                 is_evictable=True,
                                 is_error=False,
+                                metadata={"knowledge_events": knowledge_events_collected} if knowledge_events_collected else None,
                             )
                             await self.session.append_message(t_msg)
                         except Exception as exc:
@@ -645,6 +657,7 @@ class GeneralAgentHarness:
                                 tool_call_id=call_id,
                                 is_evictable=True,
                                 is_error=True,
+                                metadata={"knowledge_events": knowledge_events_collected} if knowledge_events_collected else None,
                             )
                             await self.session.append_message(t_msg)
 
@@ -657,15 +670,20 @@ class GeneralAgentHarness:
                     out_content = res.content if isinstance(res.content, str) else str(res.content)
                     yield TokenChunkEvent(delta=out_content)
 
-                    as_msg = self.memory.append_assistant_turn(out_content)
+                    as_msg = self.memory.append_assistant_turn(out_content, thought=step_thought)
                     await self.session.append_message(as_msg)
                     break
             else:
                 if not out_content:
                     out_content = "[Maximum tool iterations reached]"
                     yield TokenChunkEvent(delta=f"\n{out_content}\n")
-                    as_msg = self.memory.append_assistant_turn(out_content)
+                    as_msg = self.memory.append_assistant_turn(out_content, thought=step_thought if "step_thought" in locals() else None)
                     await self.session.append_message(as_msg)
+
+            # Drain any trailing knowledge events
+            while not queue.empty():
+                knowledge_event = queue.get_nowait()
+                yield knowledge_event
 
             elapsed = (datetime.datetime.now(datetime.timezone.utc) - start_time).total_seconds()
             hit_rate = (turn_cached_tokens / turn_prompt_tokens) if turn_prompt_tokens > 0 else 0.0
@@ -676,6 +694,7 @@ class GeneralAgentHarness:
                 response=out_content,
                 cached_tokens=turn_cached_tokens,
                 cache_hit_rate=round(hit_rate, 4),
+                thought=step_thought if "step_thought" in locals() else None,
             )
 
             # Trigger background maintenance sidecar without delaying turn delivery

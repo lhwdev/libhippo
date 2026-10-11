@@ -1,5 +1,9 @@
 """LibHippo tools subsystem."""
 
+from libhippo.tools.formatting import (
+    format_knowledge_document,
+    process_frontmatter_and_title,
+)
 from libhippo.tools.registry import ToolRegistry
 from libhippo.tools.retrieval import (
     CriticalityTier,
@@ -18,5 +22,7 @@ __all__ = [
     "RetrievalStatus",
     "ToolRegistry",
     "fetch_web",
+    "format_knowledge_document",
+    "process_frontmatter_and_title",
     "search_web",
 ]
