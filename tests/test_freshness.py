@@ -381,7 +381,7 @@ React core library.
         assert candidate.frontmatter.version == "19.2.0"
 
         # File written on disk should have overwritten version
-        fs_path, _ = store.mount_manager.resolve_virtual_path("common/web/react.md")
+        fs_path, _ = store.mount_manager.to_physical_path("common/web/react.md")
         disk_content = fs_path.read_text(encoding="utf-8")
         assert 'version: "19.2.0"' in disk_content
         assert 'version: "19.0.0"' not in disk_content

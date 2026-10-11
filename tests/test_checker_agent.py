@@ -133,8 +133,8 @@ Tiny tip about aria.
     assert report.size_status == "undersized"
     assert report.merge_recommendation == "merge_into_sibling"
     assert "common/web/html/accessibility/aria_button.md" in report.merge_candidate_siblings
-    assert report.details["token_count_bound"]["lower_trigger"] == 300.0
-    assert report.details["token_count_bound"]["lower_target"] == 500.0
+    assert report.details["token_count_bound"]["lower_trigger"] == 100.0
+    assert report.details["token_count_bound"]["lower_target"] == 300.0
     assert "Lower hysteresis triggered" in report.details["token_count_bound"]["instruction"]
 
 
@@ -501,6 +501,35 @@ Tiny stub that is symlinked to another repository.
     # With force_keep, verdict must be PASS and suggested_path must be None (pinned in place)
     assert report.verdict == "PASS"
     assert report.suggested_path is None
+
+
+@pytest.mark.asyncio
+async def test_checker_root_knowledge_token_bounds():
+    """Test Case 15: Root knowledge mount hub applies lean root_token_count_bound."""
+    raw_md = """---
+title: "Project Root Architecture"
+namespace: "project"
+status: "active"
+nature: "foundation"
+---
+
+# Project Guidelines
+Root mount knowledge document describing project architecture.
+"""
+    candidate = KnowledgeCandidate.from_markdown("project", raw_md)
+    mock_client = MockTypeSafeClient(taxonomy="optimal", bloat=1.0, importance=1.8, coherence=2.0)
+    agent = CheckerAgent(client=mock_client)
+
+    report = await agent.check(candidate)
+
+    assert report.verdict == "PASS"
+    bounds = report.details["token_count_bound"]
+    assert bounds["lower_trigger"] == 0.0
+    assert bounds["lower_target"] == 50.0
+    assert bounds["upper_target"] == 600.0
+    assert bounds["upper_trigger"] == 800.0
+    assert report.size_status == "optimal"
+
 
 
 

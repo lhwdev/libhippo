@@ -345,6 +345,7 @@ class GeneralAgentHarness:
             workspace_root=self.workspace_root,
             registered_tools=self.registered_tools,
             agents_rules=agents_rules,
+            store=self.store,
         )
 
     def init_prefix(self) -> None:

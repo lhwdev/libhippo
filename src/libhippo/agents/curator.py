@@ -335,7 +335,7 @@ class CuratorAgent(AssistantAgent, BaseHippoAgent):
             parent_candidate = f"{namespace}/{first_slug}"
             parent_exists = False
             try:
-                phys, _ = store.mount_manager.resolve_virtual_path(parent_candidate)
+                phys, _ = store.mount_manager.to_physical_path(parent_candidate)
                 parent_exists = (phys.exists() and phys.is_file()) or phys.with_suffix(".md").exists()
             except Exception:
                 pass

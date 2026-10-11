@@ -33,8 +33,8 @@ class TypeSafeClientProtocol(Protocol):
 
 @dataclass
 class TokenCountBoundary:
-    lower_trigger: float = 300.0
-    lower_target: float = 500.0
+    lower_trigger: float = 100.0
+    lower_target: float = 300.0
     upper_target: float = 1000.0
     upper_trigger: float = 1800.0
 
@@ -53,11 +53,23 @@ class CheckerAgent(BaseHippoAgent):
         client: TypeSafeClientProtocol | None = None,
         model: str | None = None,
         token_count_bound: TokenCountBoundary | None = None,
+        root_token_count_bound: TokenCountBoundary | None = None,
     ) -> None:
         super().__init__(name=name, description=description)
         cfg = get_model_config("checker")
         self.model = model or cfg.resolve_model_name()
-        self.token_count_bound = token_count_bound or TokenCountBoundary()
+        self.token_count_bound = token_count_bound or TokenCountBoundary(
+            lower_trigger=100.0,
+            lower_target=300.0,
+            upper_target=1000.0,
+            upper_trigger=1800.0,
+        )
+        self.root_token_count_bound = root_token_count_bound or TokenCountBoundary(
+            lower_trigger=0.0,
+            lower_target=50.0,
+            upper_target=600.0,
+            upper_trigger=800.0,
+        )
 
         self.client = client or create_decision_client("checker", model=self.model)
 
@@ -210,6 +222,13 @@ class CheckerAgent(BaseHippoAgent):
             is_category_hub=is_cat_hub,
         )
 
+        cand_clean = candidate.path.strip("/. ").removesuffix(".md")
+        allowed_mounts = context.allowed_namespaces or ["project", "user", "common", "plugins"]
+        is_root_knowledge = ("/" not in cand_clean) or (
+            context.parent is None and cand_clean in allowed_mounts
+        )
+        bounds = self.root_token_count_bound if is_root_knowledge else self.token_count_bound
+
         # Step 1: Token counting & syntax validation
         raw_tokens = self.count_tokens(candidate.markdown)
         schema_errors = list(candidate.parse_errors)
@@ -234,8 +253,8 @@ class CheckerAgent(BaseHippoAgent):
 
         # Fast-fail on runtime type validation failure without calling Jev
         if schema_errors:
-            size_status: SizeStatus = "undersized" if raw_tokens <= self.token_count_bound.lower_trigger else (
-                "oversized" if raw_tokens >= self.token_count_bound.upper_trigger else "optimal"
+            size_status: SizeStatus = "undersized" if raw_tokens <= bounds.lower_trigger else (
+                "oversized" if raw_tokens >= bounds.upper_trigger else "optimal"
             )
             return JevAuditReport(
                 taxonomy_fit="optimal",
@@ -291,15 +310,17 @@ class CheckerAgent(BaseHippoAgent):
         final_importance = round(c_max + 0.20 * c_min * (1.0 - c_max), 2)
 
         # Step 5: Composite Effective Sizing & Dynamic Modulation (Section 3.4.1)
-        # 1. Coherence Modulation of upper_bound_trigger: high coherence raises upper_bound_trigger (up to 2200)
-        upper_trigger = self.token_count_bound.upper_trigger
+        # 1. Coherence Modulation of upper_bound_trigger: high coherence raises upper_bound_trigger
+        upper_trigger = bounds.upper_trigger
         if coherence_score >= 0.80:
-            upper_trigger += ((coherence_score - 0.80) / 0.20) * 400.0
+            upper_trigger += ((coherence_score - 0.80) / 0.20) * (400.0 if not is_root_knowledge else 200.0)
 
-        # 2. Sibling Diversity Modulation of lower_bound_trigger: high diversity (low redundancy) lowers lower_bound_trigger (down to 150-200)
-        lower_trigger = self.token_count_bound.lower_trigger
-        if context.siblings and has_redundancy < 0.20:
-            lower_trigger -= ((0.20 - has_redundancy) / 0.20) * 100.0
+        # 2. Sibling Diversity Modulation of lower_bound_trigger: high diversity (low redundancy) lowers lower_bound_trigger
+        lower_trigger = bounds.lower_trigger
+        if context.siblings and has_redundancy < 0.20 and not is_root_knowledge:
+            max_reduction = bounds.lower_trigger * (100.0 / 300.0)
+            lower_trigger -= ((0.20 - has_redundancy) / 0.20) * max_reduction
+        lower_trigger = max(0.0, lower_trigger)
 
         # EffectiveSize = RawTokens * (0.75 + 0.35 * BloatScore)
         effective_size = round(raw_tokens * (0.75 + 0.35 * bloat_score), 1)
@@ -373,19 +394,19 @@ class CheckerAgent(BaseHippoAgent):
             verdict = "REVISE_SCHEMA"
 
         token_count_bound = {
-            "lower_trigger": self.token_count_bound.lower_trigger,
-            "lower_target": self.token_count_bound.lower_target,
-            "upper_target": self.token_count_bound.upper_target,
-            "upper_trigger": self.token_count_bound.upper_trigger,
+            "lower_trigger": bounds.lower_trigger,
+            "lower_target": bounds.lower_target,
+            "upper_target": bounds.upper_target,
+            "upper_trigger": bounds.upper_trigger,
             "effective_lower_trigger": lower_trigger,
             "effective_upper_trigger": upper_trigger,
             "instruction": (
                 f"Upper hysteresis triggered: Refactoring must split/group content, such that each child knowledge is under "
-                f"({self.token_count_bound.upper_target:.0f} tokens) to ensure growth headroom."
+                f"({bounds.upper_target:.0f} tokens) to ensure growth headroom."
                 if size_status == "oversized"
                 else (
                     f"Lower hysteresis triggered: Merging must coalesce with sibling or fold into parent knowledge, to reach at least "
-                    f"({self.token_count_bound.lower_target:.0f} tokens) to prevent thrashing."
+                    f"({bounds.lower_target:.0f} tokens) to prevent thrashing."
                     if size_status == "undersized"
                     else None
                 )

@@ -150,7 +150,7 @@ All model configurations across AutoGen Chat Completion clients (OpenAI) and sem
     - Pre-populates from store if editing an existing document.
     - **Namespace Validation**: Strictly enforces virtual knowledge paths without `.md` extension rooted at registered mounts (`project/`, `common/`, `user/`, `plugins/`), rejecting `knowledge/` or unrecognized namespaces immediately.
     - **Surgical Edit Discipline**: If `target` or `start_line`/`end_line` are specified, performs targeted surgical line replacements. If all are None, replaces the whole document (used only for initial creation or total rewrites).
-    - **Sanity Checks**: Evaluates each edit immediately without LLM calls, returning diagnostics on YAML frontmatter schema compliance, token sizing bounds (500–1,000 target, 1,800 hard maximum), markdown code block fence parity, and warnings if `related` references non-existent document.
+    - **Sanity Checks**: Evaluates each edit immediately without LLM calls, returning diagnostics on YAML frontmatter schema compliance, token sizing bounds, markdown code block fence parity, and warnings if `related` references non-existent document.
   - `read_knowledge(path=None, start_line=1, end_line=None)`: Line-addressed reading of active draft (`path=None`) or existing store node (`path="common/..."`) to inspect hierarchies and avoid duplicate content.
   - `list_knowledge(path=".", max_depth=2)`: Instant lexical tree listing of knowledge store (fast exploration, zero LLM overhead, showing mount roots without fictitious `knowledge/` prefix).
   - `search_knowledge(pattern="*", path=".", content_pattern=None)`: Glob and regex text search across store nodes without curation delays.
@@ -199,18 +199,21 @@ input.md + siblings ──► form_controls.md (>= lower_bound_target) OR fold i
 Document is structurally stable; no automated split or merge occurs.
 ```
 
-Token count (effective count on `upper_bound_trigger`) is bounded by the following parameters:
+Token count (effective count on `upper_bound_trigger`) is bounded by the hysteresis relationship:
 $$  
-\text{LowerBoundTrigger}\ (300) < \text{LowerBoundTarget}\ (500) < \text{UpperBoundTarget}\ (1000) < \text{UpperBoundTrigger}\ (1800)
+\text{LowerBoundTrigger} < \text{LowerBoundTarget} < \text{UpperBoundTarget} < \text{UpperBoundTrigger}
 $$
 
+- **Dual-Tier Regulation**:
+  - **Leaf Nodes**: Regulated to maintain adequate technical depth without becoming unwieldy manuals. Nodes exceeding the upper trigger escalate to splitting, while nodes dropping below the lower trigger coalesce with siblings or fold into parent hubs.
+  - **Root Mount Hubs**: As top-level entrypoints (`project`, `user`, `plugins`, `common`) permanently embedded into agent Zone 1 static context, root hubs operate under tighter, lean bounds to serve as compact indexes and architectural anchors without bloating the context prefix.
 - **Token Count**: Measured deterministically via `tiktoken`.
 - **Upper Bound Split**:
   - **Trigger**: $\text{EffectiveCount} > \text{UpperBoundTrigger}$. `CheckerAgent` emits `ESCALATE_REFACTOR`.
-  - **Target**: `VerifierAgent` partitions the node into child leaves in either promotion or partition, each satisfying $\text{TokenCount} \le \text{UpperBoundTarget}$ (1000 tokens), guaranteeing growth headroom.
+  - **Target**: `VerifierAgent` partitions the node into child leaves in either promotion or partition, each satisfying $\text{TokenCount} \le \text{UpperBoundTarget}$, guaranteeing growth headroom.
 - **Lower Bound Merge**:
   - **Trigger**: $\text{TokenCount} < \text{LowerBoundTrigger}$. `CheckerAgent` emits `MERGE_REQUIRED`.
-  - **Target**: Coalescing with siblings or folding into the parent knowledge must yield a combined node with $\text{TokenCount} \ge \text{LowerBoundTarget}$ (500 tokens).
+  - **Target**: Coalescing with siblings or folding into the parent knowledge must yield a combined node with $\text{TokenCount} \ge \text{LowerBoundTarget}$.
 - **Metric Distinction**:
   - **Upper Bound**: Uses composite $\text{EffectiveCount} = \text{TokenCount} \cdot (0.75 + 0.35 \cdot \text{Score}_{\text{bloatedness}})$, accounting for semantic verbosity.
   - **Lower Bound**: Uses deterministic raw $\text{TokenCount}$, preventing false merges on concise, dense content.
@@ -221,8 +224,8 @@ $$
   - `3.0`: *Monolithic Overload* (orthogonal sub-domains crammed together).
 
 Trigger boundary values change dynamically:
-- **Coherence Modulation of `upper_bound_trigger`**: By default `1800` tokens, high coherence (clean Summary vs. Rules separation, laser-focused single responsibility) raises `upper_bound_trigger` (up to 2200), preventing artificial fragmentation of cohesive guides.
-- **Sibling Diversity Modulation of `lower_bound_trigger`**: By default `300`, high diversity (low topical overlap among siblings) lowers `lower_bound_trigger` (down to 150–200), allowing concise, distinct primitives to stand alone.
+- **Coherence Modulation of `upper_bound_trigger`**: High coherence (clean Summary vs. Rules separation, laser-focused single responsibility) raises `upper_bound_trigger`, preventing artificial fragmentation of cohesive guides.
+- **Sibling Diversity Modulation of `lower_bound_trigger`**: High diversity (low topical overlap among siblings) lowers `lower_bound_trigger`, allowing concise, distinct primitives to stand alone.
 
 #### 3.4.2 Post-Merge Undersized Documents & force_keep Protection
 1. **`force_keep` Override**: If `force_keep: true` is set in frontmatter (e.g. for subtrees symlinked to GitHub or externally referenced docs), the document is unconditionally preserved as an immutable standalone knowledge (`verdict: PASS`), exempt from automated merging, splitting, or renaming.
@@ -490,5 +493,5 @@ When a retrieved document is flagged as stale (`freshness_status == "stale"`):
 | **2. Low-Effort Retrieval Miss** | Match confidence fell below `threshold_low`. | Returns fast failure to `TaskSolverAgent` $\rightarrow$ Solver proceeds with baseline LLM knowledge or escalates to `effort="medium"`/`"high"`. |
 | **3. Catalog Miss on Mandatory Topic** | Required documentation missing under `MANDATORY` constraint. | `BookKeeperAgent` emits `[MISS:MANDATORY]` $\rightarrow$ `CuratorAgent` executes targeted web scrape and drafts new leaf $\rightarrow$ `CheckerAgent` audits draft (auto-commits on `PASS`, or escalates to `VerifierAgent` if refactoring required) $\rightarrow$ Fresh snippet injected into Solver context. |
 | **4. Documentation Bloat** | Redundant micro-notes proposed for minor edge cases. | `CheckerAgent` rejects standalone file creation (`MERGE_REQUIRED`) $\rightarrow$ Directs `CuratorAgent` to append compact rule into an existing Leaf's `Detailed Rules` or parent. |
-| **5. Oversized Knowledge Node** | Leaf exceeds hysteresis upper bound ($>1,800$ tokens) with divergent subtopics. | `CheckerAgent` flags `OVERSIZED` (`ESCALATE_REFACTOR`) $\rightarrow$ `VerifierAgent` formulates refactoring plan $\rightarrow$ Elevates leaf to hub, creates directory, and partitions into child leaves $\rightarrow$ Atomically committed and re-indexed. |
-| **6. Fragmented Micro-Document Sprawl** | Tiny single-rule document proposed below lower bound ($<300$ tokens). | `CheckerAgent` flags `UNDERSIZED` with sibling coalescence directive $\rightarrow$ Merges related components into a unified composite leaf (`form_controls.md`) or folds into parent hub. |
+| **5. Oversized Knowledge Node** | Leaf exceeds hysteresis upper bound trigger with divergent subtopics. | `CheckerAgent` flags `OVERSIZED` (`ESCALATE_REFACTOR`) $\rightarrow$ `VerifierAgent` formulates refactoring plan $\rightarrow$ Elevates leaf to hub, creates directory, and partitions into child leaves $\rightarrow$ Atomically committed and re-indexed. |
+| **6. Fragmented Micro-Document Sprawl** | Tiny single-rule document proposed below lower bound trigger. | `CheckerAgent` flags `UNDERSIZED` with sibling coalescence directive $\rightarrow$ Merges related components into a unified composite leaf (`form_controls.md`) or folds into parent hub. |

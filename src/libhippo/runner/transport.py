@@ -26,6 +26,11 @@ from pydantic import BaseModel
 import uuid
 
 
+# 초반에는 수업에서 쓰던 autogen 4.0을 사용했고, 여기에 OpenAI /v1/responses에 대한 구현이 없어서 AI에게 만들어달라 한 구현체입니다.
+#   (chat completion API는 deprecated돼서 안되는 게 많습니다.)
+# 추가로 WebSocket 기반 transport도 구현했는데, 이건 최근 autogen에도 없어서 필요합니다.
+# - 네트워크 트래픽을 줄이는데에 정말 유용합니다.
+
 class OpenAIResponsesClient(ChatCompletionClient):
     """Adapter for modern OpenAI Responses API (/v1/responses) supporting both reasoning and tools."""
 

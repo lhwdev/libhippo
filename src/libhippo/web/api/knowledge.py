@@ -123,7 +123,7 @@ def setup_knowledge_routes(app: web.Application, harness: GeneralAgentHarness) -
         content = ""
         if harness.store:
             try:
-                phys, _ = harness.store.mount_manager.resolve_virtual_path(path)
+                phys, _ = harness.store.mount_manager.to_physical_path(path)
                 if phys.exists() and phys.is_file():
                     content = phys.read_text(encoding="utf-8")
                 else:

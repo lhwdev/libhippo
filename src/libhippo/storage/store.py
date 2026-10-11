@@ -152,12 +152,38 @@ class KnowledgeStore:
 
     def resolve_fs_path(self, virtual_path: str) -> tuple[Path, MountConfig]:
         """Resolve a logical virtual path to an absolute physical filesystem Path and MountConfig."""
-        return self.mount_manager.resolve_virtual_path(virtual_path)
+        return self.mount_manager.to_physical_path(virtual_path)
 
     def _resolve_fs_path(self, rel_path: str) -> Path:
         """Resolve a logical knowledge path to physical filesystem Path (backward compatibility)."""
-        path, _ = self.mount_manager.resolve_virtual_path(rel_path)
+        path, _ = self.mount_manager.to_physical_path(rel_path)
         return path
+
+    def get_root_knowledges_sync(self) -> list[KnowledgeCandidate]:
+        """Synchronously retrieve all available root mount knowledge documents in cascading priority order."""
+        priority = ["project", "user", "plugins", "common"]
+        mounts_by_prefix = {m.namespace_prefix: m for m in self.mount_manager.get_all_mounts()}
+
+        ordered_prefixes = [p for p in priority if p in mounts_by_prefix]
+        for p in mounts_by_prefix:
+            if p not in ordered_prefixes:
+                ordered_prefixes.append(p)
+
+        root_nodes: list[KnowledgeCandidate] = []
+        for prefix in ordered_prefixes:
+            try:
+                fs_path, _ = self.mount_manager.to_physical_path(prefix)
+                if fs_path.exists() and fs_path.is_file():
+                    content = fs_path.read_text(encoding="utf-8")
+                    virtual_path = (self.mount_manager.to_virtual_path(fs_path) or prefix).removesuffix(".md")
+                    root_nodes.append(KnowledgeCandidate.from_markdown(virtual_path, content))
+            except Exception:
+                continue
+        return root_nodes
+
+    async def get_root_knowledges(self) -> list[KnowledgeCandidate]:
+        """Retrieve all available root mount knowledge documents in cascading priority order."""
+        return self.get_root_knowledges_sync()
 
     async def sync_incremental(self) -> dict[str, Any]:
         """Synchronize catalog and vector store incrementally with markdown files across mounts.
@@ -183,9 +209,17 @@ class KnowledgeStore:
         seen_physical_paths: set[Path] = set()
 
         for mount in self.mount_manager.get_all_mounts():
-            if not mount.physical_path.exists():
-                continue
-            for md_file in mount.physical_path.rglob("*.md"):
+            candidate_files: list[Path] = []
+            if mount.physical_path.exists() and mount.physical_path.is_dir():
+                candidate_files.extend(list(mount.physical_path.rglob("*.md")))
+            try:
+                root_phys, _ = self.mount_manager.to_physical_path(mount.namespace_prefix)
+                if root_phys.is_file():
+                    candidate_files.append(root_phys)
+            except Exception:
+                pass
+
+            for md_file in candidate_files:
                 if "deprecated" in md_file.as_posix() or md_file.name.startswith("."):
                     continue
                 resolved_file = md_file.resolve()
@@ -193,7 +227,7 @@ class KnowledgeStore:
                     continue
                 seen_physical_paths.add(resolved_file)
 
-                rel_path = self.mount_manager.resolve_physical_path(md_file)
+                rel_path = self.mount_manager.to_virtual_path(md_file)
                 if not rel_path:
                     continue
                 disk_paths.add(rel_path)
@@ -286,9 +320,17 @@ class KnowledgeStore:
         seen_physical_paths: set[Path] = set()
 
         for mount in self.mount_manager.get_all_mounts():
-            if not mount.physical_path.exists():
-                continue
-            for md_file in mount.physical_path.rglob("*.md"):
+            candidate_files: list[Path] = []
+            if mount.physical_path.exists() and mount.physical_path.is_dir():
+                candidate_files.extend(list(mount.physical_path.rglob("*.md")))
+            try:
+                root_phys, _ = self.mount_manager.to_physical_path(mount.namespace_prefix)
+                if root_phys.is_file():
+                    candidate_files.append(root_phys)
+            except Exception:
+                pass
+
+            for md_file in candidate_files:
                 if "deprecated" in md_file.as_posix() or md_file.name.startswith("."):
                     continue
                 resolved_file = md_file.resolve()
@@ -296,7 +338,7 @@ class KnowledgeStore:
                     continue
                 seen_physical_paths.add(resolved_file)
 
-                rel_path = self.mount_manager.resolve_physical_path(md_file)
+                rel_path = self.mount_manager.to_virtual_path(md_file)
                 if not rel_path:
                     continue
                 try:
@@ -321,14 +363,14 @@ class KnowledgeStore:
     async def get_node(self, path: str) -> KnowledgeCandidate | None:
         """Retrieve a knowledge document from disk as a KnowledgeCandidate."""
         try:
-            fs_path, _ = self.mount_manager.resolve_virtual_path(path)
+            fs_path, _ = self.mount_manager.to_physical_path(path)
         except KeyError:
             return None
 
-        if not fs_path.exists():
+        if not fs_path.exists() or fs_path.is_dir():
             return None
         content = fs_path.read_text(encoding="utf-8")
-        virtual_path = self.mount_manager.resolve_physical_path(fs_path) or path
+        virtual_path = self.mount_manager.to_virtual_path(fs_path) or path
         return KnowledgeCandidate.from_markdown(virtual_path, content)
 
     async def read_knowledge(
@@ -380,10 +422,10 @@ class KnowledgeStore:
         the frontmatter version before saving to disk.
         """
         self.mount_manager.check_writable(path)
-        fs_path, _ = self.mount_manager.resolve_virtual_path(path)
+        fs_path, _ = self.mount_manager.to_physical_path(path)
         fs_path.parent.mkdir(parents=True, exist_ok=True)
 
-        virtual_path = self.mount_manager.resolve_physical_path(fs_path) or path
+        virtual_path = self.mount_manager.to_virtual_path(fs_path) or path
         candidate = KnowledgeCandidate.from_markdown(virtual_path, content)
 
         # Silently drop agent-provided 2~4 properties and reconcile with previous disk state
@@ -451,8 +493,8 @@ class KnowledgeStore:
         if candidate and candidate.frontmatter and candidate.frontmatter.force_keep and not force:
             raise ValueError(f"Cannot delete node '{path}' with force_keep=True unless force=True")
 
-        fs_path, _ = self.mount_manager.resolve_virtual_path(path)
-        virtual_path = self.mount_manager.resolve_physical_path(fs_path) or path
+        fs_path, _ = self.mount_manager.to_physical_path(path)
+        virtual_path = self.mount_manager.to_virtual_path(fs_path) or path
 
         deleted = False
         if fs_path.exists():
@@ -470,8 +512,8 @@ class KnowledgeStore:
         if candidate and candidate.frontmatter and candidate.frontmatter.force_keep and not force:
             raise ValueError(f"Cannot deprecate node '{path}' with force_keep=True unless force=True")
 
-        fs_path, mount = self.mount_manager.resolve_virtual_path(path)
-        virtual_path = self.mount_manager.resolve_physical_path(fs_path) or path
+        fs_path, mount = self.mount_manager.to_physical_path(path)
+        virtual_path = self.mount_manager.to_virtual_path(fs_path) or path
 
         if not fs_path.exists():
             raise FileNotFoundError(f"Knowledge node not found: {path}")
@@ -750,11 +792,11 @@ class KnowledgeStore:
                         max_depth=max_depth,
                         lines=lines,
                     )
-            lines.append("</knowledge>")
+            lines.append("</knowledges>")
         else:
             norm = path.strip("/.")
             try:
-                target_phys = self.mount_manager.resolve_virtual_path(norm)[0]
+                target_phys = self.mount_manager.to_physical_path(norm)[0]
             except Exception:
                 target_phys = self.root_dir / norm
 
@@ -828,7 +870,7 @@ class KnowledgeStore:
         else:
             norm = path.strip("/.")
             try:
-                phys = self.mount_manager.resolve_virtual_path(norm)[0]
+                phys = self.mount_manager.to_physical_path(norm)[0]
             except Exception:
                 phys = self.root_dir / norm
             if phys.exists():
@@ -869,5 +911,6 @@ class KnowledgeStore:
 
         if not matches:
             return "No matching knowledge documents found."
-        return "\n".join(matches)
+        formatted = "\n".join(matches)
+        return f'<matches pattern="{pattern}">\n{formatted}\n</matches>'
 

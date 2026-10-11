@@ -210,7 +210,7 @@ class KnowledgeDraftSession:
                 parent_exists = True
             else:
                 try:
-                    phys, _ = self.store.mount_manager.resolve_virtual_path(parent_path)
+                    phys, _ = self.store.mount_manager.to_physical_path(parent_path)
                     parent_exists = (phys.exists() and phys.is_file()) or phys.with_suffix(".md").exists()
                 except Exception:
                     pass
@@ -248,7 +248,7 @@ class KnowledgeDraftSession:
                 continue
             if self.store:
                 try:
-                    phys, _ = self.store.mount_manager.resolve_virtual_path(norm_r)
+                    phys, _ = self.store.mount_manager.to_physical_path(norm_r)
                     if phys.exists() and phys.is_file():
                         continue
                 except KeyError:
@@ -287,7 +287,7 @@ class KnowledgeDraftSession:
         # 2. Existing node in knowledge store
         elif self.store:
             try:
-                phys, _ = self.store.mount_manager.resolve_virtual_path(norm)
+                phys, _ = self.store.mount_manager.to_physical_path(norm)
                 if phys.exists() and phys.is_file():
                     text = phys.read_text(encoding="utf-8")
                 else:
@@ -352,7 +352,7 @@ class KnowledgeDraftSession:
                 existing_text = ""
                 if self.store:
                     try:
-                        phys, _ = self.store.mount_manager.resolve_virtual_path(norm)
+                        phys, _ = self.store.mount_manager.to_physical_path(norm)
                         if phys.exists() and phys.is_file():
                             existing_text = phys.read_text(encoding="utf-8")
                     except Exception:

@@ -6,11 +6,9 @@
 > 제 개인 프로젝트 중에서는 AI 사용 비중이 엄청나게 높은 프로젝트입니다.
 > 과제 치고는 낮을 수도요?
 
-## 중간발표 초안
-
-![중간발표 ppt 사진](<과제1 중간발표 LibHippo.png>)
-
 ## 아키텍처
+
+![Overall Architecture Diagram](figures/architecture_diagram.svg)
 
 [architecture.md](architecture.md) 참고
 
@@ -38,7 +36,7 @@ cd frontend/web && npm install
    * 원본 구현체에는 TypeSafe Jev가 사용되었으나, OpenAI Decisions API를 쓰도록 바꿔도 됩니다. 이 경우 `provider="openai", model="gpt-6-luna"`로 설정해주시면 됩니다.
 
 4. 백엔드 서버를 실행해줍니다.
-   현재 cwd가 project 폴더로 열리기 때문에 적당한 폴더로 이동해서 열어도 좋습니다. 이 경우 `--directory=...` 옵션으로 이 libhippo 코드 경로를 지정해주세요.
+   현재 cwd가 project 폴더로 열리기 때문에 적당한 폴더로 이동해서 열어도 좋습니다. 이 경우 `--project=...` 옵션으로 이 libhippo 코드 경로를 지정해주세요.
 
    ```shell
    uv run python -m libhippo.web --port 8080

@@ -48,7 +48,7 @@ class WebTools(BaseToolSuite):
                 for s in soup(["script", "style", "nav", "footer"]):
                     s.decompose()
                 text = soup.get_text(separator="\n", strip=True)
-                return text[:10000]
+                return f'<web_page url="{url}">\n{text[:10000]}\n</web_page>'
         except Exception as e:
             return f"[Error fetching web page: {e}]"
 

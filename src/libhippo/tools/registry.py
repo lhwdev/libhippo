@@ -128,7 +128,7 @@ class ToolRegistry:
             target: str | None = None,
         ) -> str:
             try:
-                phys = self.store.mount_manager.resolve_virtual_path(path)[0]
+                phys = self.store.mount_manager.to_physical_path(path)[0]
             except Exception:
                 phys = self.store.root_dir / path.strip("/")
             current_text = phys.read_text(encoding="utf-8") if phys.exists() and phys.is_file() else ""

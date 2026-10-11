@@ -84,17 +84,45 @@ def format_workspace_info(workspace_root: Path) -> str:
     )
 
 
+def format_root_knowledges(store: Any = None) -> str:
+    """Format root mount knowledges (project, user, plugins, common) as unnumbered <knowledge> XML blocks."""
+    if not store:
+        return "No root knowledges available."
+    from libhippo.runner.tools.knowledge_tools import format_knowledge_document
+
+    nodes = getattr(store, "get_root_knowledges_sync", None)
+    if callable(nodes):
+        root_nodes = nodes()
+    else:
+        root_nodes = []
+
+    if not root_nodes:
+        return "No root knowledges available."
+
+    blocks: list[str] = []
+    for node in root_nodes:
+        doc_str = format_knowledge_document(
+            path=node.path,
+            content=node.markdown,
+            with_line_numbers=False,
+        )
+        blocks.append(doc_str)
+    return "\n\n".join(blocks)
+
+
 def assemble_harness_system_prompt(
     workspace_root: Path,
     registered_tools: dict[str, Any] | list[str],
     agents_rules: dict[str, str],
     template_name: str = "harness",
+    store: Any = None,
 ) -> str:
     """Assemble complete Zone 1 system prompt using template engine."""
     template = load_prompt_template(template_name)
     context = {
         "workspace_info": format_workspace_info(workspace_root),
         "user_rules": format_user_rules(agents_rules),
+        "root_knowledges": format_root_knowledges(store),
         "available_tools_summary": format_tools_summary(registered_tools),
     }
     return render_prompt_template(template, context)

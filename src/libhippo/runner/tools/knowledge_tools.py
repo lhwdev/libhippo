@@ -22,6 +22,56 @@ def _normalize_path(path: str) -> str:
     return path.strip("/. ").replace("\\", "/").removesuffix(".md")
 
 
+def format_knowledge_document(
+    path: str,
+    content: str,
+    total_lines: int | None = None,
+    start_line: int = 1,
+    end_line: int | None = None,
+    with_line_numbers: bool = False,
+) -> str:
+    """Format knowledge content as <knowledge path="..." total_lines="..."> XML block."""
+    lines = content.splitlines()
+    actual_count = len(lines)
+    tot = total_lines if total_lines is not None else actual_count
+    s_line = max(1, start_line)
+    e_line = min(tot, end_line) if end_line is not None else tot
+
+    if total_lines is not None and total_lines != actual_count:
+        if with_line_numbers:
+            selected_text = "\n".join(f"{idx}: {line}" for idx, line in enumerate(lines, start=s_line))
+        else:
+            selected_text = content
+    else:
+        if s_line > actual_count:
+            selected_text = ""
+        else:
+            selected = lines[s_line - 1 : e_line]
+            if with_line_numbers:
+                selected_text = "\n".join(f"{idx}: {line}" for idx, line in enumerate(selected, start=s_line))
+            else:
+                selected_text = "\n".join(selected)
+
+    lines_attr = f' lines="{s_line}:{e_line}"' if (s_line > 1 or e_line < tot) else ""
+    return f'<knowledge path="{path}"{lines_attr} total_lines="{tot}">\n{selected_text}\n</knowledge>'
+
+
+class ReadKnowledgeResult(dict):
+    """Dictionary result for read_knowledge with XML string representation."""
+
+    def __str__(self) -> str:
+        if self.get("status") == "success":
+            return format_knowledge_document(
+                path=self["path"],
+                content=self["content"],
+                total_lines=self.get("total_lines"),
+                start_line=self.get("start_line", 1),
+                end_line=self.get("end_line"),
+                with_line_numbers=False,
+            )
+        return str(self.get("message", super().__str__()))
+
+
 class KnowledgeTools(BaseToolSuite):
     """Knowledge tools bridging 3-tier adaptive retrieval and learning queues."""
 
@@ -374,7 +424,7 @@ class KnowledgeTools(BaseToolSuite):
 
         text: str | None = None
         try:
-            phys, _ = self.store.mount_manager.resolve_virtual_path(norm)
+            phys, _ = self.store.mount_manager.to_physical_path(norm)
             if phys.exists() and phys.is_file():
                 text = phys.read_text(encoding="utf-8")
         except Exception:
@@ -393,11 +443,11 @@ class KnowledgeTools(BaseToolSuite):
 
             matches = difflib.get_close_matches(norm, sorted(candidates), n=3, cutoff=0.4)
             suggest = f" Did you mean '{matches[0]}'?" if matches else ""
-            return {
+            return ReadKnowledgeResult({
                 "status": "not_found",
                 "path": norm,
                 "message": f"Knowledge path '{norm}' not found.{suggest}",
-            }
+            })
 
         lines = text.splitlines()
         total_lines = len(lines)
@@ -408,16 +458,16 @@ class KnowledgeTools(BaseToolSuite):
             selected_content = ""
         else:
             selected = lines[s_line - 1 : e_line]
-            selected_content = "\n".join(f"{idx}: {line}" for idx, line in enumerate(selected, start=s_line))
+            selected_content = "\n".join(selected)
 
-        return {
+        return ReadKnowledgeResult({
             "status": "success",
             "path": norm,
             "total_lines": total_lines,
             "start_line": s_line,
             "end_line": e_line,
             "content": selected_content,
-        }
+        })
 
     async def list_knowledge(
         self,

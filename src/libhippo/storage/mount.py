@@ -62,9 +62,10 @@ class MountManager:
         """Return all registered mount configurations."""
         return list(self._mounts.values())
 
-    def resolve_virtual_path(self, virtual_path: str) -> tuple[Path, MountConfig]:
+    def to_physical_path(self, virtual_path: str) -> tuple[Path, MountConfig]:
         """Resolve a virtual namespaced path to a physical filesystem path and its MountConfig.
 
+        Knowledge paths remain virtual until actualized on disk during read/write.
         Example:
             "common/web/html" -> (Path("/path/to/common/web/html.md"), MountConfig(prefix="common", ...))
         """
@@ -83,8 +84,19 @@ class MountManager:
             if subpath:
                 target_path = mount.physical_path / subpath
             else:
-                # Namespace root: prefer directory or root document
-                target_path = mount.physical_path if mount.physical_path.is_dir() else mount.physical_path / f"{prefix}.md"
+                # Namespace root: inspect candidate backing files on disk
+                if (mount.physical_path / f"{prefix}.md").is_file():
+                    target_path = mount.physical_path / f"{prefix}.md"
+                elif mount.physical_path.with_suffix(".md").is_file():
+                    target_path = mount.physical_path.with_suffix(".md")
+                elif (mount.physical_path.parent / f"{prefix}.md").is_file():
+                    target_path = mount.physical_path.parent / f"{prefix}.md"
+                elif (mount.physical_path / "index.md").is_file():
+                    target_path = mount.physical_path / "index.md"
+                elif mount.physical_path.is_file():
+                    target_path = mount.physical_path
+                else:
+                    target_path = mount.physical_path / f"{prefix}.md"
             return target_path, mount
 
         if self.fallback_root:
@@ -94,7 +106,15 @@ class MountManager:
                 read_only=False,
             )
             self.register_mount(mount)
-            target_path = mount.physical_path / subpath if subpath else mount.physical_path / f"{prefix}.md"
+            if subpath:
+                target_path = mount.physical_path / subpath
+            else:
+                if (mount.physical_path / f"{prefix}.md").is_file():
+                    target_path = mount.physical_path / f"{prefix}.md"
+                elif mount.physical_path.with_suffix(".md").is_file():
+                    target_path = mount.physical_path.with_suffix(".md")
+                else:
+                    target_path = mount.physical_path / f"{prefix}.md"
             return target_path, mount
 
         # Fallback to root or default mount if available
@@ -106,13 +126,22 @@ class MountManager:
             f"No mount found for namespace '{prefix}'. Registered mounts: {list(self._mounts.keys())}"
         )
 
-    def resolve_physical_path(self, physical_path: Path) -> str | None:
+    def to_virtual_path(self, physical_path: Path) -> str | None:
         """Translate a physical filesystem path back to its virtual namespaced path."""
         resolved = physical_path.resolve()
         for prefix, mount in self._mounts.items():
             if not prefix:
                 continue
             mount_phys = mount.physical_path.resolve()
+            # Check root backing file matches directly
+            if (
+                resolved == (mount_phys / f"{prefix}.md").resolve()
+                or resolved == mount_phys.with_suffix(".md").resolve()
+                or resolved == (mount_phys.parent / f"{prefix}.md").resolve()
+                or (resolved == (mount_phys / "index.md").resolve() and (mount_phys / "index.md").is_file())
+            ):
+                return f"{prefix}.md"
+
             try:
                 rel = resolved.relative_to(mount_phys).as_posix()
                 return f"{prefix}/{rel}" if rel and rel != "." else f"{prefix}.md"
@@ -135,9 +164,13 @@ class MountManager:
 
         return None
 
+    # Backward-compatible aliases
+    resolve_virtual_path = to_physical_path
+    resolve_physical_path = to_virtual_path
+
     def check_writable(self, virtual_path: str) -> MountConfig:
         """Verify that the mount backing virtual_path is writable, raising ReadOnlyMountError if not."""
-        _, mount = self.resolve_virtual_path(virtual_path)
+        _, mount = self.to_physical_path(virtual_path)
         if mount.read_only:
             raise ReadOnlyMountError(
                 mount.namespace_prefix,

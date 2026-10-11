@@ -186,7 +186,7 @@ class ExplorationTools(BaseToolSuite):
         if not matches:
             return "No matches found."
 
-        return "\n".join(matches)
+        return f'<matches pattern="{pattern}" total_matches="{len(matches)}">\n' + "\n".join(matches) + "\n</matches>"
 
     def _search_single_file(
         self,

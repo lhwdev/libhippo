@@ -298,13 +298,17 @@ def test_mount_manager_resolution(tmp_path):
     ])
 
     # Virtual to physical
-    phys, mount = manager.resolve_virtual_path("project/web/api.md")
+    phys, mount = manager.to_physical_path("project/web/api.md")
     assert phys == proj_dir / "web" / "api.md"
     assert mount.read_only is False
 
-    phys_ro, mount_ro = manager.resolve_virtual_path("common/python/guidelines.md")
+    phys_ro, mount_ro = manager.to_physical_path("common/python/guidelines.md")
     assert phys_ro == comm_dir / "python" / "guidelines.md"
     assert mount_ro.read_only is True
+
+    # Root document resolution
+    root_phys, _ = manager.to_physical_path("project")
+    assert root_phys == proj_dir / "project.md"
 
     # Writable check
     assert manager.check_writable("project/web/api.md") is mount
@@ -312,7 +316,8 @@ def test_mount_manager_resolution(tmp_path):
         manager.check_writable("common/python/guidelines.md")
 
     # Physical to virtual
-    assert manager.resolve_physical_path(comm_dir / "python" / "guidelines.md") == "common/python/guidelines.md"
+    assert manager.to_virtual_path(comm_dir / "python" / "guidelines.md") == "common/python/guidelines.md"
+    assert manager.to_virtual_path(proj_dir / "project.md") == "project.md"
 
 
 @pytest.mark.asyncio

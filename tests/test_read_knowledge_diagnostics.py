@@ -77,8 +77,15 @@ async def test_knowledge_tools_read_knowledge_success(tmp_path: Path):
         assert res["path"] == "common/react"
         assert res["start_line"] == 1
         assert res["end_line"] == 2
-        assert "1: ---" in res["content"]
-        assert "2: title: React Guide" in res["content"]
+        assert res["total_lines"] == 8
+        assert res["content"] == "---\ntitle: React Guide"
+        assert "1: ---" not in res["content"]
+
+        # String representation uses unnumbered <knowledge ...> XML format
+        res_str = str(res)
+        assert '<knowledge path="common/react" lines="1:2" total_lines="8">' in res_str
+        assert "---\ntitle: React Guide\n</knowledge>" in res_str
+        assert "1: ---" not in res_str
     finally:
         await store.close()
 

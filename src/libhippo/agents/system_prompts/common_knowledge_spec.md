@@ -54,8 +54,8 @@ React applications follow functional component architecture with unidirectional 
 - `related`: Optional list of related knowledge document paths. MUST ONLY reference existing knowledges or active drafts; do not invent non-existent paths. May be empty.
 
 ## Sizing and Formatting Discipline
-- **Token Bounds**: Leaf nodes MUST target 500 to 1,000 tokens (LowerTarget = 500, UpperTarget = 1,000). Hard maximum is 1,800 tokens. Oversized nodes (>1,800 tokens) will trigger refactoring escalation.
+- **Token Bounds**: Knowledge document MUST target 300 to 1000 tokens. Hard maximum is 1,800 tokens. Oversized nodes will trigger refactoring.
 - **High Signal-to-Noise**: Avoid conversational filler ("In this document we will explore..."). Begin immediately with actionable rules and architectural primitives.
 - **Markdown formatting**: Should be well-formatted GitHub-Flavored markdown.
-  * Utilize markdown formatting(bold, italic, ...) to highlight, but do not overuse
+  * Utilize markdown formatting (bold, italic, ...) to highlight, but do not overuse.
 </knowledge:spec>

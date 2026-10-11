@@ -606,6 +606,8 @@ def test_harness_template_assembled_system_prompt(tmp_path: Path):
     assert "<identity>" in prompt
     assert "<environment>" in prompt
     assert "<user_rules>" in prompt
+    assert "<root_knowledges>" in prompt
+    assert "</root_knowledges>" in prompt
     assert "<tone_and_behavior>" in prompt
     assert "<tools:available>" in prompt
     assert "<tools:core_guidance>" in prompt
@@ -633,6 +635,38 @@ def test_harness_template_assembled_system_prompt(tmp_path: Path):
     assert "<tools:execution_discipline>" in prompt
     assert "Group multiple tool calls" in prompt
     assert "Recommend trending AI models" in prompt
+
+
+@pytest.mark.asyncio
+async def test_harness_root_knowledges_embedded_in_zone1(tmp_path: Path):
+    """Verify root mount knowledges are embedded into Zone 1 as unnumbered <knowledge> XML blocks."""
+    ws_dir = tmp_path / "app_project"
+    ws_dir.mkdir(parents=True)
+    cfg_dir = tmp_path / "cfg"
+
+    # Create root knowledge for project
+    k_dir = ws_dir / ".libhippo" / "knowledge"
+    k_dir.mkdir(parents=True)
+    proj_md = k_dir / "project.md"
+    proj_md.write_text(
+        "---\ntitle: Project Architecture\nnamespace: project\n---\n# App Architecture\nCore design rules.\n",
+        encoding="utf-8",
+    )
+
+    config = HarnessConfig(
+        workspace_root=ws_dir,
+        user_config_dir=cfg_dir,
+    )
+    client = make_mock_client("OK")
+    harness = GeneralAgentHarness(config=config, model_client=client)
+
+    prompt = harness.assemble_system_prompt()
+    assert '<knowledge path="project" total_lines="6">' in prompt
+    assert "# App Architecture\nCore design rules." in prompt
+    # Guarantee no line numbers in Zone 1 static context
+    assert "1: ---" not in prompt
+    assert "5: # App Architecture" not in prompt
+
 
 
 @pytest.mark.asyncio
