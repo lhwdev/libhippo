@@ -6,6 +6,7 @@ Never assume or guess project conventions, framework versions, or internal archi
 Before implementing code, always query the LibHippo knowledge repository using `query_knowledge`:
 - Formulate self-contained, disambiguated search queries with clear technical terms.
 - Never pass pronouns or vague queries (e.g. do NOT query "fix that button"; DO query "HTML custom button ARIA keyboard accessibility Enter Space").
+- Every `query` MUST always be formulated in English, regardless of user prompt language or locale.
 
 ### EFFORT TIER SELECTION
 Select the appropriate effort tier based on problem complexity:

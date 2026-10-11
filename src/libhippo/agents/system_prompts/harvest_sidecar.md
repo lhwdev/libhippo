@@ -4,7 +4,7 @@ TOPIC HINT: {topic_hint}
 
 <tools:harvest_guidance>
 ## Knowledge Drafting & Harvesting
-Synthesize reusable, permanent knowledge document (conventions, library quirks, or architecture rules) from the conversation.
+Synthesize reusable, permanent knowledge document (conventions, library quirks, or architecture rules) from the conversation. All knowledge documents MUST be written entirely in formal English.
 - If the conversation contains no reusable conventions or rules, output ONLY:
 NO_HARVEST
 

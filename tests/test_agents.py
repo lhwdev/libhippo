@@ -187,7 +187,7 @@ Tailwind v4 uses CSS-first configuration.
     agent = CuratorAgent(model_client=client)
 
     assert agent.name == "CuratorAgent"
-    assert len(agent._tools) == 9  # write_knowledge, read_knowledge, list_knowledge, search_knowledge, commit, commit_all, run_command, search_web, fetch_web
+    assert len(agent._tools) == 10  # write_knowledge, read_knowledge, list_knowledge, search_knowledge, commit, commit_all, resolve, run_command, search_web, fetch_web
 
     result = await agent.curate(topic_or_query="Tailwind v4")
     assert result["path"] == "common/tailwind_v4_css"
@@ -470,6 +470,54 @@ async def test_verifier_accesses_drafts_via_read_and_write_knowledge(tmp_path):
         monolith_read = await agent_escalate.read_knowledge("common/monolith")
         assert '<knowledge path="common/monolith"' in monolith_read
         assert "Monolith" in monolith_read
+
+
+@pytest.mark.asyncio
+async def test_curator_resolve_similar_document(tmp_path):
+    """Test CuratorAgent.resolve marks session as resolved and orchestrator/dispatcher handle it."""
+    comm_dir = tmp_path / "comm"
+    comm_dir.mkdir(parents=True, exist_ok=True)
+    mounts = [
+        MountConfig(namespace_prefix="common", physical_path=comm_dir, read_only=False),
+    ]
+
+    async with KnowledgeStore(mounts=mounts, cache_dir=tmp_path / "cache") as store:
+        await store.initialize()
+        # Save existing document
+        existing_doc = (
+            "---\n"
+            "title: LibHippo Architecture\n"
+            "namespace: common\n"
+            "version: 1.0.0\n"
+            "---\n"
+            "# LibHippo Architecture\n"
+            "Overview of LibHippo runtime harness.\n"
+        )
+        await store.save_node("common/libhippo", existing_doc)
+
+        curator = CuratorAgent(store=store, model_client=make_mock_client("Resolved"))
+        res = await curator.resolve("common/libhippo", rationale="Covers runtime architecture")
+        assert res["status"] == "success"
+        assert res["path"] == "common/libhippo"
+        assert curator.current_session.is_resolved is True
+
+        # Test MakerCheckerOrchestrator handles resolution
+        from libhippo.orchestration.maker_checker import MakerCheckerOrchestrator
+        orch = MakerCheckerOrchestrator(store=store, curator=curator)
+        orch_res = await orch.curate_and_govern(topic="libhippo architecture")
+        assert orch_res.status == "COMMITTED"
+        assert orch_res.path == "common/libhippo"
+
+        # Test KnowledgeDispatcher records search alias on resolution
+        from libhippo.tools.retrieval import KnowledgeDispatcher
+        disp = KnowledgeDispatcher(store=store, orchestrator=orch)
+        query_res = await disp.query_knowledge(
+            query="libhippo architecture",
+            effort="medium",
+            criticality="mandatory",
+        )
+        assert query_res.status == "HIT"
+        assert query_res.path in ("common/libhippo", "common/libhippo.md")
 
 
 # --- TaskSolverAgent Tests ---

@@ -56,6 +56,7 @@ class CuratorAgent(AssistantAgent, BaseHippoAgent):
             self.search_knowledge,
             self.commit,
             self.commit_all,
+            self.resolve,
             self.run_command,
             search_web,
             fetch_web,
@@ -77,11 +78,21 @@ class CuratorAgent(AssistantAgent, BaseHippoAgent):
         messages: Sequence[BaseChatMessage],
         cancellation_token: CancellationToken,
     ) -> AsyncGenerator[Any]:
-        """Stream messages and stop immediately once knowledge draft is committed."""
+        """Stream messages and stop immediately once knowledge draft is committed or resolved."""
         
         async for event in AssistantAgent.on_messages_stream(self, messages, cancellation_token):
             yield event
             if isinstance(event, ToolCallExecutionEvent):
+                if self.current_session and getattr(self.current_session, "is_resolved", False):
+                    resolved_target = self.current_session.resolved_path or "existing document"
+                    yield Response(
+                        chat_message=TextMessage(
+                            content=f"Knowledge query successfully resolved to existing document '{resolved_target}'.",
+                            source=self.name,
+                        ),
+                        inner_messages=[],
+                    )
+                    return
                 if self.current_session and self.current_session.is_committed and len(self.current_session.drafts) == 0:
                     committed_target = (
                         self.current_session.last_commit_result.path
@@ -153,6 +164,10 @@ class CuratorAgent(AssistantAgent, BaseHippoAgent):
             return {"status": "error", "message": "No active draft session."}
         return await self.current_session.commit_all()
 
+    async def resolve(self, path: str, rationale: str = "") -> dict[str, Any]:
+        """Resolve the active curation task to an existing knowledge document if a matching document already exists."""
+        return await self._get_current_session().resolve(path=path, rationale=rationale)
+
     async def run_command(self, command_line: str) -> dict[str, Any]:
         """Execute sandboxed terminal command to verify APIs or behavior."""
         return await self._get_current_session().run_command(command_line=command_line)
@@ -185,10 +200,12 @@ class CuratorAgent(AssistantAgent, BaseHippoAgent):
                 "not merely what the query literally requests (e.g. QUERY: `React useEffect` -> DOCUMENT: `React lifecycle hooks`).\n"
                 "## Workflow\n"
                 "1. Use list_knowledge / search_knowledge to check existing knowledge and avoid duplication.\n"
+                "   If an existing document already covers the query or is a close match, call resolve(path=..., rationale=...) "
+                "   to resolve to it instead of drafting a duplicate.\n"
                 "2. Use search_web and fetch_web to research official documentation.\n"
-                "3. Use write_knowledge(path=..., content=...) to write the draft document.\n"
+                "3. Use write_knowledge(path=..., content=...) to write the draft document in English.\n"
                 "4. Once checks pass, call commit(path=...) to audit and save the draft to disk. If fails, modify.\n"
-                "Document requirements: markdown with strict YAML frontmatter, with proper length.\n"
+                "Document requirements: markdown with strict YAML frontmatter, in English, with proper length.\n"
                 "</curate:instruction>\n"
                 "</curate>"
             )
@@ -196,6 +213,21 @@ class CuratorAgent(AssistantAgent, BaseHippoAgent):
             result = await self.run(task=prompt)
             last_message = result.messages[-1].content if result.messages else ""
             raw_text = last_message if isinstance(last_message, str) else str(last_message)
+
+            if getattr(current_session, "is_resolved", False) and current_session.resolved_path:
+                res_path = current_session.resolved_path
+                node = await self.store.get_node(res_path) if self.store else None
+                title = node.frontmatter.title if (node and node.frontmatter) else res_path
+                return {
+                    "path": res_path,
+                    "draft": node.markdown if node else "",
+                    "title": title,
+                    "nature": getattr(node.frontmatter, "nature", "foundation") if (node and node.frontmatter) else "foundation",
+                    "raw_response": raw_text,
+                    "status": "RESOLVED",
+                    "resolved": True,
+                    "rationale": getattr(current_session, "resolved_rationale", ""),
+                }
 
             gov_result = getattr(self.current_session, "last_commit_result", None)
 

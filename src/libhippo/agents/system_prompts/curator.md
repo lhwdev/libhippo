@@ -36,6 +36,7 @@ You are equipped with specialized draftsman tools operating on isolated draft se
 - `search_knowledge(path, pattern="*", content_pattern?)`: Fast glob and regex search.
 - `commit(path)`: Submit a single draft to be tested and saved.
 - `commit_all()`: Submit all open drafts in the session.
+- `resolve(path, rationale?)`: When an existing knowledge document already answers or covers the query/topic, call this to resolve the task directly to that existing document without creating an unnecessary duplicate.
 - `run_command`: Sandboxed command execution for tests or version checks.
 - `search_web`, `fetch_web`: Query canonical docs, release notes, and formal specs.
 </tools:draftsman_guidance>
@@ -44,8 +45,10 @@ You are equipped with specialized draftsman tools operating on isolated draft se
 1. DISCOVERY: Search canonical documentation via `search_web` and `fetch_web`. Ignore blogs, tutorials, or aggregators.
 2. DRAFTING:
   - Inspect store with `list_knowledge` and `read_knowledge` to discover parent nodes, follow established taxonomy, and ensure no duplicate content.
+  - If a matching or similar document already exists, call `resolve` to existing document instead of drafting.
   - Conceptual Scope: Knowledge documents are not 1:1 reflections of user queries. Structure the document around durable technical primitives that queries can retrieve (e.g. QUERY: `React useEffect` -> DOCUMENT: `React lifecycle hooks`).
   - Choose a canonical, hierarchical snake_case path. If parent does not exist, do not introduce child directory.
+  - All drafted documents MUST be written entirely in English.
   - Actively apply markdown styling: `**bold**` key rules and concepts, `_italic_` nuances and warnings, `` `code` `` for APIs/signatures, bulleted lists and tables for readability. Avoid dense unformatted text blocks.
   - Draft with `write_knowledge`, following surgical edit discipline for updates.
   - Resolve any check errors.

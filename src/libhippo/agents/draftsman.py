@@ -167,6 +167,32 @@ class KnowledgeDraftSession:
         self.active_path: str | None = None
         self.is_committed: bool = False
         self.last_commit_result: Any | None = None
+        self.resolved_path: str | None = None
+        self.is_resolved: bool = False
+        self.resolved_rationale: str = ""
+
+    async def resolve(self, path: str, rationale: str = "") -> dict[str, Any]:
+        """Resolve the active curation task to an existing knowledge document instead of drafting a duplicate."""
+        norm = self._normalize_path(path)
+        if not self.store:
+            return {"status": "error", "message": "No knowledge store available to verify document existence."}
+
+        node = await self.store.get_node(norm)
+        if not node:
+            return {
+                "status": "error",
+                "message": f"Knowledge document '{norm}' does not exist in store. Cannot resolve to non-existent document.",
+            }
+
+        self.resolved_path = norm
+        self.resolved_rationale = rationale
+        self.is_resolved = True
+        return {
+            "status": "success",
+            "message": f"Successfully resolved to existing knowledge document '{norm}'.",
+            "path": norm,
+            "rationale": rationale,
+        }
 
     def _normalize_path(self, path: str) -> str:
         clean = path.strip("/. ").replace("\\", "/")

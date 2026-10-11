@@ -330,7 +330,7 @@ class KnowledgeDispatcher:
                         topic=query,
                         on_event=self.on_event,
                     )
-                    if gov_res.status == "COMMITTED":
+                    if gov_res.status in ("COMMITTED", "RESOLVED"):
                         node = await self.store.get_node(gov_res.path)
                         full_content = (
                             await self.store.read_knowledge(gov_res.path)
@@ -339,6 +339,13 @@ class KnowledgeDispatcher:
                         )
                         content = full_content or (node.markdown if node else gov_res.message)
                         title = node.frontmatter.title if node and node.frontmatter else gov_res.path
+
+                        # Accumulate query in database so subsequent queries hit immediately
+                        try:
+                            await self.store.record_search_alias(gov_res.path, query)
+                        except Exception:
+                            pass
+
                         return KnowledgeRetrievalResult(
                             status="HIT",
                             path=gov_res.path,

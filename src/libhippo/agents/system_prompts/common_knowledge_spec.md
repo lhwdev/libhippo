@@ -57,5 +57,9 @@ React applications follow functional component architecture with unidirectional 
 - **Token Bounds**: Knowledge document MUST target 300 to 1000 tokens. Hard maximum is 1,800 tokens. Oversized nodes will trigger refactoring.
 - **High Signal-to-Noise**: Avoid conversational filler ("In this document we will explore..."). Begin immediately with actionable rules and architectural primitives.
 - **Markdown formatting**: Should be well-formatted GitHub-Flavored markdown.
-  * Utilize markdown formatting (bold, italic, ...) to highlight, but do not overuse.
+  * Utilize markdown formatting (bold, italic, ...) to highlight.
+
+## Language Requirement
+All knowledge documents MUST be written entirely in English (including title, frontmatter, descriptions, rules), regardless of user prompt language or locale.
+
 </knowledge:spec>

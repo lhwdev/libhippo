@@ -237,6 +237,7 @@ class KnowledgeTools(BaseToolSuite):
         note: str = "",
     ) -> dict[str, Any]:
         """Finalize knowledge retrieval, and return to previous task.
+        Do NOT use unless explicitly required.
 
         Outcomes:
         - "hit": Located an existing document (`path` required).
@@ -602,7 +603,7 @@ class KnowledgeTools(BaseToolSuite):
 
             defs["complete_retrieval"] = ToolDefinition(
                 name="complete_retrieval",
-                description="Finalize knowledge search with outcome (hit, create, or forgive).",
+                description="Finalize knowledge search with outcome; do NOT call unless explicitly required.",
                 parameters_schema={
                     "type": "object",
                     "properties": {

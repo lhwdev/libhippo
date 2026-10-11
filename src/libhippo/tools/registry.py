@@ -164,6 +164,21 @@ class ToolRegistry:
 
         return write_knowledge
 
+    def get_resolve_knowledge_tool(self) -> Callable[..., Any]:
+        """Tool: resolve(path: str, rationale: str = '')."""
+        if self.session is not None and hasattr(self.session, "resolve"):
+            return self.session.resolve
+
+        async def resolve(path: str, rationale: str = "") -> dict[str, Any]:
+            if not self.store:
+                return {"status": "error", "message": "No knowledge store available."}
+            node = await self.store.get_node(path)
+            if not node:
+                return {"status": "error", "message": f"Knowledge document '{path}' does not exist."}
+            return {"status": "success", "path": path, "rationale": rationale}
+
+        return resolve
+
     def get_run_command_tool(self) -> Callable[..., Any]:
         """Tool: run_command(command_line: str)."""
         if self.session is not None and hasattr(self.session, "run_command"):

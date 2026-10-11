@@ -675,6 +675,25 @@ class MakerCheckerOrchestrator:
             context=context,
         )
 
+        if curated.get("resolved") or curated.get("status") == "RESOLVED":
+            await self._emit(
+                KnowledgeAgentEvent(
+                    agent="CuratorAgent",
+                    action="resolution",
+                    status="completed",
+                    target_path=curated["path"],
+                    output_summary=f"Resolved to existing document '{curated['path']}'",
+                    details={"rationale": curated.get("rationale", "")},
+                ),
+                on_event,
+            )
+            return MakerCheckerResult(
+                status="COMMITTED",
+                path=curated["path"],
+                verdict="RESOLVED",
+                message=f"Resolved to existing document '{curated['path']}'",
+            )
+
         if curated.get("gov_result"):
             return curated["gov_result"]
 
